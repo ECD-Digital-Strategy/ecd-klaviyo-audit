@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ExternalLink, FileText, Loader2, RefreshCw } from 'lucide-react';
-import { createXeroDraftInvoice, xeroErrorMessage, xeroInvoiceUrl } from '../../lib/xero';
+import { createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
+import { updateProposalLineItem } from '../../lib/proposals-db';
+import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
+import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
 import { useToast } from '../ui/Toast';
-import type { Proposal } from '../../lib/types';
+import type { Proposal, ProposalLineItem } from '../../lib/types';
 
 const KIND_LABEL = { one_time: 'Implementation', monthly: 'First month of the retainer' } as const;
 
@@ -17,9 +20,11 @@ const day = (iso: string) =>
  */
 export default function XeroInvoiceCard({
   proposal,
+  lineItems = [],
   onChanged,
 }: {
   proposal: Proposal;
+  lineItems?: ProposalLineItem[];
   onChanged: () => void;
 }) {
   const toast = useToast();
@@ -86,6 +91,7 @@ export default function XeroInvoiceCard({
 
       {(invoices.length === 0 || failure) && (
         <div className="mt-2">
+          {invoices.length === 0 && <UncodedLines lineItems={lineItems} onChanged={onChanged} />}
           {failure ? (
             <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
               <p>
@@ -113,6 +119,68 @@ export default function XeroInvoiceCard({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+const OLD_KEYS: Record<string, string> = { klaviyo: 'retention', sms: 'retention', ai_agents: 'retention', web_cro: 'website' };
+
+/**
+ * Priced lines with no revenue family yet, coded right here. Most proposals are
+ * written freehand, so their lines reach signing uncoded; a signed proposal's
+ * lines are locked except for this coding. The invoice also tries to code them
+ * from their names first, so this is for the ones it could not place.
+ */
+function UncodedLines({ lineItems, onChanged }: { lineItems: ProposalLineItem[]; onChanged: () => void }) {
+  const toast = useToast();
+  const [families, setFamilies] = useState<XeroServiceAccount[]>([]);
+  const { items } = useXeroItems();
+  useEffect(() => {
+    listXeroServiceAccounts().then(setFamilies).catch(() => setFamilies([]));
+  }, []);
+  const priced = (li: ProposalLineItem) => Number(li.one_time_price ?? 0) > 0 || Number(li.monthly_price ?? 0) > 0;
+  const uncoded = lineItems.filter(li => priced(li) && !OLD_KEYS[li.xero_service_key ?? ''] && !families.some(f => f.service_key === li.xero_service_key));
+  if (!families.length || !uncoded.length) return null;
+
+  const save = async (li: ProposalLineItem, patch: Partial<ProposalLineItem>) => {
+    try {
+      await updateProposalLineItem(li.id, patch);
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save that');
+    }
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5">
+      <p className="text-[11px] font-semibold text-amber-800">
+        {uncoded.length === 1 ? 'This line needs' : 'These lines need'} a Xero account before the invoice can be made
+      </p>
+      <ul className="mt-2 space-y-2.5">
+        {uncoded.map(li => (
+          <li key={li.id}>
+            <p className="text-xs font-medium text-gray-900">{li.name || 'Untitled line'}</p>
+            <div className="mt-1 space-y-1.5">
+              <Select value={li.xero_service_key ?? ''} onValueChange={key => void save(li, { xero_service_key: key })}>
+                <SelectTrigger className="h-8 text-xs bg-white"><SelectValue placeholder="Revenue account" /></SelectTrigger>
+                <SelectContent>
+                  {families.map(f => (
+                    <SelectItem key={f.service_key} value={f.service_key}>
+                      <SelectItemText>{f.name}</SelectItemText>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {Number(li.one_time_price ?? 0) > 0 && (
+                <XeroItemPicker size="sm" value={li.xero_item_one_time} items={items} placeholder="Xero Item, one-time" onChange={code => void save(li, { xero_item_one_time: code })} />
+              )}
+              {Number(li.monthly_price ?? 0) > 0 && (
+                <XeroItemPicker size="sm" value={li.xero_item_monthly} items={items} placeholder="Xero Item, monthly" onChange={code => void save(li, { xero_item_monthly: code })} />
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

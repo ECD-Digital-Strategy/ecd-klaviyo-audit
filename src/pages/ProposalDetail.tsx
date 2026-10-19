@@ -800,7 +800,7 @@ export default function ProposalDetail() {
                 onChanged={reload}
               />
               {/* Only meaningful once signed: that is when the draft is created. */}
-              {isSigned && <XeroInvoiceCard proposal={proposal} onChanged={reload} />}
+              {isSigned && <XeroInvoiceCard proposal={proposal} lineItems={lineItems} onChanged={reload} />}
               <button
                 type="button"
                 disabled={linkBusy}
