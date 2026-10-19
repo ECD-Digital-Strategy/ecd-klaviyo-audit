@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { requireStaffUserId } from "../_shared/auth.ts";
 import {
+  accessToken,
   buildAuthorizeUrl,
   disconnectPatch,
   keepAliveXero,
@@ -64,6 +65,63 @@ serve(async (req) => {
     }
     const result = await keepAliveXero(sb);
     return json({ ok: result.ok, message: result.message });
+  }
+
+  // Read-only check behind the same secret: which scopes Xero actually granted
+  // the token (every draft invoice so far came back 403), whether invoices can
+  // be read, and the Items list with the account each one posts to. Nothing
+  // is written.
+  if (action === "diagnose") {
+    const provided = req.headers.get("x-xero-cron-secret") ?? "";
+    const { data: authRow } = await sb.from("xero_cron_auth").select("secret").eq("id", "default").maybeSingle();
+    const expected = ((authRow?.secret as string | undefined) ?? "").trim();
+    if (!expected || provided !== expected) return json({ ok: false, error: { code: "forbidden" } }, { status: 403 });
+    const { token, tenantId } = await accessToken(sb);
+    // The organisations this token may actually reach, against the one stored.
+    const connections = await fetch("https://api.xero.com/connections", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    })
+      .then(async (r) => (r.ok ? await r.json() : `HTTP ${r.status}`))
+      .catch((e) => String(e));
+    const tenants = Array.isArray(connections)
+      ? connections.map((c: Record<string, unknown>) => ({ id: c.tenantId, name: c.tenantName, type: c.tenantType }))
+      : connections;
+    let scopes: string[] = [];
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+      scopes = Array.isArray(payload.scope) ? payload.scope : String(payload.scope ?? "").split(" ");
+    } catch {
+      scopes = ["(could not read the token's scopes)"];
+    }
+    const attempt = async <T>(path: string): Promise<{ ok: true; data: T } | { ok: false; error: string }> => {
+      try {
+        return { ok: true, data: await xeroApi<T>(sb, path) };
+      } catch (e) {
+        return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
+      }
+    };
+    const [org, invoices, items] = await Promise.all([
+      attempt<{ Organisations?: Array<{ Name?: string }> }>("/Organisation"),
+      attempt<{ Invoices?: unknown[] }>("/Invoices?page=1&pageSize=1"),
+      attempt<{ Items?: Array<Record<string, any>> }>("/Items"),
+    ]);
+    return json({
+      ok: true,
+      scopes,
+      stored_tenant: tenantId,
+      tenants,
+      organisation: org.ok ? org.data.Organisations?.[0]?.Name ?? null : org.error,
+      read_invoices: invoices.ok ? "ok" : invoices.error,
+      items: items.ok
+        ? (items.data.Items ?? []).map((i) => ({
+          code: i.Code ?? null,
+          name: i.Name ?? null,
+          sold: Boolean(i.IsSold),
+          sales_account: i.SalesDetails?.AccountCode ?? null,
+          unit_price: i.SalesDetails?.UnitPrice ?? null,
+        }))
+        : items.error,
+    });
   }
 
   let uid: string;

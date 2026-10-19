@@ -189,7 +189,20 @@ export async function accessToken(sb: SupabaseClient): Promise<{ token: string; 
 /** Keep the refresh token from expiring during a quiet stretch (weekly cron). */
 export async function keepAliveXero(sb: SupabaseClient): Promise<{ ok: boolean; message: string }> {
   try {
-    await accessToken(sb);
+    const { token, tenantId } = await accessToken(sb);
+    // A token can keep refreshing after the app is removed from the
+    // organisation in Xero; every API call then 403s (Oct 2026, unnoticed for
+    // weeks). So also check the organisation is still connected, and say so in
+    // Settings when it is not.
+    const res = await fetch(CONNECTIONS_URL, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    if (res.ok) {
+      const list = (await res.json().catch(() => [])) as Array<{ tenantId?: string }>;
+      if (!list.some((c) => c.tenantId === tenantId)) {
+        const message = "Xero no longer lists this organisation for the app. Disconnect and connect Xero again in Settings.";
+        await sb.from("xero_connection").update({ last_error: message }).eq("id", "default");
+        return { ok: false, message };
+      }
+    }
     return { ok: true, message: "refreshed" };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
