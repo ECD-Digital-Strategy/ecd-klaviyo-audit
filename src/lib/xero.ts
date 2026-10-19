@@ -17,9 +17,9 @@ export type XeroStatus = {
 
 export type XeroAccount = { code: string; name: string; taxType: string };
 
-/** One service family and the revenue accounts its money posts to. One-time work
- * goes to one_time_account_code; recurring goes to monthly_account_code when set,
- * otherwise to the shared MRR account. */
+/** One service family (Retention, Website, Paid ads) and the revenue accounts its
+ * money posts to: one-time work to one_time_account_code (4011/4012/4013),
+ * anything on an ongoing invoice to monthly_account_code (4002/4001/4003). */
 export type XeroServiceAccount = {
   service_key: string;
   name: string;
@@ -67,6 +67,26 @@ export function saveXeroServiceAccounts(services: XeroServiceAccount[]): Promise
 
 export function deleteXeroServiceAccount(serviceKey: string): Promise<unknown> {
   return call({ action: 'delete_service', delete_service_key: serviceKey });
+}
+
+/** A Xero Item a service or proposal line can be mapped to. `account` is the
+ * Item's own account in Xero, shown for reference: the invoice posts by the
+ * line's family either way. */
+export type XeroItem = { code: string; name: string; account: string | null };
+
+let itemsCache: Promise<XeroItem[]> | null = null;
+
+/** Xero's sold Items, fetched once per page load (several pickers share it). */
+export function listXeroItems(): Promise<XeroItem[]> {
+  if (!itemsCache) {
+    itemsCache = call<{ items: XeroItem[] }>({ action: 'items' })
+      .then(r => r.items)
+      .catch(e => {
+        itemsCache = null;
+        throw e;
+      });
+  }
+  return itemsCache;
 }
 
 export function disconnectXero(): Promise<unknown> {

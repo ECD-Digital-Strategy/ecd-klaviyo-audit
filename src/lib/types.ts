@@ -98,6 +98,10 @@ export interface RevenueOpportunityTemplate {
    * (xero_revenue_accounts.service_key). Copied onto the proposal line, where it
    * can still be overridden. */
   xero_service_key?: string | null;
+  /** Xero Items (Tier 1 = 1213, Klaviyo Implementation = 1222) for the one-time
+   * and the monthly money. The account still comes from the family. */
+  xero_item_one_time?: string | null;
+  xero_item_monthly?: string | null;
   display_order: number;
   is_active: boolean;
   created_at: string;
@@ -418,6 +422,9 @@ export interface Proposal {
   xero_invoice_number?: string | null;
   xero_invoiced_at?: string | null;
   xero_invoice_error?: string | null;
+  /** Every draft made for the proposal: the implementation and the first month
+   * of the retainer go on separate invoices. */
+  xero_invoices?: Array<{ kind: 'one_time' | 'monthly'; id: string; number: string; date: string; due_date: string; total: number }>;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -445,6 +452,10 @@ export interface ProposalLineItem {
    * Optional because template line items stored as JSONB before this existed
    * have no such key. */
   xero_service_key?: string | null;
+  /** Xero Items (Tier 1 = 1213, Klaviyo Implementation = 1222) for the one-time
+   * and the monthly money. The account still comes from the family. */
+  xero_item_one_time?: string | null;
+  xero_item_monthly?: string | null;
   display_order: number;
   created_at: string;
 }

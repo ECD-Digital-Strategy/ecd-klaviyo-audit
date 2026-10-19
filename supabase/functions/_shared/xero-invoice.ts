@@ -7,18 +7,26 @@ import {
   resolveAccountCode,
   type RevenueAccountRow,
 } from "./xero-accounts.ts";
+import { type FeeKind, newYorkDate, type PlanLine, planInvoices } from "./xero-plan.ts";
 
 /**
- * Creates the DRAFT sales invoice for a signed proposal.
+ * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
+ * (xero-plan.ts): the implementation and the first month of a retainer on
+ * separate invoices, each dated and due by the rule for its kind, and nothing
+ * for complimentary work.
  *
  * DRAFT is deliberate: Xero never emails a draft, so nothing reaches the client
- * until someone approves and sends it from Xero.
+ * until someone approves and sends it from Xero. Maria sets up the repeating
+ * invoices from the first month's draft.
  *
- * Both one-time fees and the first month of any retainer are invoiced, each line
- * coded to its own revenue account: one-time to the service's sales account,
- * recurring to the MRR account. If any line cannot be coded, NO invoice is
- * created and the reason names the offending lines, because a miscoded line is
- * worse than a missing draft when the whole point is per-account reporting.
+ * Each line posts to its family's account (one-time 4011/4012/4013, ongoing
+ * 4001/4002/4003) and carries the service's Xero Item when it has one. The
+ * account is sent explicitly, so an Item coded to the wrong account in Xero
+ * cannot misfile the revenue. If any line cannot be coded, NO invoice is
+ * created and the reason names the lines.
+ *
+ * Every invoice made is recorded on proposals.xero_invoices by kind, so a retry
+ * only creates what is missing, and each is posted with its own idempotency key.
  */
 
 type LineItem = {
@@ -27,8 +35,13 @@ type LineItem = {
   one_time_price: number | string | null;
   monthly_price: number | string | null;
   xero_service_key: string | null;
+  xero_item_one_time: string | null;
+  xero_item_monthly: string | null;
+  template_slug: string | null;
   display_order: number | null;
 };
+
+export type CreatedInvoice = { kind: FeeKind; id: string; number: string; date: string; due_date: string; total: number };
 
 type ProposalRow = {
   id: string;
@@ -40,6 +53,9 @@ type ProposalRow = {
   discount_value: number | string | null;
   discount_applies_to: string | null;
   discount_label: string | null;
+  client_signed_at: string | null;
+  xero_invoice_id: string | null;
+  xero_invoices: CreatedInvoice[] | null;
   client?: { company_name?: string | null; email?: string | null } | null;
 };
 
@@ -64,35 +80,73 @@ function bucketDiscount(
   return 0;
 }
 
-type PreparedLine = {
-  description: string;
-  gross: number;
-  kind: "one_time" | "monthly";
-  accountCode: string;
-};
+/** Xero's where-clause string, quotes escaped. */
+const quoted = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** The client's existing Xero contact by name, then by email, so a draft never
+ * starts a second "A Ma Maniere" next to "A Ma Maniere LLC" when the email
+ * matches. Null means a new contact is made with the invoice. */
+async function findContactId(sb: SupabaseClient, name: string, email: string | undefined): Promise<string | null> {
+  const lookups = [`Name.ToLower()==${quoted(name.toLowerCase())}`];
+  if (email) lookups.push(`EmailAddress!=null&&EmailAddress.ToLower()==${quoted(email.toLowerCase())}`);
+  for (const where of lookups) {
+    const out = await xeroApi<{ Contacts?: Array<{ ContactID?: string; ContactStatus?: string }> }>(
+      sb,
+      `/Contacts?where=${encodeURIComponent(where)}`,
+    ).catch(() => null);
+    const hit = out?.Contacts?.find((c) => c.ContactID && c.ContactStatus !== "ARCHIVED");
+    if (hit?.ContactID) return hit.ContactID;
+  }
+  return null;
+}
+
+async function recordError(sb: SupabaseClient, proposalId: string, error: string) {
+  await sb.from("proposals").update({ xero_invoice_error: error.slice(0, 400) }).eq("id", proposalId);
+}
 
 export async function createDraftInvoiceForProposal(
   sb: SupabaseClient,
   proposalId: string,
-): Promise<{ ok: true; invoiceId: string; invoiceNumber: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; invoices: CreatedInvoice[] } | { ok: false; error: string }> {
   const { data: proposalRow } = await sb
     .from("proposals")
     .select(
-      "id, proposal_number, title, recipient_name, recipient_email, discount_type, discount_value, discount_applies_to, discount_label, xero_invoice_id, client:clients(company_name, email)",
+      "id, proposal_number, title, recipient_name, recipient_email, discount_type, discount_value, discount_applies_to, discount_label, client_signed_at, xero_invoice_id, xero_invoices, client:clients(company_name, email)",
     )
     .eq("id", proposalId)
     .maybeSingle();
-  const proposal = proposalRow as (ProposalRow & { xero_invoice_id?: string | null }) | null;
+  const proposal = proposalRow as ProposalRow | null;
   if (!proposal) return { ok: false, error: "proposal_not_found" };
-  // Already invoiced: never post twice, however this was triggered.
-  if (proposal.xero_invoice_id) return { ok: false, error: "already_invoiced" };
+  const already = Array.isArray(proposal.xero_invoices) ? proposal.xero_invoices : [];
+  // An invoice from before invoices were split by kind: never post again.
+  if (proposal.xero_invoice_id && already.length === 0) return { ok: false, error: "already_invoiced" };
 
   const { data: itemRows } = await sb
     .from("proposal_line_items")
-    .select("name, description, one_time_price, monthly_price, xero_service_key, display_order")
+    .select(
+      "name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly, template_slug, display_order",
+    )
     .eq("proposal_id", proposalId);
   const items = ((itemRows ?? []) as LineItem[])
     .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+
+  // Lines on signed proposals cannot be edited, so ones signed before Items
+  // were mapped take their service's Items from the catalog by slug.
+  const slugs = [...new Set(items.map((i) => i.template_slug).filter((s): s is string => Boolean(s)))];
+  const catalog = new Map<string, { one: string | null; monthly: string | null; family: string | null }>();
+  if (slugs.length) {
+    const { data } = await sb
+      .from("revenue_opportunity_templates")
+      .select("slug, xero_item_one_time, xero_item_monthly, xero_service_key")
+      .in("slug", slugs);
+    for (const t of data ?? []) {
+      catalog.set(t.slug as string, {
+        one: (t.xero_item_one_time as string | null) ?? null,
+        monthly: (t.xero_item_monthly as string | null) ?? null,
+        family: (t.xero_service_key as string | null) ?? null,
+      });
+    }
+  }
 
   const oneTimeSubtotal = items.reduce((s, i) => s + (num(i.one_time_price) ?? 0), 0);
   const monthlySubtotal = items.reduce((s, i) => s + (num(i.monthly_price) ?? 0), 0);
@@ -101,24 +155,13 @@ export async function createDraftInvoiceForProposal(
   const dType = proposal.discount_type ?? "none";
   const dValue = num(proposal.discount_value) ?? 0;
   const appliesTo = proposal.discount_applies_to ?? "one_time";
-  const oneTimeDiscount = bucketDiscount(
-    oneTimeSubtotal,
-    dType,
-    dValue,
-    appliesTo === "one_time" || appliesTo === "both",
-  );
-  const monthlyDiscount = bucketDiscount(
-    monthlySubtotal,
-    dType,
-    dValue,
-    appliesTo === "monthly" || appliesTo === "both",
-  );
-  if (
-    oneTimeDiscount >= oneTimeSubtotal && monthlyDiscount >= monthlySubtotal
-  ) {
-    // A 100% discount would post a zero invoice, which is never intended.
-    return { ok: false, error: "fully_discounted" };
-  }
+  const oneTimeDiscount = bucketDiscount(oneTimeSubtotal, dType, dValue, appliesTo === "one_time" || appliesTo === "both");
+  const monthlyDiscount = bucketDiscount(monthlySubtotal, dType, dValue, appliesTo === "monthly" || appliesTo === "both");
+  const ratio = (subtotal: number, discount: number) => (subtotal > 0 ? (subtotal - discount) / subtotal : 1);
+  const ratios: Record<FeeKind, number> = {
+    one_time: ratio(oneTimeSubtotal, oneTimeDiscount),
+    monthly: ratio(monthlySubtotal, monthlyDiscount),
+  };
 
   const conn = await loadConnection(sb);
   const defaults: AccountDefaults = {
@@ -130,22 +173,21 @@ export async function createDraftInvoiceForProposal(
     .select("service_key, name, one_time_account_code, monthly_account_code");
   const mapping = (mappingRows ?? []) as RevenueAccountRow[];
 
-  // Resolve every line's account BEFORE building anything, so a single unmapped
-  // line stops the whole invoice instead of posting a partial one.
+  // Code every line BEFORE building anything, so one unmapped line stops all
+  // of it instead of posting a partial invoice. Complimentary (zero after the
+  // discount) lines need no coding: they are not invoiced.
   const failures: Extract<Resolved, { ok: false }>[] = [];
-  const prepared: PreparedLine[] = [];
-  const ratio = (subtotal: number, discount: number) => (subtotal > 0 ? (subtotal - discount) / subtotal : 1);
-  const oneTimeRatio = ratio(oneTimeSubtotal, oneTimeDiscount);
-  const monthlyRatio = ratio(monthlySubtotal, monthlyDiscount);
-
+  const lines: PlanLine[] = [];
   for (const item of items) {
     const label = item.name?.trim() || "Untitled line";
     const detail = [label, item.description?.trim()].filter(Boolean).join(" - ").slice(0, 4000);
+    const fromCatalog = item.template_slug ? catalog.get(item.template_slug) : undefined;
     for (const kind of ["one_time", "monthly"] as const) {
       const gross = num(kind === "one_time" ? item.one_time_price : item.monthly_price) ?? 0;
-      if (gross <= 0) continue;
+      const amount = gross * ratios[kind];
+      if (Math.round(amount * 100) <= 0) continue;
       const resolved = resolveAccountCode(
-        { label, serviceKey: item.xero_service_key, kind },
+        { label, serviceKey: item.xero_service_key ?? fromCatalog?.family ?? null, kind },
         mapping,
         defaults,
       );
@@ -153,97 +195,108 @@ export async function createDraftInvoiceForProposal(
         failures.push(resolved);
         continue;
       }
-      prepared.push({
-        description: kind === "monthly" ? `${detail} (first month)`.slice(0, 4000) : detail,
-        gross: gross * (kind === "one_time" ? oneTimeRatio : monthlyRatio),
+      const itemCode = (kind === "one_time" ? item.xero_item_one_time ?? fromCatalog?.one : item.xero_item_monthly ?? fromCatalog?.monthly) ?? null;
+      lines.push({
         kind,
+        description: kind === "monthly" ? `${detail} (first month)`.slice(0, 4000) : detail,
+        amount,
         accountCode: resolved.accountCode,
+        itemCode,
       });
     }
   }
+  if (failures.length > 0) {
+    const error = describeUnmapped(failures);
+    await recordError(sb, proposalId, error);
+    return { ok: false, error };
+  }
 
-  if (failures.length > 0) return { ok: false, error: describeUnmapped(failures) };
-  if (prepared.length === 0) return { ok: false, error: "no_billable_fees" };
+  const signedOn = newYorkDate(proposal.client_signed_at ? new Date(proposal.client_signed_at) : new Date());
+  const plan = planInvoices(lines, signedOn);
+  if (plan.length === 0) return { ok: false, error: "fully_discounted" };
 
-  const lineItems = prepared.map((p) => ({
-    Description: p.description,
-    Quantity: 1,
-    // Xero recomputes totals from UnitAmount, so the discount is folded into the
-    // unit price proportionally rather than sent as a separate field.
-    UnitAmount: Math.round(p.gross * 100) / 100,
-    AccountCode: p.accountCode,
-    ...(conn?.tax_type ? { TaxType: conn.tax_type } : {}),
-  }));
-
-  const reference = proposal.proposal_number
-    ? `ECD-${String(proposal.proposal_number).padStart(4, "0")}`
-    : proposal.title;
-  const totalDiscount = oneTimeDiscount + monthlyDiscount;
-  const recurring = prepared.filter((p) => p.kind === "monthly");
-  const notes = [
-    `Created automatically from signed proposal ${reference}.`,
-    totalDiscount > 0
-      ? `A ${proposal.discount_label || "discount"} of ${
-        totalDiscount.toFixed(2)
-      } was applied proportionally across the lines.`
-      : "",
-    recurring.length > 0
-      ? `Includes the FIRST MONTH of ${recurring.length} recurring item(s). Set up a Xero repeating invoice for the months after this one.`
-      : "",
-  ].filter(Boolean).join(" ");
-
+  const reference = proposal.proposal_number ? `ECD-${String(proposal.proposal_number).padStart(4, "0")}` : proposal.title;
   const contactName = proposal.client?.company_name?.trim() || proposal.recipient_name?.trim() || "Client";
   const contactEmail = proposal.recipient_email?.trim() || proposal.client?.email?.trim() || undefined;
+  const totalDiscount = oneTimeDiscount + monthlyDiscount;
 
+  const created: CreatedInvoice[] = [...already];
   try {
-    // Xero upserts a contact by Name on invoice create, so no separate lookup is
-    // needed; passing the email keeps a new contact usable straight away.
-    const payload = {
-      Invoices: [
-        {
-          Type: "ACCREC",
-          Status: "DRAFT",
-          Contact: { Name: contactName, ...(contactEmail ? { EmailAddress: contactEmail } : {}) },
-          Date: new Date().toISOString().slice(0, 10),
-          Reference: reference,
-          LineAmountTypes: "Exclusive",
-          LineItems: lineItems,
-        },
-      ],
-    };
-    const out = await xeroApi<{ Invoices?: Array<{ InvoiceID?: string; InvoiceNumber?: string }> }>(
-      sb,
-      "/Invoices",
-      // The proposal id as the idempotency key: a retried invocation cannot
-      // create a second invoice even if our own guard is bypassed.
-      { method: "POST", body: payload, idempotencyKey: `proposal-${proposalId}` },
-    );
-    const created = out.Invoices?.[0];
-    if (!created?.InvoiceID) return { ok: false, error: "xero_no_invoice_returned" };
+    const contactId = await findContactId(sb, contactName, contactEmail);
+    const contact = contactId
+      ? { ContactID: contactId }
+      : { Name: contactName, ...(contactEmail ? { EmailAddress: contactEmail } : {}) };
 
-    // Notes go on as a history note: the invoice body has no free-text field
-    // that survives, and this keeps the retainer reminder attached in Xero.
-    if (notes) {
-      await xeroApi(sb, `/Invoices/${created.InvoiceID}/History`, {
+    for (const inv of plan) {
+      if (created.some((c) => c.kind === inv.kind)) continue;
+      const payload = {
+        Invoices: [
+          {
+            Type: "ACCREC",
+            Status: "DRAFT",
+            Contact: contact,
+            Date: inv.date,
+            DueDate: inv.dueDate,
+            Reference: reference,
+            LineAmountTypes: "Exclusive",
+            LineItems: inv.lines.map((l) => ({
+              Description: l.description,
+              Quantity: 1,
+              // Xero recomputes totals from UnitAmount, so the discount is folded
+              // into the unit price proportionally rather than sent separately.
+              UnitAmount: Math.round(l.amount * 100) / 100,
+              AccountCode: l.accountCode,
+              ...(l.itemCode ? { ItemCode: l.itemCode } : {}),
+              ...(conn?.tax_type ? { TaxType: conn.tax_type } : {}),
+            })),
+          },
+        ],
+      };
+      const out = await xeroApi<{ Invoices?: Array<{ InvoiceID?: string; InvoiceNumber?: string; Total?: number }> }>(
+        sb,
+        "/Invoices",
+        // One key per proposal and kind: a retried call cannot make a second copy.
+        { method: "POST", body: payload, idempotencyKey: `proposal-${proposalId}-${inv.kind}` },
+      );
+      const made = out.Invoices?.[0];
+      if (!made?.InvoiceID) throw new Error("xero_no_invoice_returned");
+
+      const notes = [
+        `Created automatically from signed proposal ${reference}.`,
+        totalDiscount > 0 ? `The ${proposal.discount_label || "discount"} was applied proportionally across the lines.` : "",
+        inv.kind === "monthly"
+          ? "First month of the retainer. Set up the repeating invoice for the months after this one."
+          : "",
+      ].filter(Boolean).join(" ");
+      await xeroApi(sb, `/Invoices/${made.InvoiceID}/History`, {
         method: "PUT",
         body: { HistoryRecords: [{ Details: notes.slice(0, 1000) }] },
       }).catch(() => {});
+
+      created.push({
+        kind: inv.kind,
+        id: made.InvoiceID,
+        number: made.InvoiceNumber ?? "",
+        date: inv.date,
+        due_date: inv.dueDate,
+        total: Math.round(inv.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100,
+      });
+      // Saved after each one, so a failure on the second keeps the first.
+      await sb
+        .from("proposals")
+        .update({
+          xero_invoices: created,
+          xero_invoice_id: created[0].id,
+          xero_invoice_number: created[0].number || null,
+          xero_invoiced_at: new Date().toISOString(),
+          xero_invoice_error: null,
+        })
+        .eq("id", proposalId);
     }
-
-    await sb
-      .from("proposals")
-      .update({
-        xero_invoice_id: created.InvoiceID,
-        xero_invoice_number: created.InvoiceNumber ?? null,
-        xero_invoiced_at: new Date().toISOString(),
-        xero_invoice_error: null,
-      })
-      .eq("id", proposalId);
-
-    return { ok: true, invoiceId: created.InvoiceID, invoiceNumber: created.InvoiceNumber ?? "" };
+    return { ok: true, invoices: created };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    await sb.from("proposals").update({ xero_invoice_error: error.slice(0, 400) }).eq("id", proposalId);
+    await recordError(sb, proposalId, error);
     return { ok: false, error };
   }
 }

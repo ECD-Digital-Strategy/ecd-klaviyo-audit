@@ -178,6 +178,22 @@ serve(async (req) => {
       return json({ ok: true, accounts });
     }
 
+    if (action === "items") {
+      // The Items a catalog service or proposal line is mapped to (Tier 1 =
+      // 1213). Only ones that are sold; the account shown is the Item's own,
+      // the invoice still posts by the line's family.
+      const out = await xeroApi<{ Items?: Array<Record<string, any>> }>(sb, "/Items");
+      const items = (out.Items ?? [])
+        .filter((i) => i.IsSold && i.Code)
+        .map((i) => ({
+          code: String(i.Code),
+          name: String(i.Name ?? i.Code),
+          account: (i.SalesDetails?.AccountCode as string | undefined) ?? null,
+        }))
+        .sort((a, b) => a.code.localeCompare(b.code));
+      return json({ ok: true, items });
+    }
+
     if (action === "save_settings") {
       const { error } = await sb
         .from("xero_connection")

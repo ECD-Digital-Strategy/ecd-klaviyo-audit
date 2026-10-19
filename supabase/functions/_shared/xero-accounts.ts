@@ -50,14 +50,23 @@ function fail(
   return { ok: false, reason, label: input.label, serviceName, serviceKey: input.serviceKey, kind: input.kind };
 }
 
+/** The family a line's stored key belongs to. Lines on signed proposals cannot
+ * be changed, so the four categories used before Zak's three families (Oct 19,
+ * 2026) are folded in here rather than in the data. */
+export function familyKey(key: string | null): string | null {
+  if (!key) return null;
+  if (key === "klaviyo" || key === "sms" || key === "ai_agents") return "retention";
+  if (key === "web_cro") return "website";
+  return key;
+}
+
 export function resolveAccountCode(
   input: ResolveInput,
   mapping: RevenueAccountRow[],
   defaults: AccountDefaults,
 ): Resolved {
-  const row = input.serviceKey
-    ? mapping.find((m) => m.service_key === input.serviceKey) ?? null
-    : null;
+  const key = familyKey(input.serviceKey);
+  const row = key ? mapping.find((m) => m.service_key === key) ?? null : null;
 
   if (input.kind === "monthly") {
     // Recurring is the one case with a sane global default: every retainer goes

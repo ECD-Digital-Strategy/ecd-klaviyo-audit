@@ -38,6 +38,7 @@ import {
 import type { CatalogAuditType, RevenueOpportunityTemplate } from '../lib/types';
 import XeroSettingsPanel from '../components/proposal/XeroSettingsPanel';
 import { listXeroServiceAccounts, type XeroServiceAccount } from '../lib/xero';
+import XeroItemPicker, { useXeroItems } from '../components/proposal/XeroItemPicker';
 
 const TABS = [
   { id: 'users', label: 'Users', icon: Users },
@@ -550,6 +551,27 @@ function AppliesToChecks({ value, onChange }: { value: CatalogAuditType; onChang
 
 /** Assigns a catalog service to a Xero revenue bucket. Uses the shared branded
  * Select, and degrades to a clear hint when no buckets exist yet. */
+/**
+ * Every catalog service must be mapped to Xero before it is saved (Zak, Oct
+ * 2026): its revenue family, and the Xero Item for each price it carries. A
+ * service sold as both a project and a retainer needs both Items.
+ */
+function xeroMappingProblem(entry: {
+  xero_service_key?: string | null;
+  xero_item_one_time?: string | null;
+  xero_item_monthly?: string | null;
+  one_time_price?: number | null;
+  monthly_price?: number | null;
+}): string | null {
+  if (!entry.xero_service_key) return 'Pick its Xero revenue account (Retention, Website or Paid ads).';
+  const oneTime = Number(entry.one_time_price ?? 0) > 0;
+  const monthly = Number(entry.monthly_price ?? 0) > 0;
+  if (oneTime && !entry.xero_item_one_time) return 'Pick the Xero Item for the one-time price.';
+  if (monthly && !entry.xero_item_monthly) return 'Pick the Xero Item for the monthly price.';
+  if (!entry.xero_item_one_time && !entry.xero_item_monthly) return 'Pick the Xero Item it is invoiced as.';
+  return null;
+}
+
 function XeroServicePicker({
   value,
   services,
@@ -573,7 +595,7 @@ function XeroServicePicker({
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NO_XERO_SERVICE}>
-          <SelectItemText>Not set (pick per proposal)</SelectItemText>
+          <SelectItemText>Not set</SelectItemText>
         </SelectItem>
         {services.map(sv => (
           <SelectItem key={sv.service_key} value={sv.service_key}>
@@ -603,6 +625,7 @@ function RevenueOpportunitiesTab() {
   // The Xero revenue buckets, so each service can be assigned one here rather
   // than on every proposal line.
   const [xeroServices, setXeroServices] = useState<XeroServiceAccount[]>([]);
+  const { items: xeroItems, error: xeroItemsError } = useXeroItems();
 
   useEffect(() => {
     let cancelled = false;
@@ -646,6 +669,9 @@ function RevenueOpportunitiesTab() {
     monthlyPrice: '',
     monthlyLabel: '',
     isActive: true,
+    xeroServiceKey: '',
+    xeroItemOneTime: null as string | null,
+    xeroItemMonthly: null as string | null,
   });
   const toHandle = (name: string) =>
     name
@@ -687,6 +713,11 @@ function RevenueOpportunitiesTab() {
 
   const saveEntry = async (entry: RevenueOpportunityTemplate) => {
     setError('');
+    const problem = xeroMappingProblem(entry);
+    if (problem) {
+      setError(`${entry.name || 'This service'}: ${problem}`);
+      return;
+    }
     setSavingId(entry.id);
     try {
       await updateRevenueOpportunityTemplate(entry.id, {
@@ -703,6 +734,8 @@ function RevenueOpportunitiesTab() {
         image_url: entry.image_url ?? null,
         details_url: entry.details_url?.trim() || null,
         xero_service_key: entry.xero_service_key || null,
+        xero_item_one_time: entry.xero_item_one_time || null,
+        xero_item_monthly: entry.xero_item_monthly || null,
         display_order: Number(entry.display_order || 0),
         is_active: Boolean(entry.is_active),
       });
@@ -734,6 +767,17 @@ function RevenueOpportunitiesTab() {
       setError('Name is required');
       return;
     }
+    const problem = xeroMappingProblem({
+      xero_service_key: newEntry.xeroServiceKey,
+      xero_item_one_time: newEntry.xeroItemOneTime,
+      xero_item_monthly: newEntry.xeroItemMonthly,
+      one_time_price: newEntry.oneTimePrice ? Number(newEntry.oneTimePrice) : null,
+      monthly_price: newEntry.monthlyPrice ? Number(newEntry.monthlyPrice) : null,
+    });
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setCreating(true);
     try {
       const nextDisplayOrder = entries.reduce((max, e) => Math.max(max, e.display_order || 0), 0) + 10;
@@ -751,6 +795,9 @@ function RevenueOpportunitiesTab() {
         monthly_label: newEntry.monthlyLabel.trim() || null,
         display_order: nextDisplayOrder,
         is_active: newEntry.isActive,
+        xero_service_key: newEntry.xeroServiceKey || null,
+        xero_item_one_time: newEntry.xeroItemOneTime,
+        xero_item_monthly: newEntry.xeroItemMonthly,
       });
       setNewEntry({
         name: '',
@@ -762,6 +809,9 @@ function RevenueOpportunitiesTab() {
         monthlyPrice: '',
         monthlyLabel: '',
         isActive: true,
+        xeroServiceKey: '',
+        xeroItemOneTime: null,
+        xeroItemMonthly: null,
       });
       setShowCreateModal(false);
       setExpandedIds(prev => new Set(prev).add(created.id));
@@ -942,6 +992,39 @@ function RevenueOpportunitiesTab() {
                 placeholder="e.g. $12,000+/mo"
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-brand-primary focus:ring-1 focus:ring-brand-primary/20"
               />
+            </div>
+            {/* Mapped to Xero before it exists (Zak, Oct 2026), so it can never reach an invoice uncoded. */}
+            <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-3 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Xero revenue account</label>
+                <XeroServicePicker
+                  value={newEntry.xeroServiceKey}
+                  services={xeroServices}
+                  onChange={key => setNewEntry(prev => ({ ...prev, xeroServiceKey: key }))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Xero Item, one-time</label>
+                <XeroItemPicker
+                  value={newEntry.xeroItemOneTime}
+                  items={xeroItems}
+                  invalid={Number(newEntry.oneTimePrice || 0) > 0 && !newEntry.xeroItemOneTime}
+                  onChange={code => setNewEntry(prev => ({ ...prev, xeroItemOneTime: code }))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Xero Item, monthly</label>
+                <XeroItemPicker
+                  value={newEntry.xeroItemMonthly}
+                  items={xeroItems}
+                  invalid={Number(newEntry.monthlyPrice || 0) > 0 && !newEntry.xeroItemMonthly}
+                  onChange={code => setNewEntry(prev => ({ ...prev, xeroItemMonthly: code }))}
+                />
+              </div>
+              <p className="md:col-span-3 text-[11px] text-gray-400">
+                Required: the account family, and an Item for each price this service has.
+                {xeroItemsError ? ` Xero Items could not be loaded (${xeroItemsError}).` : ''}
+              </p>
             </div>
             <label className="flex items-center gap-2 text-sm text-gray-700 mt-2 cursor-pointer select-none md:col-span-2">
               <button
@@ -1162,7 +1245,36 @@ function RevenueOpportunitiesTab() {
                       />
                       <p className="mt-1 text-[11px] text-gray-400">
                         Proposal lines added from this service are coded here automatically. One-time money posts to the
-                        service account, retainers to the MRR account. Still overridable on an individual proposal.
+                        family's one-time account (4011/4012/4013), anything on an ongoing invoice to its MRR account
+                        (4002/4001/4003).
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Xero Item, one-time</label>
+                        <XeroItemPicker
+                          value={entry.xero_item_one_time}
+                          items={xeroItems}
+                          invalid={Number(entry.one_time_price ?? 0) > 0 && !entry.xero_item_one_time}
+                          onChange={code => setEntries(prev => prev.map(pp => (
+                            pp.id === entry.id ? { ...pp, xero_item_one_time: code } : pp
+                          )))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Xero Item, monthly</label>
+                        <XeroItemPicker
+                          value={entry.xero_item_monthly}
+                          items={xeroItems}
+                          invalid={Number(entry.monthly_price ?? 0) > 0 && !entry.xero_item_monthly}
+                          onChange={code => setEntries(prev => prev.map(pp => (
+                            pp.id === entry.id ? { ...pp, xero_item_monthly: code } : pp
+                          )))}
+                        />
+                      </div>
+                      <p className="md:col-span-2 -mt-1 text-[11px] text-gray-400">
+                        Required for each price this service has. Saving is blocked until it is mapped.
+                        {xeroItemsError ? ` Xero Items could not be loaded (${xeroItemsError}).` : ''}
                       </p>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

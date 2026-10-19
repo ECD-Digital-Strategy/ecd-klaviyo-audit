@@ -161,9 +161,9 @@ export default function XeroServiceAccountsEditor({
           {/* Say plainly where the link to real services is made, because this
               screen only holds the buckets and their codes. */}
           <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-gray-400">
-            A bucket is a name plus the accounts its money posts to: one-time work to the one-time account, retainers
-            to the MRR account above unless the bucket sets its own. Assign your line items to buckets in the table
-            below, and a proposal line created from that service is coded automatically.
+            Each family has two accounts: one-time work posts to the one-time account (4011/4012/4013), anything on
+            an ongoing invoice to the MRR account (4002/4001/4003). Assign your line items to a family and a Xero Item
+            in the table below, and a proposal line created from that service is coded automatically.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -216,7 +216,7 @@ export default function XeroServiceAccountsEditor({
               <AccountPicker
                 value={row.monthly_account_code ?? ''}
                 accounts={accounts}
-                placeholder="Use MRR account"
+                placeholder="Choose the MRR account"
                 onChange={code => patch(i, { monthly_account_code: code })}
               />
               <button

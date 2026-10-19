@@ -53,6 +53,8 @@ export default function XeroLineItemMapping({
     return {
       oneTime: oneTime || null,
       monthly: monthly || null,
+      oneTimeItem: t.xero_item_one_time ?? null,
+      monthlyItem: t.xero_item_monthly ?? null,
       // Only prices that exist on the template can ever be invoiced.
       hasOneTime: Number(t.one_time_price ?? 0) > 0 || Boolean(t.one_time_label),
       hasMonthly: Number(t.monthly_price ?? 0) > 0 || Boolean(t.monthly_label),
@@ -61,7 +63,7 @@ export default function XeroLineItemMapping({
 
   const unmapped = templates.filter(t => {
     const r = resolved(t);
-    return (r.hasOneTime && !r.oneTime) || (r.hasMonthly && !r.monthly);
+    return (r.hasOneTime && (!r.oneTime || !r.oneTimeItem)) || (r.hasMonthly && (!r.monthly || !r.monthlyItem));
   }).length;
 
   if (templates.length === 0) return null;
@@ -72,14 +74,14 @@ export default function XeroLineItemMapping({
         <div>
           <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Line items and where they post</h4>
           <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-gray-400">
-            Every service in your catalog and the Xero account it will hit. A proposal line created from a service
-            inherits this, and can still be changed on the proposal itself.
+            Every service in your catalog, the Xero account it will hit and the Item it is invoiced as. Set the Items
+            in the Line Item Catalog. A proposal line created from a service inherits both.
           </p>
         </div>
         {unmapped > 0 && (
           <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700">
             <AlertTriangle className="h-3.5 w-3.5" />
-            {unmapped} need an account
+            {unmapped} need an account or Item
           </span>
         )}
       </div>
@@ -93,7 +95,7 @@ export default function XeroLineItemMapping({
 
         {templates.map(t => {
           const r = resolved(t);
-          const missing = (r.hasOneTime && !r.oneTime) || (r.hasMonthly && !r.monthly);
+          const missing = (r.hasOneTime && (!r.oneTime || !r.oneTimeItem)) || (r.hasMonthly && (!r.monthly || !r.monthlyItem));
           return (
             <div
               key={t.slug}
@@ -132,10 +134,10 @@ export default function XeroLineItemMapping({
 
               <div className="flex flex-wrap items-center justify-end gap-1 text-right">
                 {r.hasOneTime && (
-                  <AccountChip label="one-time" code={r.oneTime} />
+                  <AccountChip label="one-time" code={r.oneTime} item={r.oneTimeItem} />
                 )}
                 {r.hasMonthly && (
-                  <AccountChip label="monthly" code={r.monthly} />
+                  <AccountChip label="monthly" code={r.monthly} item={r.monthlyItem} />
                 )}
                 {!r.hasOneTime && !r.hasMonthly && (
                   <span className="text-[10px] text-gray-300">not invoiced</span>
@@ -149,19 +151,19 @@ export default function XeroLineItemMapping({
   );
 }
 
-function AccountChip({ label, code }: { label: string; code: string | null }) {
-  if (!code) {
+function AccountChip({ label, code, item }: { label: string; code: string | null; item: string | null }) {
+  if (!code || !item) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
         <AlertTriangle className="h-3 w-3" />
-        {label}: none
+        {label}: {code ? `${code}, no Item` : 'none'}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
       <Check className="h-3 w-3" />
-      {label}: {code}
+      {label}: {code} · Item {item}
     </span>
   );
 }

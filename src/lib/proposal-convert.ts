@@ -1,4 +1,7 @@
 import { getAddOnItemsFromLayout } from './addon-highlight';
+
+/** A catalog service's Xero Items, for the one-time and the monthly money. */
+export type XeroItemCodes = { one_time: string | null; monthly: string | null };
 import { listAuditSections, listRevenueOpportunityTemplates } from './db';
 import { parseWebRoadmapDetail, type WebRoadmapRow } from './web-report-details';
 import { publicReportOrigin } from './public-origin';
@@ -32,6 +35,8 @@ export function auditAddOnsToLineItems(
   layout: unknown,
   /** template_slug -> Xero revenue bucket, from the line item catalog. */
   serviceKeyBySlug: Map<string, string | null> = new Map(),
+  /** template_slug -> the catalog service's Xero Items. */
+  itemsBySlug: Map<string, XeroItemCodes> = new Map(),
 ): Omit<CreateProposalLineItemInput, 'proposal_id'>[] {
   const items = getAddOnItemsFromLayout(layout)
     .filter(item => isAddOnInvestmentIncluded(item) && addOnHasPricing(item))
@@ -42,6 +47,8 @@ export function auditAddOnsToLineItems(
     // Coded from the catalog so the Xero draft invoice works without anyone
     // re-picking the account on every line.
     xero_service_key: serviceKeyBySlug.get(item.template_slug ?? '') ?? null,
+    xero_item_one_time: itemsBySlug.get(item.template_slug ?? '')?.one_time ?? null,
+    xero_item_monthly: itemsBySlug.get(item.template_slug ?? '')?.monthly ?? null,
     name: item.name,
     description: item.description ?? '',
     content: resolveRevenueOpportunityContent(item),
@@ -64,6 +71,7 @@ export function auditAddOnsToLineItems(
 export function webRoadmapToLineItems(
   sectionDetails: unknown,
   serviceKeyBySlug: Map<string, string | null> = new Map(),
+  itemsBySlug: Map<string, XeroItemCodes> = new Map(),
 ): Omit<CreateProposalLineItemInput, 'proposal_id'>[] {
   const detail = parseWebRoadmapDetail(sectionDetails);
   const rate = detail.hourly_rate ?? 0;
@@ -74,7 +82,10 @@ export function webRoadmapToLineItems(
     const ongoingLabel = (row.ongoing_cost_label ?? '').trim();
     return {
       template_slug: row.template_slug || null,
-      xero_service_key: serviceKeyBySlug.get(row.template_slug ?? '') ?? null,
+      // Roadmap work is website work unless its catalog service says otherwise.
+      xero_service_key: serviceKeyBySlug.get(row.template_slug ?? '') ?? 'website',
+      xero_item_one_time: itemsBySlug.get(row.template_slug ?? '')?.one_time ?? null,
+      xero_item_monthly: itemsBySlug.get(row.template_slug ?? '')?.monthly ?? null,
       name: row.item_name,
       description: row.note ?? '',
       content: '',
@@ -166,9 +177,11 @@ export async function createProposalFromAudit(audit: Audit, client: Client): Pro
   // Best effort: if the catalog cannot be read, lines are simply uncoded and the
   // per-line picker is still there. Never block creating the proposal for it.
   const serviceKeyBySlug = new Map<string, string | null>();
+  const itemsBySlug = new Map<string, XeroItemCodes>();
   try {
     for (const t of await listRevenueOpportunityTemplates()) {
       if (t.xero_service_key) serviceKeyBySlug.set(t.slug, t.xero_service_key);
+      itemsBySlug.set(t.slug, { one_time: t.xero_item_one_time ?? null, monthly: t.xero_item_monthly ?? null });
     }
   } catch { /* leave lines uncoded */ }
 
@@ -181,10 +194,11 @@ export async function createProposalFromAudit(audit: Audit, client: Client): Pro
         ...webRoadmapToLineItems(
           (await listAuditSections(audit.id)).find(s => s.section_key === 'web_revenue_summary')?.section_details,
           serviceKeyBySlug,
+          itemsBySlug,
         ),
-        ...auditAddOnsToLineItems(audit.layout, serviceKeyBySlug),
+        ...auditAddOnsToLineItems(audit.layout, serviceKeyBySlug, itemsBySlug),
       ].map((item, index) => ({ ...item, display_order: (index + 1) * 10 }))
-    : auditAddOnsToLineItems(audit.layout, serviceKeyBySlug);
+    : auditAddOnsToLineItems(audit.layout, serviceKeyBySlug, itemsBySlug);
 
   const lineItems = base.map(item => ({ ...item, proposal_id: proposal.id }));
   if (lineItems.length > 0) await createProposalLineItems(lineItems);

@@ -148,30 +148,7 @@ export default function XeroSettingsPanel() {
       {status?.connected && (
         <div className="mt-4 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="text-[11px] font-medium text-gray-500">MRR account (all recurring lines)</label>
-              <div className="mt-1">
-                <Select
-                  value={status.mrr_account_code ?? ''}
-                  onValueChange={code => void chooseAccount('mrr_account_code', code)}
-                  disabled={busy !== null || accounts.length === 0}
-                >
-                  <SelectTrigger className="h-9 text-sm">
-                    <SelectValue placeholder={accounts.length ? 'Choose an account' : 'Loading accounts…'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {accounts.map(a => (
-                      <SelectItem key={a.code} value={a.code}>
-                        <SelectItemText>{a.code} - {a.name}</SelectItemText>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <p className="mt-1 text-[11px] text-gray-400">
-                Every retainer posts here unless a service below overrides it.
-              </p>
-            </div>
+            {/* No shared MRR account: each family carries its own (Zak, Oct 2026). */}
             <div>
               <label className="text-[11px] font-medium text-gray-500">Fallback one-time account</label>
               <div className="mt-1">

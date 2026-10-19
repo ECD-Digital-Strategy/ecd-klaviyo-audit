@@ -18,6 +18,7 @@ import {
 import { formatCurrency } from '../../lib/revenue-calculator';
 import { listRevenueOpportunityTemplates } from '../../lib/db';
 import { listXeroServiceAccounts, type XeroServiceAccount } from '../../lib/xero';
+import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import type {
   Proposal,
   ProposalLineItem,
@@ -39,6 +40,8 @@ function catalogToTemplateItem(t: RevenueOpportunityTemplate): ProposalTemplateL
     // Carry the catalog's Xero bucket onto the line, so a line added from the
     // catalog is already coded and only freehand lines need a manual pick.
     xero_service_key: t.xero_service_key ?? null,
+    xero_item_one_time: t.xero_item_one_time ?? null,
+    xero_item_monthly: t.xero_item_monthly ?? null,
     display_order: 0,
   };
 }
@@ -51,9 +54,10 @@ function LineItemRevenueCategory({
   onChange,
 }: {
   item: ProposalLineItem;
-  onChange: (key: string) => void;
+  onChange: (patch: Partial<Pick<ProposalLineItem, 'xero_service_key' | 'xero_item_one_time' | 'xero_item_monthly'>>) => void;
 }) {
   const [services, setServices] = useState<XeroServiceAccount[] | null>(null);
+  const { items } = useXeroItems();
 
   useEffect(() => {
     let cancelled = false;
@@ -66,12 +70,13 @@ function LineItemRevenueCategory({
   if (!services || services.length === 0 || !lineItemHasPricing(item)) return null;
   const current = item.xero_service_key ?? '';
   const needsOneTime = Number(item.one_time_price ?? 0) > 0;
+  const needsMonthly = Number(item.monthly_price ?? 0) > 0;
 
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3 print:hidden">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Revenue account</span>
       <div className="w-52">
-        <Select value={current} onValueChange={onChange}>
+        <Select value={current} onValueChange={key => onChange({ xero_service_key: key })}>
           <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choose a service" /></SelectTrigger>
           <SelectContent>
             {services.map(sv => (
@@ -82,7 +87,19 @@ function LineItemRevenueCategory({
           </SelectContent>
         </Select>
       </div>
-      {!current && needsOneTime && (
+      {/* The Item is optional on a freehand line (the family alone codes the
+          account); lines from the catalog arrive with it already set. */}
+      {needsOneTime && (
+        <div className="w-56">
+          <XeroItemPicker size="sm" value={item.xero_item_one_time} items={items} placeholder="Xero Item, one-time" onChange={code => onChange({ xero_item_one_time: code })} />
+        </div>
+      )}
+      {needsMonthly && (
+        <div className="w-56">
+          <XeroItemPicker size="sm" value={item.xero_item_monthly} items={items} placeholder="Xero Item, monthly" onChange={code => onChange({ xero_item_monthly: code })} />
+        </div>
+      )}
+      {!current && (
         <span className="text-[11px] text-amber-600">Needed before a Xero invoice can be created</span>
       )}
     </div>
@@ -170,7 +187,7 @@ function EditableLineItemRow({
         )}
       </div>
 
-      <LineItemRevenueCategory item={item} onChange={key => updateLineItem(item.id, { xero_service_key: key })} />
+      <LineItemRevenueCategory item={item} onChange={patch => updateLineItem(item.id, patch)} />
     </div>
   );
 }

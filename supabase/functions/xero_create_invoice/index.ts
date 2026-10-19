@@ -53,7 +53,12 @@ serve(async (req) => {
     if (!result.ok) {
       return json({ ok: false, error: { code: "invoice_failed", message: result.error } });
     }
-    return json({ ok: true, invoice_id: result.invoiceId, invoice_number: result.invoiceNumber });
+    return json({
+      ok: true,
+      invoice_id: result.invoices[0]?.id ?? null,
+      invoice_number: result.invoices[0]?.number ?? null,
+      invoices: result.invoices,
+    });
   } catch (e) {
     return json(
       { ok: false, error: { code: "request_failed", message: e instanceof Error ? e.message : "Unknown error" } },
