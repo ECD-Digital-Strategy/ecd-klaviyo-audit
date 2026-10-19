@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, FileText, Loader2, RefreshCw } from 'lucide-react';
-import { createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
+import { ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { updateProposalLineItem } from '../../lib/proposals-db';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
@@ -91,7 +91,7 @@ export default function XeroInvoiceCard({
 
       {(invoices.length === 0 || failure) && (
         <div className="mt-2">
-          {invoices.length === 0 && <UncodedLines lineItems={lineItems} onChanged={onChanged} />}
+          {invoices.length === 0 && <UncodedLines proposalId={proposal.id} lineItems={lineItems} onChanged={onChanged} />}
           {failure ? (
             <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
               <p>
@@ -131,8 +131,17 @@ const OLD_KEYS: Record<string, string> = { klaviyo: 'retention', sms: 'retention
  * lines are locked except for this coding. The invoice also tries to code them
  * from their names first, so this is for the ones it could not place.
  */
-function UncodedLines({ lineItems, onChanged }: { lineItems: ProposalLineItem[]; onChanged: () => void }) {
+function UncodedLines({
+  proposalId,
+  lineItems,
+  onChanged,
+}: {
+  proposalId: string;
+  lineItems: ProposalLineItem[];
+  onChanged: () => void;
+}) {
   const toast = useToast();
+  const [picking, setPicking] = useState(false);
   const [families, setFamilies] = useState<XeroServiceAccount[]>([]);
   const { items } = useXeroItems();
   useEffect(() => {
@@ -141,6 +150,25 @@ function UncodedLines({ lineItems, onChanged }: { lineItems: ProposalLineItem[];
   const priced = (li: ProposalLineItem) => Number(li.one_time_price ?? 0) > 0 || Number(li.monthly_price ?? 0) > 0;
   const uncoded = lineItems.filter(li => priced(li) && !OLD_KEYS[li.xero_service_key ?? ''] && !families.some(f => f.service_key === li.xero_service_key));
   if (!families.length || !uncoded.length) return null;
+
+  const autoPick = async () => {
+    setPicking(true);
+    try {
+      const r = await autoCodeXeroLines(proposalId);
+      toast(
+        r.coded === 0
+          ? 'Could not place these with confidence. Pick them below.'
+          : r.remaining > 0
+            ? `Coded ${r.coded}. ${r.remaining} still need a pick.`
+            : `Coded ${r.coded === 1 ? 'the line' : `all ${r.coded} lines`}. Check them, then create the invoice.`,
+      );
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Auto-pick failed');
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const save = async (li: ProposalLineItem, patch: Partial<ProposalLineItem>) => {
     try {
@@ -156,6 +184,15 @@ function UncodedLines({ lineItems, onChanged }: { lineItems: ProposalLineItem[];
       <p className="text-[11px] font-semibold text-amber-800">
         {uncoded.length === 1 ? 'This line needs' : 'These lines need'} a Xero account before the invoice can be made
       </p>
+      <button
+        type="button"
+        onClick={() => void autoPick()}
+        disabled={picking}
+        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+      >
+        {picking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+        Auto-pick
+      </button>
       <ul className="mt-2 space-y-2.5">
         {uncoded.map(li => (
           <li key={li.id}>

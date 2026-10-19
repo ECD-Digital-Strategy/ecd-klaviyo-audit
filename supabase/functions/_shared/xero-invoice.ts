@@ -3,13 +3,12 @@ import { loadConnection, xeroApi } from "./xero.ts";
 import {
   type AccountDefaults,
   describeUnmapped,
-  familyKey,
   type Resolved,
   resolveAccountCode,
   type RevenueAccountRow,
 } from "./xero-accounts.ts";
 import { type FeeKind, newYorkDate, type PlanLine, planInvoices } from "./xero-plan.ts";
-import { type MatchCandidate, matchLine } from "./xero-match.ts";
+import { autoCodeLines } from "./xero-autocode.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -103,32 +102,6 @@ async function findContactId(sb: SupabaseClient, name: string, email: string | u
   return null;
 }
 
-/** What a freehand line name is matched against, per kind: the catalog
- * services (with their family and the Item for that kind) and Xero's sold
- * Items (an ongoing Item sits on 400x, a one-time one on 401x). */
-async function matchCandidates(sb: SupabaseClient): Promise<Record<FeeKind, MatchCandidate[]>> {
-  const out: Record<FeeKind, MatchCandidate[]> = { one_time: [], monthly: [] };
-  const { data: services } = await sb
-    .from("revenue_opportunity_templates")
-    .select("name, xero_service_key, xero_item_one_time, xero_item_monthly")
-    .eq("is_active", true);
-  for (const s of services ?? []) {
-    const family = familyKey((s.xero_service_key as string | null) ?? null);
-    if (!family) continue;
-    if (s.xero_item_one_time) out.one_time.push({ name: s.name as string, itemCode: s.xero_item_one_time as string, family, account: null });
-    if (s.xero_item_monthly) out.monthly.push({ name: s.name as string, itemCode: s.xero_item_monthly as string, family, account: null });
-  }
-  const xeroItems = await xeroApi<{ Items?: Array<Record<string, any>> }>(sb, "/Items").catch(() => null);
-  for (const i of xeroItems?.Items ?? []) {
-    if (!i.IsSold || !i.Code) continue;
-    const account = (i.SalesDetails?.AccountCode as string | undefined) ?? null;
-    const candidate = { name: String(i.Name ?? i.Code), itemCode: String(i.Code), family: null, account };
-    if (account && /^400/.test(account)) out.monthly.push(candidate);
-    else if (account && /^401/.test(account)) out.one_time.push(candidate);
-  }
-  return out;
-}
-
 async function recordError(sb: SupabaseClient, proposalId: string, error: string) {
   await sb.from("proposals").update({ xero_invoice_error: error.slice(0, 400) }).eq("id", proposalId);
 }
@@ -202,36 +175,17 @@ export async function createDraftInvoiceForProposal(
     .select("service_key, name, one_time_account_code, monthly_account_code");
   const mapping = (mappingRows ?? []) as RevenueAccountRow[];
 
-  // Freehand lines (most proposals) carry no family or Item: code them from
-  // their name when the catalog or a Xero Item clearly matches, save it on the
-  // line so it shows and can be changed, and say so on the draft.
-  const autoCoded: string[] = [];
-  const needsMatch = items.some((i) =>
-    (!i.xero_service_key && !(i.template_slug && catalog.get(i.template_slug)?.family)) ||
-    (num(i.one_time_price) ?? 0) > 0 && !i.xero_item_one_time ||
-    (num(i.monthly_price) ?? 0) > 0 && !i.xero_item_monthly
-  );
-  if (needsMatch) {
-    const candidates = await matchCandidates(sb);
-    for (const item of items) {
-      const kinds = (["one_time", "monthly"] as const).filter((k) => (num(k === "one_time" ? item.one_time_price : item.monthly_price) ?? 0) > 0);
-      const patch: Record<string, string> = {};
-      for (const kind of kinds) {
-        const hasItem = kind === "one_time" ? item.xero_item_one_time : item.xero_item_monthly;
-        if (hasItem && item.xero_service_key) continue;
-        const m = matchLine(item.name ?? "", candidates[kind]);
-        if (!m) continue;
-        if (!item.xero_service_key && !patch.xero_service_key) patch.xero_service_key = m.family;
-        if (!hasItem && m.itemCode) patch[kind === "one_time" ? "xero_item_one_time" : "xero_item_monthly"] = m.itemCode;
-      }
-      if (!Object.keys(patch).length) continue;
-      Object.assign(item, patch);
-      autoCoded.push(
-        `${item.name}: ${[patch.xero_item_one_time, patch.xero_item_monthly].filter(Boolean).map((c) => `Item ${c}`).join(", ") || "no Item"}${patch.xero_service_key ? `, ${patch.xero_service_key}` : ""}`,
-      );
-      await sb.from("proposal_line_items").update(patch).eq("id", item.id);
-    }
+  // Lines from the catalog take its coding; freehand ones (most proposals) are
+  // coded from their name, then by Claude (xero-autocode.ts), saved on the
+  // line, and listed on the draft so Maria can check them.
+  for (const item of items) {
+    const fromCatalog = item.template_slug ? catalog.get(item.template_slug) : undefined;
+    if (!fromCatalog) continue;
+    item.xero_service_key = item.xero_service_key ?? fromCatalog.family;
+    item.xero_item_one_time = item.xero_item_one_time ?? fromCatalog.one;
+    item.xero_item_monthly = item.xero_item_monthly ?? fromCatalog.monthly;
   }
+  const { notes: autoCoded } = await autoCodeLines(sb, items, { title: proposal.title, ai: true });
 
   // Code every line BEFORE building anything, so one unmapped line stops all
   // of it instead of posting a partial invoice. Complimentary (zero after the
@@ -324,7 +278,7 @@ export async function createDraftInvoiceForProposal(
       const notes = [
         `Created automatically from signed proposal ${reference}.`,
         totalDiscount > 0 ? `The ${proposal.discount_label || "discount"} was applied proportionally across the lines.` : "",
-        autoCoded.length ? `Coded from the line name, please check: ${autoCoded.join("; ")}.` : "",
+        autoCoded.length ? `Coded automatically, please check: ${autoCoded.join("; ")}.` : "",
         inv.kind === "monthly"
           ? "First month of the retainer. Set up the repeating invoice for the months after this one."
           : "",

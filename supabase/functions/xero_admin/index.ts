@@ -11,6 +11,7 @@ import {
   xeroCredentials,
   xeroRedirectUri,
 } from "../_shared/xero.ts";
+import { autoCodeLines, type CodableLine } from "../_shared/xero-autocode.ts";
 
 // Admin-facing Xero actions for the Settings panel: check status, start the
 // connect flow, list revenue accounts, save which account to post to, and
@@ -48,6 +49,7 @@ serve(async (req) => {
       display_order?: number;
     }>;
     delete_service_key?: string;
+    proposal_id?: string;
   };
   const action = body.action ?? "status";
   const sb = serviceClient();
@@ -100,6 +102,17 @@ serve(async (req) => {
         return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
       }
     };
+    // A dry run of the auto-coding on one proposal: what it would pick, unsaved.
+    if (body.proposal_id) {
+      const pid = String(body.proposal_id);
+      const { data: p } = await sb.from("proposals").select("title").eq("id", pid).maybeSingle();
+      const { data: lines } = await sb
+        .from("proposal_line_items")
+        .select("id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly")
+        .eq("proposal_id", pid);
+      const result = await autoCodeLines(sb, (lines ?? []) as CodableLine[], { title: (p?.title as string) ?? "", ai: true, dryRun: true });
+      return json({ ok: true, dry_run: result });
+    }
     const [org, invoices, items] = await Promise.all([
       attempt<{ Organisations?: Array<{ Name?: string }> }>("/Organisation"),
       attempt<{ Invoices?: unknown[] }>("/Invoices?page=1&pageSize=1"),
@@ -176,6 +189,20 @@ serve(async (req) => {
         .map((a) => ({ code: String(a.Code ?? ""), name: String(a.Name ?? ""), taxType: String(a.TaxType ?? "") }))
         .filter((a) => a.code);
       return json({ ok: true, accounts });
+    }
+
+    if (action === "auto_code") {
+      // The Auto-pick button on a proposal's Xero card: code its uncoded lines
+      // by name, then by Claude, and save them, before any invoice is made.
+      const proposalId = String(body.proposal_id ?? "").trim();
+      if (!proposalId) return json({ ok: false, error: { code: "bad_request", message: "Missing proposal_id" } });
+      const { data: p } = await sb.from("proposals").select("title").eq("id", proposalId).maybeSingle();
+      const { data: lines } = await sb
+        .from("proposal_line_items")
+        .select("id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly")
+        .eq("proposal_id", proposalId);
+      const result = await autoCodeLines(sb, (lines ?? []) as CodableLine[], { title: (p?.title as string) ?? "", ai: true });
+      return json({ ok: true, ...result });
     }
 
     if (action === "items") {

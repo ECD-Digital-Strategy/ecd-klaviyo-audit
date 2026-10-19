@@ -89,6 +89,12 @@ export function listXeroItems(): Promise<XeroItem[]> {
   return itemsCache;
 }
 
+/** Code a proposal's uncoded lines: by name, then by Claude. Saves them on the
+ * lines; returns how many were coded and how many still need a person. */
+export function autoCodeXeroLines(proposalId: string): Promise<{ coded: number; remaining: number; notes: string[] }> {
+  return call({ action: 'auto_code', proposal_id: proposalId });
+}
+
 export function disconnectXero(): Promise<unknown> {
   return call({ action: 'disconnect' });
 }
