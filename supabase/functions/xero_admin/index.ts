@@ -50,6 +50,8 @@ serve(async (req) => {
     }>;
     delete_service_key?: string;
     proposal_id?: string;
+    /** diagnose with a proposal_id: save the picks instead of a dry run. */
+    apply?: boolean;
   };
   const action = body.action ?? "status";
   const sb = serviceClient();
@@ -110,8 +112,8 @@ serve(async (req) => {
         .from("proposal_line_items")
         .select("id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly")
         .eq("proposal_id", pid);
-      const result = await autoCodeLines(sb, (lines ?? []) as CodableLine[], { title: (p?.title as string) ?? "", ai: true, dryRun: true });
-      return json({ ok: true, dry_run: result });
+      const result = await autoCodeLines(sb, (lines ?? []) as CodableLine[], { title: (p?.title as string) ?? "", ai: true, dryRun: body.apply !== true });
+      return json({ ok: true, dry_run: body.apply !== true, result });
     }
     const [org, invoices, items] = await Promise.all([
       attempt<{ Organisations?: Array<{ Name?: string }> }>("/Organisation"),

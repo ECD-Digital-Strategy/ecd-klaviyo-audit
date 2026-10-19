@@ -182,7 +182,11 @@ export async function autoCodeLines(
     if (!patch) continue;
     if (!opts.dryRun) {
       const { error } = await sb.from("proposal_line_items").update(patch).eq("id", l.id);
-      if (error) continue;
+      if (error) {
+        console.error("xero autocode: could not save", l.id, error.message);
+        notes.push(`${l.name}: could not save the pick (${error.message})`);
+        continue;
+      }
     }
     Object.assign(l, patch);
     const codes = [patch.xero_item_one_time, patch.xero_item_monthly].filter(Boolean).map((c) => `Item ${c}`);
