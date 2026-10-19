@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
+import SearchableSelect from '../ui/SearchableSelect';
 import { listXeroItems, type XeroItem } from '../../lib/xero';
 import { cn } from '../../lib/utils';
-
-const NONE = '__none__';
 
 /** Xero's sold Items, loaded once and shared by every picker on the page. */
 export function useXeroItems(): { items: XeroItem[] | null; error: string } {
@@ -43,28 +41,23 @@ export default function XeroItemPicker({
   if (items === null) {
     return <div className={cn('animate-pulse rounded-lg bg-gray-100', size === 'sm' ? 'h-8' : 'h-10')} />;
   }
+  const options = items.map(item => ({
+    value: item.code,
+    label: `${item.code} · ${item.name}`,
+    keywords: item.account ?? '',
+  }));
   // A code saved earlier that Xero no longer lists still shows, so it can be seen and replaced.
-  const known = !value || items.some(i => i.code === value);
+  if (value && !items.some(i => i.code === value)) options.unshift({ value, label: `${value} (not in Xero)`, keywords: '' });
   return (
-    <Select value={value || NONE} onValueChange={v => onChange(v === NONE ? null : v)}>
-      <SelectTrigger className={cn(size === 'sm' ? 'h-8 text-xs' : 'h-10 text-sm', invalid && 'border-amber-400 ring-1 ring-amber-200')}>
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={NONE}>
-          <SelectItemText>{placeholder}</SelectItemText>
-        </SelectItem>
-        {!known && value && (
-          <SelectItem value={value}>
-            <SelectItemText>{value} (not in Xero)</SelectItemText>
-          </SelectItem>
-        )}
-        {items.map(item => (
-          <SelectItem key={item.code} value={item.code}>
-            <SelectItemText>{item.code} · {item.name}</SelectItemText>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <SearchableSelect
+      value={value}
+      options={options}
+      onChange={onChange}
+      placeholder={placeholder}
+      searchPlaceholder="Search Items by name or code"
+      noneLabel={placeholder}
+      size={size}
+      invalid={invalid}
+    />
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { updateProposalLineItem } from '../../lib/proposals-db';
-import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
+import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
 import { useToast } from '../ui/Toast';
@@ -218,16 +218,18 @@ function UncodedLines({
           <li key={li.id}>
             <p className="text-xs font-medium text-gray-900">{li.name || 'Untitled line'}</p>
             <div className="mt-1 space-y-1.5">
-              <Select value={li.xero_service_key ?? ''} onValueChange={key => void save(li, { xero_service_key: key })}>
-                <SelectTrigger className="h-8 text-xs bg-white"><SelectValue placeholder="Revenue account" /></SelectTrigger>
-                <SelectContent>
-                  {families.map(f => (
-                    <SelectItem key={f.service_key} value={f.service_key}>
-                      <SelectItemText>{f.name}</SelectItemText>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                size="sm"
+                value={li.xero_service_key}
+                placeholder="Revenue account"
+                searchPlaceholder="Search accounts"
+                options={families.map(f => ({
+                  value: f.service_key,
+                  label: f.name,
+                  keywords: [f.one_time_account_code, f.monthly_account_code].filter(Boolean).join(' '),
+                }))}
+                onChange={key => { if (key) void save(li, { xero_service_key: key }); }}
+              />
               {Number(li.one_time_price ?? 0) > 0 && (
                 <XeroItemPicker size="sm" value={li.xero_item_one_time} items={items} placeholder="Xero Item, one-time" onChange={code => void save(li, { xero_item_one_time: code })} />
               )}
