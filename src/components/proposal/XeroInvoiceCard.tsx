@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { updateProposalLineItem } from '../../lib/proposals-db';
@@ -149,12 +149,19 @@ function UncodedLines({
   }, []);
   const priced = (li: ProposalLineItem) => Number(li.one_time_price ?? 0) > 0 || Number(li.monthly_price ?? 0) > 0;
   const uncoded = lineItems.filter(li => priced(li) && !OLD_KEYS[li.xero_service_key ?? ''] && !families.some(f => f.service_key === li.xero_service_key));
-  if (!families.length || !uncoded.length) return null;
+  // What the automatic run found, shown on the card instead of a toast.
+  const [autoNote, setAutoNote] = useState('');
 
-  const autoPick = async () => {
+  const autoPick = async (silent = false) => {
     setPicking(true);
     try {
       const r = await autoCodeXeroLines(proposalId);
+      if (silent) {
+        if (r.coded === 0) setAutoNote('Auto-pick could not place this with confidence. Pick it below.');
+        else toast(`Picked the Xero account for ${r.coded === 1 ? 'the line' : `${r.coded} lines`}. Check it, then create the invoice.`);
+        if (r.coded > 0) onChanged();
+        return;
+      }
       toast(
         r.coded === 0
           ? 'Could not place these with confidence. Pick them below.'
@@ -169,6 +176,18 @@ function UncodedLines({
       setPicking(false);
     }
   };
+
+  // Runs once by itself when the card opens with uncoded lines (Emil, Oct 19):
+  // a person only steps in for what it cannot place.
+  const tried = useRef(false);
+  useEffect(() => {
+    if (tried.current || !families.length || !uncoded.length) return;
+    tried.current = true;
+    void autoPick(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [families.length, uncoded.length]);
+
+  if (!families.length || !uncoded.length) return null;
 
   const save = async (li: ProposalLineItem, patch: Partial<ProposalLineItem>) => {
     try {
@@ -191,8 +210,9 @@ function UncodedLines({
         className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
       >
         {picking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-        Auto-pick
+        {picking ? 'Picking...' : 'Auto-pick'}
       </button>
+      {autoNote && <p className="mt-1.5 text-[11px] text-amber-700">{autoNote}</p>}
       <ul className="mt-2 space-y-2.5">
         {uncoded.map(li => (
           <li key={li.id}>

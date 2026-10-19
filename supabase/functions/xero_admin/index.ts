@@ -202,6 +202,11 @@ serve(async (req) => {
         .select("id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly")
         .eq("proposal_id", proposalId);
       const result = await autoCodeLines(sb, (lines ?? []) as CodableLine[], { title: (p?.title as string) ?? "", ai: true });
+      // The "no service selected" error from before is out of date once lines are coded.
+      if (result.coded > 0) {
+        await sb.from("proposals").update({ xero_invoice_error: null }).eq("id", proposalId)
+          .or("xero_invoice_error.ilike.No service selected%,xero_invoice_error.ilike.No Xero account%");
+      }
       return json({ ok: true, ...result });
     }
 
