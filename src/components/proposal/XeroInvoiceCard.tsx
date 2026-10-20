@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { Check, Copy, ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { updateProposalLineItem } from '../../lib/proposals-db';
 import SearchableSelect from '../ui/SearchableSelect';
@@ -64,7 +64,7 @@ export default function XeroInvoiceCard({
             <li key={inv.id}>
               <p className="text-sm font-medium text-gray-900">
                 {invoices.length > 1 || inv.kind === 'monthly' ? `${KIND_LABEL[inv.kind]}: ` : ''}
-                draft {inv.number ? `#${inv.number}` : 'created'}
+                {inv.status === 'AUTHORISED' ? 'approved' : 'draft'} {inv.number ? `#${inv.number}` : 'created'}
               </p>
               {inv.date && (
                 <p className="text-[11px] text-gray-400">
@@ -80,10 +80,13 @@ export default function XeroInvoiceCard({
               >
                 Open in Xero <ExternalLink className="h-3.5 w-3.5" />
               </a>
+              {inv.online_url && <PaymentLink url={inv.online_url} />}
             </li>
           ))}
           <li className="text-[11px] text-gray-400">
-            Drafts, so nothing has been emailed to the client. Approve and send them from Xero.
+            Nothing has been emailed to the client.
+            {invoices.some(i => i.online_url) ? ' Share the payment link with them; whoever sent the proposal was emailed it too.' : ''}
+            {invoices.some(i => i.status !== 'AUTHORISED') ? ' Drafts are approved and sent from Xero.' : ''}
             {invoices.some(i => i.kind === 'monthly') ? ' The retainer\'s repeating invoice is set up in Xero from the first month.' : ''}
           </li>
         </ul>
@@ -240,6 +243,44 @@ function UncodedLines({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** The link the client pays from: copy it to share, or open it. */
+function PaymentLink({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt('Copy the payment link', url);
+    }
+  };
+  return (
+    <div className="mt-2 rounded-lg border border-brand-primary/20 bg-brand-primary/5 p-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-primary">Payment link</p>
+      <p className="mt-0.5 truncate text-[11px] text-gray-600">{url.replace(/^https?:\/\//, '')}</p>
+      <div className="mt-1.5 flex gap-1.5">
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50"
+        >
+          {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50"
+        >
+          Open <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
     </div>
   );
 }

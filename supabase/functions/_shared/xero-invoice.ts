@@ -9,6 +9,7 @@ import {
 } from "./xero-accounts.ts";
 import { type FeeKind, newYorkDate, type PlanLine, planInvoices } from "./xero-plan.ts";
 import { autoCodeLines } from "./xero-autocode.ts";
+import { notificationRecipients, proposalEmailHtml, sendEmail } from "./mailer.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -43,7 +44,18 @@ type LineItem = {
   display_order: number | null;
 };
 
-export type CreatedInvoice = { kind: FeeKind; id: string; number: string; date: string; due_date: string; total: number };
+export type CreatedInvoice = {
+  kind: FeeKind;
+  id: string;
+  number: string;
+  date: string;
+  due_date: string;
+  total: number;
+  /** AUTHORISED (approved, never sent) or DRAFT. */
+  status?: string;
+  /** The client-facing Xero payment link (in.xero.com/...), for approved ones. */
+  online_url?: string | null;
+};
 
 type ProposalRow = {
   id: string;
@@ -100,6 +112,29 @@ async function findContactId(sb: SupabaseClient, name: string, email: string | u
     if (hit?.ContactID) return hit.ContactID;
   }
   return null;
+}
+
+/** The payment link, to the person who sent the proposal (Xiomara, usually),
+ * so she can share it with the client. Never to the client. */
+async function emailPaymentLinks(sb: SupabaseClient, proposalId: string, clientName: string, invoices: CreatedInvoice[]) {
+  const to = await notificationRecipients(sb, [], "proposals", proposalId);
+  if (!to.length) return;
+  const money = (n: number) => `${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  for (const inv of invoices) {
+    await sendEmail({
+      to,
+      subject: `Payment link: ${clientName} invoice ${inv.number}`,
+      html: proposalEmailHtml({
+        heading: `${clientName}: invoice ${inv.number} is ready to share`,
+        bodyLines: [
+          `The implementation invoice for ${clientName} (${money(inv.total)}, due ${inv.due_date}) is approved in Xero. It has not been sent to the client.`,
+          "Share the link below with them. They can view and pay it there.",
+        ],
+        ctaLabel: "Open the invoice",
+        ctaUrl: inv.online_url!,
+      }),
+    });
+  }
 }
 
 async function recordError(sb: SupabaseClient, proposalId: string, error: string) {
@@ -247,7 +282,11 @@ export async function createDraftInvoiceForProposal(
         Invoices: [
           {
             Type: "ACCREC",
-            Status: "DRAFT",
+            // The implementation is approved but never sent (Zak, Oct 20): the API
+            // emails nothing unless asked, and its payment link goes on the
+            // proposal and to whoever sold it. The retainer's first month stays a
+            // draft dated the 1st, for Maria to review and set up as repeating.
+            Status: inv.kind === "one_time" ? "AUTHORISED" : "DRAFT",
             Contact: contact,
             Date: inv.date,
             DueDate: inv.dueDate,
@@ -288,6 +327,16 @@ export async function createDraftInvoiceForProposal(
         body: { HistoryRecords: [{ Details: notes.slice(0, 1000) }] },
       }).catch(() => {});
 
+      // The link the client pays from, for an approved invoice.
+      let onlineUrl: string | null = null;
+      if (inv.kind === "one_time") {
+        const online = await xeroApi<{ OnlineInvoices?: Array<{ OnlineInvoiceUrl?: string }> }>(
+          sb,
+          `/Invoices/${made.InvoiceID}/OnlineInvoice`,
+        ).catch(() => null);
+        onlineUrl = online?.OnlineInvoices?.[0]?.OnlineInvoiceUrl ?? null;
+      }
+
       created.push({
         kind: inv.kind,
         id: made.InvoiceID,
@@ -295,6 +344,8 @@ export async function createDraftInvoiceForProposal(
         date: inv.date,
         due_date: inv.dueDate,
         total: Math.round(inv.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100,
+        status: inv.kind === "one_time" ? "AUTHORISED" : "DRAFT",
+        online_url: onlineUrl,
       });
       // Saved after each one, so a failure on the second keeps the first.
       await sb
@@ -308,6 +359,9 @@ export async function createDraftInvoiceForProposal(
         })
         .eq("id", proposalId);
     }
+    // Whoever sent the proposal gets the payment link to share with the client.
+    const fresh = created.filter((c) => c.online_url && !already.some((a) => a.id === c.id));
+    if (fresh.length) await emailPaymentLinks(sb, proposalId, contactName, fresh).catch((e) => console.warn("xero: payment link email failed", e));
     return { ok: true, invoices: created };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

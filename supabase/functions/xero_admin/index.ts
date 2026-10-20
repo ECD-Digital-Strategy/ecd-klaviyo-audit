@@ -50,6 +50,7 @@ serve(async (req) => {
     }>;
     delete_service_key?: string;
     proposal_id?: string;
+    invoice_id?: string;
     /** diagnose with a proposal_id: save the picks instead of a dry run. */
     apply?: boolean;
   };
@@ -104,6 +105,25 @@ serve(async (req) => {
         return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
       }
     };
+    // One invoice as Xero has it: status, whether it was sent, and its history.
+    if (body.invoice_id) {
+      const id = encodeURIComponent(String(body.invoice_id));
+      // deno-lint-ignore no-explicit-any
+      const inv = await xeroApi<{ Invoices?: Array<Record<string, any>> }>(sb, `/Invoices/${id}`).catch((e) => ({ error: String(e) }));
+      // deno-lint-ignore no-explicit-any
+      const hist = await xeroApi<{ HistoryRecords?: Array<Record<string, any>> }>(sb, `/Invoices/${id}/History`).catch((e) => ({ error: String(e) }));
+      // deno-lint-ignore no-explicit-any
+      const i = (inv as any).Invoices?.[0];
+      const online = i && i.Status !== "DRAFT" && i.Status !== "DELETED"
+        ? await xeroApi<{ OnlineInvoices?: Array<{ OnlineInvoiceUrl?: string }> }>(sb, `/Invoices/${id}/OnlineInvoice`).catch(() => null)
+        : null;
+      return json({
+        ok: true,
+        invoice: i ? { number: i.InvoiceNumber, status: i.Status, sent: i.SentToContact, date: i.DateString, due: i.DueDateString, total: i.Total, online_url: online?.OnlineInvoices?.[0]?.OnlineInvoiceUrl ?? null } : inv,
+        // deno-lint-ignore no-explicit-any
+        history: ((hist as any).HistoryRecords ?? []).map((h: any) => ({ when: h.DateUTCString, by: h.User, what: h.Changes, details: h.Details })),
+      });
+    }
     // A dry run of the auto-coding on one proposal: what it would pick, unsaved.
     if (body.proposal_id) {
       const pid = String(body.proposal_id);

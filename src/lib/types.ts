@@ -424,7 +424,18 @@ export interface Proposal {
   xero_invoice_error?: string | null;
   /** Every draft made for the proposal: the implementation and the first month
    * of the retainer go on separate invoices. */
-  xero_invoices?: Array<{ kind: 'one_time' | 'monthly'; id: string; number: string; date: string; due_date: string; total: number }>;
+  xero_invoices?: Array<{
+    kind: 'one_time' | 'monthly';
+    id: string;
+    number: string;
+    date: string;
+    due_date: string;
+    total: number;
+    /** AUTHORISED: approved, never sent. DRAFT otherwise. */
+    status?: string;
+    /** The client-facing payment link (in.xero.com/...), for approved ones. */
+    online_url?: string | null;
+  }>;
   created_by: string | null;
   created_at: string;
   updated_at: string;
