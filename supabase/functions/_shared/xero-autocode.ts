@@ -81,13 +81,14 @@ const CODE_TOOL: LlmTool = {
         type: "array",
         items: {
           type: "object",
-          required: ["id", "family", "confident"],
+          required: ["id", "family", "family_confident", "item_confident"],
           properties: {
             id: { type: "string" },
             family: { type: "string", enum: Object.keys(FAMILIES) },
             item_one_time: { type: ["string", "null"], description: "Xero Item code for the one-time price, from the list, or null." },
             item_monthly: { type: ["string", "null"], description: "Xero Item code for the monthly price, from the list, or null." },
-            confident: { type: "boolean", description: "False when the line could fit more than one family or Item." },
+            family_confident: { type: "boolean", description: "False when the line could belong to another family." },
+            item_confident: { type: "boolean", description: "False when another Item could fit as well, or the line bundles several services." },
           },
         },
       },
@@ -108,7 +109,7 @@ async function askClaude(
       "You code an agency's proposal lines for its Xero accounting. Pick each line's revenue family and the Xero Item that best describes it.\n" +
       `Families:\n${Object.entries(FAMILIES).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n` +
       "A one-time price takes an Item for one-time work, a monthly price an Item for ongoing work. Use only codes from the list. " +
-      "If no Item fits, use null for it. Set confident to false whenever a line could reasonably fit another family or Item.",
+      "If no Item fits, use null for it. Judge the family and the Item separately: a bundle of email, SMS and popup work is clearly retention even when no single Item fits it.",
     messages: [{
       role: "user",
       text: `Proposal: ${title}\n\nXero Items (code | name | its account):\n${items.map((i) => `${i.code} | ${i.name} | ${i.account ?? "-"}`).join("\n")}\n\n` +
@@ -122,8 +123,10 @@ async function askClaude(
   const rows = (turn.input as { lines?: Array<Record<string, unknown>> })?.lines ?? [];
   for (const r of rows) {
     const family = String(r.family ?? "");
-    if (!r.confident || !FAMILIES[family]) continue;
-    const pick = (v: unknown) => (typeof v === "string" && known.has(v) ? v : null);
+    // The family alone decides the account, so a sure family is used even
+    // when the Item is not (HigherDOSE BFCM 2026, a bundle with no one Item).
+    if (!r.family_confident || !FAMILIES[family]) continue;
+    const pick = (v: unknown) => (r.item_confident && typeof v === "string" && known.has(v) ? v : null);
     out.set(String(r.id), { family, one: pick(r.item_one_time), monthly: pick(r.item_monthly) });
   }
   return out;
