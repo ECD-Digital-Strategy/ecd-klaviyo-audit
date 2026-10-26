@@ -126,7 +126,7 @@ const BASE_TERMS: ProposalBlock = {
   content:
     "Once this proposal is signed, we'll schedule a kickoff call within 3-5 business days to align on access, "
     + 'timelines, and priorities. One-time fees are invoiced upon signature; monthly retainers begin at kickoff and '
-    + 'renew automatically each month. Full terms are covered in the attached agreements.',
+    + 'renew automatically each month. Full terms are covered in the agreements that govern this proposal.',
 };
 
 /**
@@ -167,8 +167,8 @@ export async function createProposalFromAudit(audit: Audit, client: Client): Pro
       { ...BASE_TERMS },
     ],
     // The MSA and operating agreement are not service-specific, and the Terms
-    // block above refers to "the attached agreements", so dropping the template
-    // must not drop these with it.
+    // block above refers to them, so dropping the template must not drop these
+    // with it. A returning client gets the Statement of Work only (createProposal).
     include_contracts: [...DEFAULT_INCLUDED_CONTRACTS],
     recipient_name: client.name ?? '',
     recipient_email: '',

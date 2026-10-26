@@ -348,7 +348,7 @@ export async function applyDraftToProposal(
   // A draft that attaches the template MSA for a client who already signed one
   // gets the on-file reference instead, same as a newly created proposal.
   const contracts = draft.include_contracts
-    ? await resolveContractsForClient(proposal.client_id, draft.include_contracts, proposal.id)
+    ? await resolveContractsForClient(proposal.client_id, draft.include_contracts, proposal.id, { dropSigned: true })
     : null;
   const nextProposal = await updateProposal(proposal.id, {
     title: sanitizeCopy(draft.title) || proposal.title,

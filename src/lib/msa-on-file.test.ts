@@ -2,7 +2,7 @@
  * @vitest-environment node
  */
 import { describe, expect, it } from 'vitest';
-import { MSA_ON_FILE_SLUG, msaOnFileText, swapMsaForOnFile, type ExecutedMsa } from './msa-on-file';
+import { MSA_ON_FILE_SLUG, msaOnFileText, swapMsaForOnFile, withoutSignedAgreements, type ExecutedMsa } from './msa-on-file';
 
 const signed: ExecutedMsa = {
   proposalId: 'p1',
@@ -40,6 +40,32 @@ describe('MSA on file', () => {
     expect(text).toContain('between ECD Digital Strategy and Lane 201');
     expect(text).toContain('“Lane 201 SMS Migration”');
     expect(text).toContain('nothing in this proposal amends it');
+    expect(text).not.toContain('—');
+  });
+});
+
+describe('Statement of Work only for a returning client', () => {
+  const all = ['msa', 'operating_agreement', 'termination_agreement'];
+
+  it('leaves out the Operating and Termination agreements already signed', () => {
+    const signed = new Set(all);
+    expect(withoutSignedAgreements(all, signed)).toEqual(['msa']);
+    // The MSA then becomes the on-file reference, so the proposal is the SOW under it.
+    expect(swapMsaForOnFile(withoutSignedAgreements(all, signed), { proposalId: 'p1', proposalTitle: 'First', signedAt: '2026-09-22T18:00:00Z' }, 'Fully Loaded', ['operating_agreement', 'termination_agreement']).include_contracts).toEqual([MSA_ON_FILE_SLUG]);
+  });
+
+  it('keeps an agreement the client has not signed yet', () => {
+    expect(withoutSignedAgreements(all, new Set(['msa', 'operating_agreement']))).toEqual(['msa', 'termination_agreement']);
+  });
+
+  it('gives a new client everything', () => {
+    expect(withoutSignedAgreements(all, new Set())).toEqual(all);
+  });
+
+  it('says the other signed agreements still apply', () => {
+    const text = msaOnFileText({ proposalId: 'p1', proposalTitle: 'First', signedAt: '2026-09-22T18:00:00Z' }, 'Fully Loaded', ['operating_agreement', 'termination_agreement']);
+    expect(text).toContain('the Client Operating Rules (Operating Agreement) and the Termination & Transition Agreement');
+    expect(text).toContain('also apply to this Statement of Work');
     expect(text).not.toContain('—');
   });
 });

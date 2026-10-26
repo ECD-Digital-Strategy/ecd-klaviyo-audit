@@ -3,7 +3,14 @@ import { attachActorNames } from './actor-names';
 import { publicProposalOrigin } from './public-origin';
 import { resolveSignatureImage } from './signature-image';
 import { listStaffSigners, resolveSigner } from './staff-signers';
-import { MSA_ON_FILE_SLUG, MSA_SLUG, swapMsaForOnFile, type ExecutedMsa } from './msa-on-file';
+import {
+  MSA_ON_FILE_SLUG,
+  MSA_SLUG,
+  SIGN_ONCE_SLUGS,
+  swapMsaForOnFile,
+  withoutSignedAgreements,
+  type ExecutedMsa,
+} from './msa-on-file';
 import type {
   ContractDocument,
   Proposal,
@@ -169,18 +176,52 @@ export async function findExecutedMsa(clientId: string, excludeProposalId?: stri
   return row ? { proposalId: row.id, proposalTitle: row.title ?? '', signedAt: row.client_signed_at } : null;
 }
 
-/** Apply the MSA-on-file rule to a contract selection for this client. */
+/** Every agreement this client has signed on an earlier proposal (the
+ * on-file reference counts as the MSA). */
+export async function findSignedAgreements(clientId: string, excludeProposalId?: string): Promise<Set<string>> {
+  let query = supabase
+    .from('proposals')
+    .select('include_contracts')
+    .eq('client_id', clientId)
+    .not('client_signed_at', 'is', null);
+  if (excludeProposalId) query = query.neq('id', excludeProposalId);
+  const { data, error } = await query;
+  if (error) throw error;
+  const signed = new Set<string>();
+  for (const row of data ?? []) {
+    for (const slug of Array.isArray(row.include_contracts) ? (row.include_contracts as string[]) : []) {
+      signed.add(slug === MSA_ON_FILE_SLUG ? MSA_SLUG : slug);
+    }
+  }
+  return signed;
+}
+
+/**
+ * Apply the sign-once rules to a contract selection for this client: an MSA
+ * they already signed becomes the short on-file reference, and with
+ * `dropSigned` (a new proposal or a drafted one) the Operating Agreement and
+ * the Termination & Transition Agreement they already signed are left out, so
+ * the proposal is the Statement of Work only (Zak, 2026-10-26). A contract a
+ * person ticks back on in the editor stays: that call leaves dropSigned off.
+ */
 export async function resolveContractsForClient(
   clientId: string,
   contracts: string[],
   excludeProposalId?: string,
+  opts: { dropSigned?: boolean } = {},
 ): Promise<{ include_contracts: string[]; overrides: Record<string, string> }> {
-  if (!contracts.includes(MSA_SLUG) && !contracts.includes(MSA_ON_FILE_SLUG)) return { include_contracts: contracts, overrides: {} };
-  const [msa, { data: client }] = await Promise.all([
+  const touchesMsa = contracts.includes(MSA_SLUG) || contracts.includes(MSA_ON_FILE_SLUG);
+  const touchesOthers = contracts.some(s => (SIGN_ONCE_SLUGS as readonly string[]).includes(s));
+  if (!touchesMsa && !(opts.dropSigned && touchesOthers)) return { include_contracts: contracts, overrides: {} };
+  const [msa, signed, { data: client }] = await Promise.all([
     findExecutedMsa(clientId, excludeProposalId),
+    findSignedAgreements(clientId, excludeProposalId),
     supabase.from('clients').select('company_name, name').eq('id', clientId).maybeSingle(),
   ]);
-  return swapMsaForOnFile(contracts, msa, client?.company_name || client?.name || '');
+  const kept = opts.dropSigned ? withoutSignedAgreements(contracts, signed) : contracts;
+  // The reference names the other agreements that still apply without being attached.
+  const alsoSigned = SIGN_ONCE_SLUGS.filter(s => signed.has(s) && !kept.includes(s));
+  return swapMsaForOnFile(kept, msa, client?.company_name || client?.name || '', alsoSigned);
 }
 
 export type CreateProposalInput = {
@@ -210,6 +251,8 @@ export async function createProposal(
   const contracts = await resolveContractsForClient(
     input.client_id,
     input.include_contracts?.length ? input.include_contracts : DEFAULT_INCLUDED_CONTRACTS,
+    undefined,
+    { dropSigned: true },
   );
   const { data, error } = await supabase
     .from('proposals')
