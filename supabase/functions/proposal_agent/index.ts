@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient, requireStaffUserId } from "../_shared/auth.ts";
+import { hubStaffUserId } from "../_shared/hub-caller.ts";
 import { createLlmClient, type LlmMessage } from "../_shared/llm-adapter.ts";
 import { attachmentTurn } from "../_shared/chat-attachments.ts";
 import { fetchGoogleDoc } from "../_shared/fetch-google-doc.ts";
@@ -98,7 +99,10 @@ serve(async (req) => {
 
   let uid: string;
   try {
-    uid = await requireStaffUserId(req, "proposals");
+    // Athena's ECD Hub connector calls for a signed-in staff member by email
+    // (_shared/hub-caller.ts); everyone else signs in here as before. Past this
+    // line both run the same assistant, rules and all.
+    uid = (await hubStaffUserId(req, "proposals")) ?? (await requireStaffUserId(req, "proposals"));
   } catch (e) {
     return json(
       { ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } },

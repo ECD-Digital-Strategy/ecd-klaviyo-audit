@@ -113,11 +113,23 @@ export async function requireStaffUserId(req: Request, area?: AppArea): Promise<
     .eq("id", uid)
     .maybeSingle();
   if (pErr) throw pErr;
-  const role = (profile as { role?: string } | null)?.role;
+  assertStaffProfile(profile, area);
+  return uid;
+}
+
+/**
+ * The staff rule on its own, for a caller identified some other way than a
+ * session (hub-caller.ts). One rule, so the two ways in can never disagree on
+ * who counts as staff.
+ */
+export function assertStaffProfile(
+  profile: { role?: string | null; app_access?: Record<string, unknown> | null } | null,
+  area?: AppArea,
+): void {
+  const role = profile?.role;
   if (role !== "admin" && role !== "auditor") throw new Error("Forbidden");
   if (area && role !== "admin") {
-    const access = (profile as { app_access?: Record<string, unknown> | null } | null)?.app_access ?? null;
+    const access = profile?.app_access ?? null;
     if (access && access[area] === false) throw new Error("Forbidden");
   }
-  return uid;
 }

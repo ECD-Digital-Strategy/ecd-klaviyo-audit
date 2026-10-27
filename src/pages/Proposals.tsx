@@ -10,7 +10,7 @@ import ContractDocsPanel from '../components/proposal/ContractDocsPanel';
 import ProposalSettingsPanel from '../components/proposal/ProposalSettingsPanel';
 import ClientPickerModal from '../components/proposal/agent/ClientPickerModal';
 import { SkeletonTable } from '../components/ui/Skeleton';
-import { ProposalAgentProvider } from '../components/proposal/agent/ProposalAgentContext';
+import { ProposalAgentProvider, useProposalAgent } from '../components/proposal/agent/ProposalAgentContext';
 import { ProposalAgentLayout, AgentToggleButton } from '../components/proposal/agent/ProposalAgentLayout';
 import { listProposals } from '../lib/proposals-db';
 import { availableYears, type ProposalYear } from '../lib/proposal-year';
@@ -108,6 +108,30 @@ function YearPicker({
       )}
     </div>
   );
+}
+
+/**
+ * /proposals?chat=<id> opens that AI Assistant chat. It is the link Claude
+ * hands over after drafting a proposal through the ECD Hub connector in
+ * Athena (Emil, 2026-10-27): the draft waits here as an ordinary draft card,
+ * so Apply runs this page's own create path, client picker, contracts and
+ * agency signature included. The parameter is dropped once read, so a reload
+ * does not reopen it.
+ */
+function OpenChatFromLink() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { open, selectConversation } = useProposalAgent();
+  const chat = searchParams.get('chat');
+  useEffect(() => {
+    if (!chat) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('chat');
+    setSearchParams(next, { replace: true });
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chat)) return;
+    open();
+    void selectConversation(chat);
+  }, [chat, searchParams, setSearchParams, open, selectConversation]);
+  return null;
 }
 
 export default function Proposals() {
@@ -214,6 +238,7 @@ export default function Proposals() {
 
   return (
     <ProposalAgentProvider config={{ proposalId: null, onApplyDraft }}>
+    <OpenChatFromLink />
     <ClientPickerModal open={clientPickerOpen} onClose={closeClientPicker} onSelect={selectClientForDraft} />
     <ProposalAgentLayout>
     <div>
