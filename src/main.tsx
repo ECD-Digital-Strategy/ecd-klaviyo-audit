@@ -1,3 +1,5 @@
+// First: takes the app rail's ECD Hub sign-in code off the address before the app's own client sees it.
+import './lib/hubCapture';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';

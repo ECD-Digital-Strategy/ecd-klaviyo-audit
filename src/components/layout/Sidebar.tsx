@@ -9,7 +9,10 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  LayoutGrid,
 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AppRail } from './AppRail';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessArea } from '../../lib/access';
@@ -58,6 +61,7 @@ export default function Sidebar({ collapsed: collapsedProp, onCollapsedChange }:
     return true;
   });
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
   const profileAreaRef = useRef<HTMLDivElement>(null);
   const initials = (user?.name || user?.email || 'U')
     .split(' ')
@@ -93,7 +97,7 @@ export default function Sidebar({ collapsed: collapsedProp, onCollapsedChange }:
 
   return (
     <aside
-      className={`fixed left-0 top-0 h-screen bg-white border-r border-gray-100 flex flex-col z-30 transition-all duration-300 ${
+      className={`fixed left-0 md:left-[68px] top-0 h-screen bg-white border-r border-gray-100 flex flex-col z-30 transition-all duration-300 ${
         collapsed ? 'w-[68px]' : 'w-[240px]'
       }`}
     >
@@ -153,7 +157,29 @@ export default function Sidebar({ collapsed: collapsedProp, onCollapsedChange }:
             ))}
           </>
         )}
+
+        {/* The ECD app rail, phones only: on wider screens it is its own column left of this menu. */}
+        <button
+          type="button"
+          onClick={() => setAppsOpen(o => !o)}
+          aria-expanded={appsOpen}
+          className={`md:hidden w-full ${linkClass({ isActive: appsOpen })}`}
+        >
+          <LayoutGrid className="w-[18px] h-[18px] shrink-0" />
+          {!collapsed && <span>Apps</span>}
+        </button>
       </nav>
+
+      {appsOpen &&
+        createPortal(
+          <div className="md:hidden fixed inset-0 z-50" onMouseDown={e => e.target === e.currentTarget && setAppsOpen(false)}>
+            <div className="absolute left-2 right-2 top-16 rounded-xl border border-gray-200 bg-white p-3 shadow-xl">
+              <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Apps</p>
+              <AppRail variant="row" />
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <div ref={profileAreaRef} className="border-t border-gray-100 p-3 relative">
         {user && (
