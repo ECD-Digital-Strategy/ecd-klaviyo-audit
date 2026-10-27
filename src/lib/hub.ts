@@ -76,6 +76,8 @@ export async function sendHubLink(email: string): Promise<void> {
   if (!h) throw new Error('ECD Hub is not set up for this app');
   const back = new URL(window.location.href);
   back.hash = '';
+  // The app's own sign-in can leave its ?code= on the address; Hub adds its own.
+  for (const k of ['code', 'error', 'error_code', 'error_description']) back.searchParams.delete(k);
   back.searchParams.set('ecd_hub', '1');
   const { error } = await h.auth.signInWithOtp({
     email: email.trim(),

@@ -9,7 +9,8 @@ export const HUB_CODE_KEY = 'ecd-hub-proposals-code';
 try {
   const here = new URL(window.location.href);
   if (here.searchParams.get('ecd_hub') === '1') {
-    const code = here.searchParams.get('code');
+    // Hub appends its code last, after anything already on the address.
+    const code = here.searchParams.getAll('code').pop();
     if (code) window.sessionStorage.setItem(HUB_CODE_KEY, code);
     for (const k of ['ecd_hub', 'code', 'error', 'error_code', 'error_description']) here.searchParams.delete(k);
     window.history.replaceState(window.history.state, '', here.pathname + here.search + here.hash);
