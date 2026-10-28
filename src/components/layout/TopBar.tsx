@@ -11,7 +11,7 @@ interface TopBarProps {
 
 export default function TopBar({ title, subtitle, leadingIcon, actions, hideSearch }: TopBarProps) {
   return (
-    <header className="h-16 bg-white border-b border-gray-100 flex items-center justify-between px-8 shrink-0">
+    <header className="h-16 bg-white border-b border-gray-100 flex items-center justify-between gap-3 px-4 md:px-8 shrink-0">
       <div className="flex items-center gap-3 min-w-0">
         {leadingIcon}
         <div className="min-w-0">
@@ -23,7 +23,12 @@ export default function TopBar({ title, subtitle, leadingIcon, actions, hideSear
       <div className="flex items-center gap-3">
         {actions}
 
-        {!hideSearch && <GlobalSearch />}
+        {/* Phones: no room next to the title; search lives on wider screens. */}
+        {!hideSearch && (
+          <div className="hidden md:block">
+            <GlobalSearch />
+          </div>
+        )}
       </div>
     </header>
   );

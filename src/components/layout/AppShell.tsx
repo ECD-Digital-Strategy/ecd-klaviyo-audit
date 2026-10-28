@@ -13,17 +13,24 @@ function isDocumentWorkspace(pathname: string): boolean {
   return pathname.startsWith('/documents/') && pathname !== '/documents/new';
 }
 
+// Phones (below Tailwind's md): the menu is a 68px icon strip and opens OVER the
+// page instead of pushing it aside. Pushing it left a phone about 135px for the
+// page, so everything spilled past the edge (Emil, 2026-10-28).
+const PHONE = '(max-width: 767px)';
+const isPhone = () => typeof window !== 'undefined' && window.matchMedia(PHONE).matches;
+
 export default function AppShell() {
   const location = useLocation();
   const wantsCollapse = useMemo(
     () => AUDIT_WORKSPACE_PATH.test(location.pathname) || isDocumentWorkspace(location.pathname),
     [location.pathname],
   );
-  const [collapsed, setCollapsed] = useState(() => wantsCollapse);
+  const [collapsed, setCollapsed] = useState(() => wantsCollapse || isPhone());
 
+  // On every page change: the page's own preference, and always closed on a phone.
   useEffect(() => {
-    setCollapsed(wantsCollapse);
-  }, [wantsCollapse]);
+    setCollapsed(wantsCollapse || isPhone());
+  }, [wantsCollapse, location.pathname]);
 
   return (
     <div className="min-h-screen bg-[#f8f8f8]">
@@ -37,7 +44,7 @@ export default function AppShell() {
       <Sidebar collapsed={collapsed} onCollapsedChange={setCollapsed} />
       <div
         className={`app-shell-offset ${
-          collapsed ? 'ml-[68px] md:ml-[136px]' : 'ml-[240px] md:ml-[308px]'
+          collapsed ? 'ml-[68px] md:ml-[136px]' : 'ml-[68px] md:ml-[308px]'
         } flex flex-col min-h-screen transition-[margin] duration-300`}
       >
         <main className="flex flex-1 flex-col min-h-[100dvh]">

@@ -81,7 +81,7 @@ export default function Dashboard() {
     <div>
       <TopBar title="Dashboard" subtitle="Welcome back" />
 
-      <div className="p-8 space-y-8 animate-fade-in">
+      <div className="p-4 md:p-8 space-y-8 animate-fade-in">
         {loading ? (
           <SkeletonKPICards />
         ) : (showAudits || showProposals) && (
@@ -163,7 +163,7 @@ export default function Dashboard() {
                     <button
                       key={audit.id}
                       onClick={() => navigate(`/audits/${audit.id}`)}
-                      className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
+                      className="w-full flex items-center justify-between px-4 md:px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <SiteFavicon url={client?.website_url} size="md" />
@@ -208,7 +208,7 @@ export default function Dashboard() {
                     <button
                       key={client.id}
                       onClick={() => navigate(`/clients/${client.id}`)}
-                      className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
+                      className="w-full flex items-center justify-between px-4 md:px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <SiteFavicon url={client.website_url} size="md" />
@@ -246,7 +246,7 @@ export default function Dashboard() {
                     <button
                       key={proposal.id}
                       onClick={() => navigate(`/proposals/${proposal.id}`)}
-                      className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
+                      className="w-full flex items-center justify-between px-4 md:px-6 py-4 hover:bg-gray-50/50 transition-colors text-left"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <SiteFavicon url={proposal.client?.website_url} size="md" />

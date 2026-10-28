@@ -12,7 +12,7 @@
     "test": "vitest run",
     "test:functions": "npx --yes deno test --allow-read --allow-env supabase/functions",
     "sb:functions:list": "dotenv -e .env.supabase -- supabase functions list --project-ref wuvqwuviwubthmuncuya",
-    "sb:functions:deploy": "dotenv -e .env.supabase -- supabase functions deploy --project-ref wuvqwuviwubthmuncuya",
+    "sb:functions:deploy": "dotenv -e .env.supabase -- supabase functions deploy --project-ref wuvqwuviwubthmuncuya --use-api",
     "sb:functions:logs": "dotenv -e .env.supabase -- supabase functions logs --project-ref wuvqwuviwubthmuncuya",
     "sb:deploy:admin_delete_audit": "dotenv -e .env.supabase -- supabase functions deploy admin_delete_audit --project-ref wuvqwuviwubthmuncuya",
     "sb:deploy:admin_delete_client": "dotenv -e .env.supabase -- supabase functions deploy admin_delete_client --project-ref wuvqwuviwubthmuncuya",
