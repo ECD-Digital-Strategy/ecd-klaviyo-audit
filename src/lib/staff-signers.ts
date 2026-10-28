@@ -18,13 +18,13 @@ export type StaffSigner = { id: string; name: string; email: string; signature_i
 /** The team member anything goes out signed by unless someone picks another. */
 export const DEFAULT_SIGNER_EMAIL = 'zak@ecdigitalstrategy.com';
 
+// Through staff_signers() (migration 20261028140000), not the profiles table: a
+// Member may read only their own profile, so they saw only themselves here and
+// could not sign as Zak (Hugo, 2026-10-28).
 export async function listStaffSigners(): Promise<StaffSigner[]> {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, name, email, signature_image')
-    .order('name');
+  const { data, error } = await supabase.rpc('staff_signers');
   if (error) throw error;
-  return (data ?? []).map(r => ({
+  return ((data ?? []) as Array<Record<string, unknown>>).map(r => ({
     id: String(r.id),
     name: String(r.name ?? ''),
     email: String(r.email ?? ''),
