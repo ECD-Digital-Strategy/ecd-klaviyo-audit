@@ -1,12 +1,15 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { HUB_CODE_KEY } from './hubCapture';
+import { createHubStorage } from './hubStorage';
 
 // The ECD app rail (Zak, 2026-10-27), copied from Revenue Desk (src/data/rail.ts in
 // ECD-Digital-Strategy/ecd-revenue-desk). Zak decides on ECD Hub which apps exist
 // and who sees each; everyone arranges their own rail.
 //
 // This app signs in with its own Supabase project, so the rail has a second client
-// of its own, pointed at ECD Hub, with its own sign-in kept apart from the app's.
+// of its own, pointed at ECD Hub, with its sign-in kept apart from the app's. It
+// shares Hub's sign-in with PTO, HR and the Client Tracker (src/lib/hubStorage.ts),
+// so anyone signed in to one of those has their rail here without signing in again.
 // It calls only the two rail functions below: never a table, and the app list is
 // never copied into this app.
 
@@ -32,7 +35,8 @@ function hub(): SupabaseClient | null {
   if (!HUB_URL || !HUB_KEY) return null;
   client ??= createClient(HUB_URL, HUB_KEY, {
     auth: {
-      storageKey: 'ecd-hub-proposals',
+      // Hub's default key, sb-avvitrgppzroveurlxrl-auth-token: the one the other apps use.
+      storage: createHubStorage(),
       flowType: 'pkce',
       detectSessionInUrl: false,
       persistSession: true,
