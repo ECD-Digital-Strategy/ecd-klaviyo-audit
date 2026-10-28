@@ -19,11 +19,22 @@ const AuthContext = createContext<AuthState | null>(null);
 
 const PROFILE_COLUMNS = 'id,name,email,role,app_access,created_at';
 
-/** Whether the browser holds a Supabase session cookie (sb-<ref>-auth-token,
+// This app's own project ref. The app rail keeps ECD Hub's sign-in in a cookie of
+// the same shape (sb-<hub ref>-auth-token), which must not count as signed in here.
+const PROJECT_REF = (() => {
+  try {
+    return new URL(import.meta.env.VITE_SUPABASE_URL).hostname.split('.')[0];
+  } catch {
+    return '';
+  }
+})();
+
+/** Whether the browser holds this app's Supabase session cookie (sb-<ref>-auth-token,
  *  possibly split into .0/.1 chunks), i.e. someone has signed in here before. */
 function hasSessionCookie(): boolean {
-  if (typeof document === 'undefined') return false;
-  return document.cookie.split(';').some((c) => /^\s*sb-[^=]*-auth-token(\.\d+)?=./.test(c));
+  if (typeof document === 'undefined' || !PROJECT_REF) return false;
+  const name = new RegExp(`^\\s*sb-${PROJECT_REF}-auth-token(\\.\\d+)?=.`);
+  return document.cookie.split(';').some((c) => name.test(c));
 }
 const ADMIN_DOMAIN = 'ecdigitalstrategy.com';
 
@@ -56,10 +67,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // The usual cause of "login screen, then signed in a second later": the
         // profile read went out on an access token that was just expiring, it
         // failed, and a failed read looked like being signed out until the
-        // refresh landed. Refresh and read again before giving up.
-        if (profileErr && isMounted) {
+        // refresh landed. Refresh and read again before giving up. One retry was
+        // not enough (Emil, 2026-10-28): the refresh supabase-js starts on its own
+        // can still be in flight, so ours fails and the second read goes out on
+        // the same old token. A few spaced tries ride that out (about 5s at most).
+        for (let attempt = 1; profileErr && isMounted && attempt <= 4; attempt++) {
           await supabase.auth.refreshSession().catch(() => null);
           ({ data: existing, error: profileErr } = await fetchProfile());
+          if (profileErr) await new Promise((r) => setTimeout(r, 400 * attempt));
         }
 
         if (!isMounted) return;
