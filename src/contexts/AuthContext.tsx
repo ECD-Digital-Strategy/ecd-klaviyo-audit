@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import type { Profile, UserRole } from '../lib/types';
 import { clearCachedProfile, readCachedProfile, writeCachedProfile } from '../lib/profile-cache';
 import { isAllowedSignInEmail, signInErrorMessage } from '../lib/sign-in-policy';
+import { hubSsoEnabled, setHubSsoEnabled, signInWithHub } from '../lib/hubSso';
 
 interface AuthState {
   user: Profile | null;
@@ -184,14 +185,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setIsLoading(true);
         }
         // The refresh reports back through this same listener on success.
-        void supabase.auth.refreshSession().then(({ data, error }) => {
+        void supabase.auth.refreshSession().then(async ({ data, error }) => {
           if (!restoring) return;
           if (error || !data.session) {
+            // The saved sign-in here is gone for good; an ECD Hub one may still do.
+            if (await signInWithHub().catch(() => false)) return;
+            if (!restoring) return;
             signedOut();
             endRestore();
           }
         });
         // Never strand someone on the loading screen if the refresh hangs.
+        restoreTimer = setTimeout(() => {
+          if (!restoring) return;
+          signedOut();
+          endRestore();
+        }, 8000);
+        return;
+      }
+
+      // No sign-in here, but maybe one with ECD Hub (PTO, HR, the Client Tracker):
+      // try that behind the "Signing you in" screen before showing the login. On
+      // success this same listener hears SIGNED_IN and finishes the restore.
+      if (event === 'INITIAL_SESSION' && hubSsoEnabled()) {
+        restoring = true;
+        if (isMounted) {
+          setIsRestoring(true);
+          setIsLoading(true);
+        }
+        void signInWithHub()
+          .catch(() => false)
+          .then((ok) => {
+            if (!restoring || ok) return;
+            signedOut();
+            endRestore();
+          });
         restoreTimer = setTimeout(() => {
           if (!restoring) return;
           signedOut();
@@ -238,9 +266,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
     });
     if (error) throw new Error(signInErrorMessage(error.message));
+    // Signing in on purpose turns "signed in with ECD Hub" back on.
+    setHubSsoEnabled(true);
   };
 
   const signOut = async () => {
+    // Stay signed out: without this the Hub sign-in would sign straight back in.
+    setHubSsoEnabled(false);
     await supabase.auth.signOut();
     setUser(null);
     clearCachedProfile();

@@ -74,6 +74,17 @@ export function hubSignedIn(): Promise<boolean> {
   return signingIn;
 }
 
+/**
+ * The current Hub access token, or null when signed out of Hub. Used only to sign
+ * in to this app once (src/lib/hubSso.ts, the hub_sso function), never to read Hub.
+ */
+export async function hubAccessToken(): Promise<string | null> {
+  const h = hub();
+  if (!h) return null;
+  const { data } = await h.auth.getSession().catch(() => ({ data: { session: null } }));
+  return data.session?.access_token ?? null;
+}
+
 /** Emails a Hub sign-in link that comes back to this page. Hub never creates an account here. */
 export async function sendHubLink(email: string): Promise<void> {
   const h = hub();

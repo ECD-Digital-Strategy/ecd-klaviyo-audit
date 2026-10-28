@@ -29,3 +29,9 @@ verify_jwt = false
 
 [functions.klaviyo_test_connection]
 verify_jwt = false
+
+[functions.hub_sso]
+verify_jwt = false
+
+[functions.health_check]
+verify_jwt = false
