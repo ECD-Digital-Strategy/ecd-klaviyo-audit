@@ -1,9 +1,11 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
-// Hands a fully signed proposal from a brand new client to the Client Tracker
-// (ct.ecdigitalstrategy.com), which runs new-client onboarding: tracker row, pod confirmation, Drive folder,
-// Slack channel, Asana board, Everhour, kickoff post. The tracker lives in the
-// ECD Hub project, so this is a plain HTTPS call with a shared key.
+// Hands every fully signed proposal to the Client Tracker (ct.ecdigitalstrategy.com).
+// A brand new client gets new-client onboarding: tracker row, pod confirmation, Drive
+// folder, Slack channel, Asana board, Everhour, kickoff post. A client the tracker already
+// has gets a project for the new work (or, while that is switched off, a logged skip).
+// The tracker decides which; this side only says which proposals the client signed before.
+// The tracker lives in the ECD Hub project, so this is a plain HTTPS call with a shared key.
 //
 // Best effort by design, like the Xero invoice: a slow or broken tracker must
 // never delay or fail a client's signature. The tracker de-duplicates on the
@@ -49,17 +51,25 @@ export async function sendSignedProposalToTracker(
 
   const { proposal } = args;
 
-  // Onboarding is only for completely new clients. A client that already
-  // signed a proposal here (Lane 201's Alia build the day after its migration)
-  // is not handed over; the tracker also refuses clients it already has.
+  // Every signed proposal goes to the tracker (Emil, 2026-10-29). Until then a client
+  // that had signed here before (Lane 201's Alia build the day after its migration) was
+  // never handed over. The earlier ones go along so the tracker never takes a client we
+  // already work with, but cannot match by name, for a brand new one.
+  let earlierSigned: Array<{ proposal_id: string; title: string | null; signed_at: string | null }> = [];
   if (proposal.client_id) {
-    const { count } = await sb
+    const { data } = await sb
       .from("proposals")
-      .select("id", { count: "exact", head: true })
+      .select("id, title, client_signed_at")
       .eq("client_id", proposal.client_id)
       .neq("id", proposal.id)
-      .not("client_signed_at", "is", null);
-    if ((count ?? 0) > 0) return;
+      .not("client_signed_at", "is", null)
+      .order("client_signed_at", { ascending: false })
+      .limit(20);
+    earlierSigned = ((data ?? []) as Array<{ id: string; title?: string | null; client_signed_at?: string | null }>).map((p) => ({
+      proposal_id: p.id,
+      title: p.title ?? null,
+      signed_at: p.client_signed_at ?? null,
+    }));
   }
 
   let hubspotCompanyId: string | null = null;
@@ -88,6 +98,7 @@ export async function sendSignedProposalToTracker(
         one_time_price: price(li.one_time_price),
         monthly_price: price(li.monthly_price),
       })),
+      earlier_signed: earlierSigned,
     },
   };
 
