@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Receipt, ArrowUp, ArrowDown, Trash2, Plus, ChevronDown, BadgePercent, X, Play } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { addOnHasCustomerAgentDemo, nameHasCustomerAgentDemo, customerAgentDemoUrlOrDefault } from '../../lib/customer-agent-demo';
@@ -8,11 +8,13 @@ import { MenuPriceRow, SummaryTotalRow } from './PriceRows';
 import ProposalPlainText from './edit/ProposalPlainText';
 import ProposalCurrency from './edit/ProposalCurrency';
 import { useProposalEdit } from './edit/ProposalEditContext';
+import { useProposalOptions } from './ProposalOptions';
 import {
   buildProposalPriceLines,
   computeProposalTotals,
   formatProposalTotal,
   lineItemHasPricing,
+  lineIsTaken,
   proposalDiscountFromRow,
 } from '../../lib/proposal-pricing';
 import { formatCurrency } from '../../lib/revenue-calculator';
@@ -187,6 +189,16 @@ function EditableLineItemRow({
         )}
       </div>
 
+      <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-xs text-gray-600 print:hidden">
+        <input
+          type="checkbox"
+          checked={Boolean(item.optional)}
+          onChange={e => updateLineItem(item.id, { optional: e.target.checked })}
+          className="h-3.5 w-3.5 rounded border-gray-300 accent-[#4b3afe]"
+        />
+        Optional: the client chooses whether to add it when signing
+      </label>
+
       <LineItemRevenueCategory item={item} onChange={patch => updateLineItem(item.id, patch)} />
     </div>
   );
@@ -302,11 +314,88 @@ export default function ProposalPricingTable({ proposal, lineItems, clientWebsit
   const itemHasDemo = (item: ProposalLineItem) =>
     (item.template_slug ? addOnHasCustomerAgentDemo(item.template_slug) : false) || nameHasCustomerAgentDemo(item.name);
 
+  const { picked, canChoose, toggle } = useProposalOptions();
   const sorted = [...lineItems].sort((a, b) => a.display_order - b.display_order);
   const pricedItems = sorted.filter(lineItemHasPricing);
+  const regularItems = pricedItems.filter(item => !item.optional);
+  const optionalItems = pricedItems.filter(item => item.optional);
+  const undecided = optionalItems.some(item => item.client_selected == null);
   const priceLines = buildProposalPriceLines(sorted);
   const discount = proposalDiscountFromRow(proposal);
-  const totals = computeProposalTotals(sorted, discount);
+  const totals = computeProposalTotals(sorted, discount, picked);
+
+  // One priced line item: its price rows (one-time and/or monthly), description and demo.
+  const renderPricedItem = (item: ProposalLineItem, name: ReactNode) => {
+    const lines = priceLines.filter(line => line.lineItemId === item.id);
+    return (
+      <>
+        {lines.map((line, lineIndex) => (
+          <MenuPriceRow
+            key={`${line.lineItemId}-${line.unit}`}
+            label={
+              lineIndex === 0
+                ? name
+                : line.unit === 'monthly'
+                  ? 'Monthly retainer'
+                  : 'One-time implementation'
+            }
+            amount={line.headline}
+            caption={line.caption}
+            labelClassName={lineIndex > 0 ? 'pl-3 text-sm font-normal text-gray-600' : undefined}
+          />
+        ))}
+        {item.description ? (
+          <p className="-mt-1 pb-2.5 pr-[30%] text-xs leading-relaxed text-gray-500">
+            {item.description}
+          </p>
+        ) : null}
+        {itemHasDemo(item) ? (
+          <div className="pb-3 print:hidden">
+            <button
+              type="button"
+              onClick={() => setDemoPopup({ url: demoUrl, title: item.name })}
+              className="inline-flex items-center gap-1.5 rounded-lg gradient-bg px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+            >
+              <Play className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden /> View demo
+            </button>
+            <p className="mt-1.5 pr-[15%] text-[11px] leading-relaxed text-gray-400">
+              This is a live demo on your own store to show what is possible. The final build depends on which Klaviyo Customer Agent add-ons you decide to go with.
+            </p>
+          </div>
+        ) : null}
+      </>
+    );
+  };
+
+  // An optional line's name: a tick box while the client can still choose, else what was decided.
+  const optionalName = (item: ProposalLineItem) => {
+    const decided = item.client_selected != null;
+    if (canChoose && !decided) {
+      return (
+        <label className="inline-flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={lineIsTaken(item, picked)}
+            onChange={() => toggle(item.id)}
+            className="mt-[0.3rem] h-4 w-4 shrink-0 cursor-pointer rounded border-gray-300 accent-[#4b3afe] print:hidden"
+            aria-label={`Add ${item.name}`}
+          />
+          <span>{item.name}</span>
+        </label>
+      );
+    }
+    const badge = !decided
+      ? { text: 'Optional', className: 'bg-gray-100 text-gray-600' }
+      : item.client_selected
+        ? { text: 'Added', className: 'bg-emerald-50 text-emerald-700' }
+        : { text: 'Not included', className: 'bg-gray-100 text-gray-500' };
+    return (
+      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={cn(decided && !item.client_selected && 'text-gray-400 line-through decoration-gray-300')}>{item.name}</span>
+        <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-semibold', badge.className)}>{badge.text}</span>
+      </span>
+    );
+  };
 
   useEffect(() => {
     if (!catalogOpen || catalog !== null) return;
@@ -412,48 +501,27 @@ export default function ProposalPricingTable({ proposal, lineItems, clientWebsit
               <span className="shrink-0">Investment</span>
             </div>
             <div className="divide-y divide-gray-100">
-              {pricedItems.map(item => {
-                const lines = priceLines.filter(line => line.lineItemId === item.id);
-                return (
-                  <div key={item.id}>
-                    {lines.map((line, lineIndex) => (
-                      <MenuPriceRow
-                        key={`${line.lineItemId}-${line.unit}`}
-                        label={
-                          lineIndex === 0
-                            ? item.name
-                            : line.unit === 'monthly'
-                              ? 'Monthly retainer'
-                              : 'One-time implementation'
-                        }
-                        amount={line.headline}
-                        caption={line.caption}
-                        labelClassName={lineIndex > 0 ? 'pl-3 text-sm font-normal text-gray-600' : undefined}
-                      />
-                    ))}
-                    {item.description ? (
-                      <p className="-mt-1 pb-2.5 pr-[30%] text-xs leading-relaxed text-gray-500">
-                        {item.description}
-                      </p>
-                    ) : null}
-                    {itemHasDemo(item) ? (
-                      <div className="pb-3 print:hidden">
-                        <button
-                          type="button"
-                          onClick={() => setDemoPopup({ url: demoUrl, title: item.name })}
-                          className="inline-flex items-center gap-1.5 rounded-lg gradient-bg px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-                        >
-                          <Play className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden /> View demo
-                        </button>
-                        <p className="mt-1.5 pr-[15%] text-[11px] leading-relaxed text-gray-400">
-                          This is a live demo on your own store to show what is possible. The final build depends on which Klaviyo Customer Agent add-ons you decide to go with.
-                        </p>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
+              {regularItems.map(item => (
+                <div key={item.id}>{renderPricedItem(item, item.name)}</div>
+              ))}
             </div>
+            {optionalItems.length > 0 && (
+              <div className={cn(regularItems.length > 0 && 'mt-6')}>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-gray-400">Optional extras</p>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {canChoose
+                    ? 'Tick any you would like to add. The total updates as you go.'
+                    : undecided
+                      ? 'Chosen by the client when signing. Not in the totals until added.'
+                      : 'Chosen when the proposal was signed.'}
+                </p>
+                <div className="mt-1 divide-y divide-gray-100">
+                  {optionalItems.map(item => (
+                    <div key={item.id}>{renderPricedItem(item, optionalName(item))}</div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -518,6 +586,11 @@ export default function ProposalPricingTable({ proposal, lineItems, clientWebsit
                   />
                 )}
               </div>
+              {optionalItems.length > 0 && undecided && !canChoose && (
+                <p className="mt-2 text-xs text-gray-500">
+                  Optional extras are not in these totals until the client adds them when signing.
+                </p>
+              )}
             </div>
           </div>
         )}

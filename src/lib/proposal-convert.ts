@@ -281,6 +281,8 @@ function lineItemToTemplateItem(item: ProposalLineItem, index: number): Proposal
     monthly_price: item.monthly_price,
     monthly_label: item.monthly_label,
     image_url: item.image_url,
+    // Optional stays optional in the template; the client's choice never travels.
+    ...(item.optional ? { optional: true } : {}),
     display_order: (index + 1) * 10,
   };
 }

@@ -161,10 +161,12 @@ export async function createDraftInvoiceForProposal(
   const { data: itemRows } = await sb
     .from("proposal_line_items")
     .select(
-      "id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly, template_slug, display_order",
+      "id, name, description, one_time_price, monthly_price, xero_service_key, xero_item_one_time, xero_item_monthly, template_slug, display_order, optional, client_selected",
     )
     .eq("proposal_id", proposalId);
-  const items = ((itemRows ?? []) as LineItem[])
+  // An optional line is invoiced only when the client added it when signing.
+  const items = ((itemRows ?? []) as Array<LineItem & { optional?: boolean | null; client_selected?: boolean | null }>)
+    .filter((i) => !i.optional || i.client_selected === true)
     .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
 
   // Lines on signed proposals cannot be edited, so ones signed before Items

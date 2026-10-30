@@ -20,7 +20,7 @@ export function proposalJson(data: unknown, init: ResponseInit = {}) {
   });
 }
 
-type LineItemRow = {
+export type LineItemRow = {
   id: string;
   name: string;
   description: string;
@@ -31,7 +31,19 @@ type LineItemRow = {
   monthly_label: string | null;
   image_url: string | null;
   display_order: number;
+  /** Optional line (2026-10-30): the client chooses whether to add it when signing. */
+  optional?: boolean | null;
+  /** Optional lines: true = added when signing, false = declined, null = not decided yet. */
+  client_selected?: boolean | null;
 };
+
+/** Mirror of src/lib/proposal-pricing.ts lineIsTaken: every regular line, and an optional
+ * one the client added (or, before the choice is saved, picked). */
+export function lineIsTaken(item: Pick<LineItemRow, "id" | "optional" | "client_selected">, picked?: ReadonlySet<string>): boolean {
+  if (!item.optional) return true;
+  if (item.client_selected != null) return item.client_selected;
+  return picked?.has(item.id) ?? false;
+}
 
 type DiscountFields = {
   discount_type: "none" | "fixed" | "percent";
@@ -56,10 +68,11 @@ function numeric(value: number | string | null): number | null {
 
 /** Mirror of src/lib/proposal-pricing.ts computeProposalTotals; the sign function
  * recomputes totals server-side and freezes them into the signed event metadata. */
-export function computeProposalTotals(items: LineItemRow[], discount: DiscountFields): ProposalTotals {
+export function computeProposalTotals(items: LineItemRow[], discount: DiscountFields, picked?: ReadonlySet<string>): ProposalTotals {
   let oneTimeSubtotal = 0;
   let monthlySubtotal = 0;
   for (const item of items) {
+    if (!lineIsTaken(item, picked)) continue;
     const oneTime = numeric(item.one_time_price);
     const monthly = numeric(item.monthly_price);
     if (oneTime) oneTimeSubtotal += oneTime;
@@ -141,6 +154,7 @@ export function buildSignedPayloadSnapshot(
       monthly_price: numeric(item.monthly_price),
       monthly_label: item.monthly_label ?? null,
       display_order: item.display_order,
+      ...(item.optional ? { optional: true, client_selected: item.client_selected === true } : {}),
     })),
     totals,
   };
@@ -183,7 +197,7 @@ export async function fetchPublicProposal(sb: SupabaseClient, token: string) {
   const [{ data: lineItems, error: liErr }, { data: signatures, error: sigErr }] = await Promise.all([
     sb
       .from("proposal_line_items")
-      .select("id, name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, image_url, display_order")
+      .select("id, name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, image_url, display_order, optional, client_selected")
       .eq("proposal_id", proposal.id)
       .order("display_order", { ascending: true }),
     sb

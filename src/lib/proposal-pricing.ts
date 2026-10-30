@@ -45,6 +45,20 @@ function hasUnitPricing(amount: number | null | undefined, label: string | null 
   return hasNumericPrice(amount) || Boolean(label?.trim());
 }
 
+/**
+ * A line the client is buying: every regular line, and an optional one they
+ * added when signing (or, before signing, ticked on the page: `picked`). An
+ * optional line counts in no total until then.
+ */
+export function lineIsTaken(
+  item: Pick<ProposalLineItem, 'id' | 'optional' | 'client_selected'>,
+  picked?: ReadonlySet<string>,
+): boolean {
+  if (!item.optional) return true;
+  if (item.client_selected != null) return item.client_selected;
+  return picked?.has(item.id) ?? false;
+}
+
 export function lineItemHasPricing(item: ProposalLineItem): boolean {
   return (
     hasUnitPricing(item.one_time_price, item.one_time_label) ||
@@ -103,6 +117,7 @@ function computeUnitDiscount(subtotal: number, discount: ProposalDiscountInput, 
 export function computeProposalTotals(
   items: ProposalLineItem[],
   discount: ProposalDiscountInput | null,
+  picked?: ReadonlySet<string>,
 ): ProposalTotals {
   let oneTimeSubtotal = 0;
   let monthlySubtotal = 0;
@@ -110,6 +125,7 @@ export function computeProposalTotals(
   let monthlyHasLabelOnly = false;
 
   for (const item of items) {
+    if (!lineIsTaken(item, picked)) continue;
     if (hasNumericPrice(item.one_time_price)) oneTimeSubtotal += Number(item.one_time_price);
     else if (item.one_time_label?.trim()) oneTimeHasLabelOnly = true;
     if (hasNumericPrice(item.monthly_price)) monthlySubtotal += Number(item.monthly_price);

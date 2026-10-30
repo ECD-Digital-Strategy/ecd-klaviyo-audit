@@ -42,13 +42,15 @@ serve(async (req) => {
         "id, title, client_id, audit_id, content_blocks, recipient_name, recipient_email, recipient2_name, recipient2_email, " +
           "client_signed_at, created_by, sent_by, discount_type, discount_value, discount_label, " +
           "client:clients(company_name, website_url, industry, esp_platform, notes), " +
-          "line_items:proposal_line_items(name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, display_order)",
+          "line_items:proposal_line_items(name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, display_order, optional, client_selected)",
       )
       .eq("id", proposal_id)
       .maybeSingle();
     if (error) throw error;
     if (!p) return json({ error: "not_found" }, 404);
     const proposal = p as any;
+    // What the client bought: an optional line they did not add was never sold (2026-10-30).
+    proposal.line_items = (proposal.line_items ?? []).filter((li: any) => !li.optional || li.client_selected === true);
 
     // Who sold it: the sender reviews the draft.
     const staffIds = [proposal.sent_by, proposal.created_by].filter(Boolean);
@@ -89,7 +91,7 @@ serve(async (req) => {
     // first preview recommended Alia because it only saw the migration.
     const { data: otherRows } = await sb
       .from("proposals")
-      .select("id, title, client_signed_at, line_items:proposal_line_items(name, one_time_price, monthly_price)")
+      .select("id, title, client_signed_at, line_items:proposal_line_items(name, one_time_price, monthly_price, optional, client_selected)")
       .eq("client_id", proposal.client_id)
       .not("client_signed_at", "is", null)
       .neq("id", proposal.id)
@@ -98,7 +100,7 @@ serve(async (req) => {
     const otherSigned = (otherRows ?? []).map((o: any) => ({
       title: o.title,
       signed_at: o.client_signed_at,
-      line_items: (o.line_items ?? []).map((li: any) => ({
+      line_items: (o.line_items ?? []).filter((li: any) => !li.optional || li.client_selected === true).map((li: any) => ({
         name: li.name,
         one_time_price: li.one_time_price,
         monthly_price: li.monthly_price,

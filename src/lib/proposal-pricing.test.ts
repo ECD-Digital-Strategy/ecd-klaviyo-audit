@@ -6,6 +6,7 @@ import {
   buildProposalPriceLines,
   computeProposalTotals,
   lineItemHasPricing,
+  lineIsTaken,
   proposalPipelineValue,
 } from './proposal-pricing';
 import type { ProposalLineItem } from './types';
@@ -117,5 +118,29 @@ describe('proposalPipelineValue', () => {
       null,
     );
     expect(proposalPipelineValue(totals)).toBe(1000 + 1200);
+  });
+});
+
+describe('optional lines', () => {
+  const base = item({ id: 'a', name: 'Theme work', one_time_price: 2000 });
+  const extra = item({ id: 'b', name: 'AfterShip Returns Setup', one_time_price: 1400, optional: true });
+
+  it('count in no total until the client adds them', () => {
+    expect(computeProposalTotals([base, extra], null).oneTimeTotal).toBe(2000);
+    expect(lineIsTaken(extra)).toBe(false);
+  });
+
+  it('count once ticked on the page, before signing', () => {
+    expect(computeProposalTotals([base, extra], null, new Set(['b'])).oneTimeTotal).toBe(3400);
+  });
+
+  it('follow the choice saved at signing, whatever is ticked', () => {
+    expect(computeProposalTotals([base, { ...extra, client_selected: true }], null).oneTimeTotal).toBe(3400);
+    expect(computeProposalTotals([base, { ...extra, client_selected: false }], null, new Set(['b'])).oneTimeTotal).toBe(2000);
+  });
+
+  it('leave regular lines alone', () => {
+    expect(lineIsTaken(base)).toBe(true);
+    expect(lineIsTaken({ ...base, client_selected: false })).toBe(true);
   });
 });

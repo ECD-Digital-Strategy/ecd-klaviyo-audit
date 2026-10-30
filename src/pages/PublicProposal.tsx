@@ -6,6 +6,7 @@ import ProposalDocument from '../components/proposal/ProposalDocument';
 import SignaturePad, { type SignaturePadHandle } from '../components/proposal/SignaturePad';
 import BrandedCheckbox from '../components/ui/BrandedCheckbox';
 import { ProposalEditProvider } from '../components/proposal/edit/ProposalEditContext';
+import { ProposalOptionsProvider } from '../components/proposal/ProposalOptions';
 import {
   DEFAULT_PROPOSAL_SETTINGS,
   fetchPublicProposal,
@@ -241,6 +242,17 @@ export default function PublicProposal() {
   // returns. A hook placed after an early return runs on some renders and not
   // others, which is React error #310 and took every proposal page down.
   const [signButtonInView, setSignButtonInView] = useState(false);
+  // The optional lines the client has ticked (2026-10-30). Sent with the
+  // signature; only the first client signer's choice is kept.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const togglePicked = useCallback((id: string) => {
+    setPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     if (!token) {
@@ -295,6 +307,7 @@ export default function PublicProposal() {
       typed_name: typedName,
       signer_email: email,
       signature_image: signatureImage,
+      optional_line_ids: [...picked],
     });
     if (result.ok) {
       setJustSigned(true);
@@ -357,7 +370,9 @@ export default function PublicProposal() {
     );
   }
 
-  const totals = computeProposalTotals(payload.line_items, proposalDiscountFromRow(proposal));
+  // While nobody has chosen yet, this signer ticks the optional lines they want.
+  const optionsOpen = canSign && !payload.line_items.some(li => li.optional && li.client_selected != null);
+  const totals = computeProposalTotals(payload.line_items, proposalDiscountFromRow(proposal), optionsOpen ? picked : undefined);
   const totalParts: string[] = [];
   if (totals.oneTimeTotal > 0 || totals.oneTimeHasLabelOnly) {
     totalParts.push(formatProposalTotal(totals.oneTimeTotal, totals.oneTimeHasLabelOnly));
@@ -403,6 +418,7 @@ export default function PublicProposal() {
           </div>
         )}
 
+        <ProposalOptionsProvider value={{ picked: optionsOpen ? picked : new Set(), canChoose: optionsOpen, toggle: togglePicked }}>
         <ProposalEditProvider mode="public" proposal={proposal} lineItems={payload.line_items}>
           <ProposalDocument
             proposal={proposal}
@@ -427,6 +443,7 @@ export default function PublicProposal() {
             }
           />
         </ProposalEditProvider>
+        </ProposalOptionsProvider>
       </main>
 
       {(canSign || justSigned) && (

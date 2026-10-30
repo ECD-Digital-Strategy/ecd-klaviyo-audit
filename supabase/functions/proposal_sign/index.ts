@@ -12,6 +12,7 @@ import {
   fetchPublicProposal,
   hashSignedPayload,
   isProposalExpired,
+  lineIsTaken,
   proposalJson,
   requiredClientSigners,
   totalsEmailLine,
@@ -21,6 +22,15 @@ import { escapeHtml, proposalReferenceLink } from "../_shared/proposal-links.ts"
 import { sendSignedProposalToTracker } from "../_shared/client-onboarding-trigger.ts";
 
 const MAX_SIGNATURE_LENGTH = 300000;
+
+/** "Optional extras: added AfterShip Returns Setup. Not taken: Gift wrap." for the team email. */
+function optionalChoiceLine(choice: { added: string[]; declined: string[] }): string {
+  const parts = [
+    choice.added.length ? `added ${choice.added.map(escapeHtml).join(", ")}` : "none added",
+    choice.declined.length ? `not taken: ${choice.declined.map(escapeHtml).join(", ")}` : null,
+  ].filter(Boolean);
+  return `Optional extras: ${parts.join("; ")}.`;
+}
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 serve(async (req) => {
@@ -34,6 +44,7 @@ serve(async (req) => {
       typed_name?: string;
       signer_email?: string;
       signature_image?: string;
+      optional_line_ids?: unknown;
     };
     const token = (body.token ?? "").trim().toLowerCase();
     const typedName = (body.typed_name ?? "").trim();
@@ -70,6 +81,20 @@ serve(async (req) => {
       return proposalJson({ ok: false, error: { code: "already_signed" }, correlationId }, { status: 409 });
     }
 
+    // Optional lines (2026-10-30): the first client signer's ticks decide. A later signer
+    // sees that choice on the page, and anything they send is ignored.
+    const optionalIds = new Set(lineItems.filter((li) => li.optional).map((li) => li.id));
+    const alreadyChosen = lineItems.some((li) => li.optional && li.client_selected != null);
+    const picked = new Set(
+      Array.isArray(body.optional_line_ids)
+        ? body.optional_line_ids.filter((id): id is string => typeof id === "string" && optionalIds.has(id))
+        : [],
+    );
+    const chosenItems = lineItems.map((li) =>
+      li.optional && li.client_selected == null ? { ...li, client_selected: alreadyChosen ? false : picked.has(li.id) } : li
+    );
+    const takenItems = chosenItems.filter((li) => lineIsTaken(li));
+
     const userAgent = (req.headers.get("user-agent") ?? "").slice(0, 400);
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim();
     const signedAt = new Date().toISOString();
@@ -94,6 +119,23 @@ serve(async (req) => {
       throw sigError;
     }
 
+    // Save the choice on the optional lines, once (the line-item lock allows exactly this).
+    if (!alreadyChosen && optionalIds.size > 0) {
+      const added = [...picked];
+      const writes = [
+        added.length
+          ? sb.from("proposal_line_items").update({ client_selected: true }).in("id", added).is("client_selected", null)
+          : null,
+        sb.from("proposal_line_items").update({ client_selected: false })
+          .eq("proposal_id", proposal.id).eq("optional", true).is("client_selected", null)
+          .not("id", "in", `(${added.length ? added.join(",") : "00000000-0000-0000-0000-000000000000"})`),
+      ].filter(Boolean);
+      for (const w of writes) {
+        const { error: choiceError } = await w!;
+        if (choiceError) console.error("optional lines", proposal.id, choiceError.message);
+      }
+    }
+
     // Completion check: recount client signatures fresh (after our own insert has
     // committed) so two concurrent signers can never both conclude they're waiting.
     // A benign double-update to won is idempotent.
@@ -107,8 +149,14 @@ serve(async (req) => {
     const complete = (clientSigCount ?? 0) >= required;
 
     // Server-verified totals frozen into the legal record of the signing.
-    const totals = computeProposalTotals(lineItems, proposal);
-    const payloadSnapshot = buildSignedPayloadSnapshot(proposal, lineItems, totals);
+    const totals = computeProposalTotals(chosenItems, proposal);
+    const payloadSnapshot = buildSignedPayloadSnapshot(proposal, chosenItems, totals);
+    const optionalChoice = optionalIds.size
+      ? {
+        added: chosenItems.filter((li) => li.optional && li.client_selected).map((li) => li.name),
+        declined: chosenItems.filter((li) => li.optional && !li.client_selected).map((li) => li.name),
+      }
+      : null;
     const payloadHash = await hashSignedPayload(payloadSnapshot);
 
     if (complete) {
@@ -136,6 +184,7 @@ serve(async (req) => {
           signer_email: signerEmail,
           typed_name: typedName,
           totals,
+          ...(optionalChoice ? { optional_lines: optionalChoice } : {}),
           payload_hash: payloadHash,
           payload_hash_algo: "sha256",
         },
@@ -174,7 +223,7 @@ serve(async (req) => {
       // New-client onboarding in the Client Tracker (best effort, same rules).
       await sendSignedProposalToTracker(sb, {
         proposal,
-        lineItems,
+        lineItems: takenItems,
         signedAt,
         signerName: typedName,
         signerEmail,
@@ -218,6 +267,7 @@ serve(async (req) => {
             ? [
               `${proposalReferenceLink(origin, proposal)} was just signed by ${signerLink} and marked won.`,
               totalsEmailLine(totals),
+              ...(optionalChoice ? [optionalChoiceLine(optionalChoice)] : []),
               ...(alreadyCountersigned
                 ? [`ECD's signature was already on it, so the contract is now fully executed. Nothing left to do.`]
                 : proposalUrl
@@ -228,6 +278,7 @@ serve(async (req) => {
               `${proposalReferenceLink(origin, proposal)} was just signed by ${signerLink}.`,
               `Waiting on the remaining signer before the proposal is marked won.`,
               totalsEmailLine(totals),
+              ...(optionalChoice ? [optionalChoiceLine(optionalChoice)] : []),
             ],
           ctaLabel: complete && proposalUrl ? (alreadyCountersigned ? "View the signed proposal" : "Countersign now") : undefined,
           ctaUrl: complete && proposalUrl ? proposalUrl : undefined,

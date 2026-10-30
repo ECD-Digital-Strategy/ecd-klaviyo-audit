@@ -546,6 +546,8 @@ export async function signProposalPublic(input: {
   typed_name: string;
   signer_email: string;
   signature_image: string;
+  /** The optional lines the client ticked; only the first client signer's choice counts. */
+  optional_line_ids?: string[];
 }): Promise<{ ok: boolean; code?: string; message?: string }> {
   const { data, error } = await supabase.functions.invoke('proposal_sign', { body: input });
   if (error) {

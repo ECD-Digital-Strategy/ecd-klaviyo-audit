@@ -467,6 +467,12 @@ export interface ProposalLineItem {
    * and the monthly money. The account still comes from the family. */
   xero_item_one_time?: string | null;
   xero_item_monthly?: string | null;
+  /** Optional line (2026-10-30): the client chooses whether to add it when signing,
+   * and it counts in no total until they do. */
+  optional?: boolean;
+  /** Optional lines only: true = the client added it when signing, false = declined,
+   * null = not decided yet. Written once, by proposal_sign. */
+  client_selected?: boolean | null;
   display_order: number;
   created_at: string;
 }
