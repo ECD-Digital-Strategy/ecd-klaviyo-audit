@@ -9,6 +9,7 @@ import Modal from './components/ui/Modal';
 import AppPreloader from './components/ui/AppPreloader';
 import { ToastProvider } from './components/ui/Toast';
 import { PlatformSettingsProvider } from './contexts/PlatformSettingsContext';
+import { canUseOutreach } from './lib/outreach-access';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Clients = lazy(() => import('./pages/Clients'));
 const ClientDetail = lazy(() => import('./pages/ClientDetail'));
@@ -182,8 +183,8 @@ function AppRoutes() {
               </>
             )}
             <Route path="/admin" element={<AdminArea />} />
-            {/* Cold outreach with free web audits (Emil, 2026-11-01): admins only. */}
-            {hasRole(['admin']) && <Route path="/outreach" element={<Outreach />} />}
+            {/* Cold outreach with free web audits (Emil, 2026-11-01): Emil only, for now. */}
+            {canUseOutreach(user?.email) && <Route path="/outreach" element={<Outreach />} />}
             <Route path="*" element={<Navigate to={deepLinkFrom || '/'} replace />} />
           </Route>
         )}

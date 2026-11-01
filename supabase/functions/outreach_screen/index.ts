@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { assertServiceRoleClient, requireAdminUserId } from "../_shared/auth.ts";
+import { assertServiceRoleClient } from "../_shared/auth.ts";
+import { requireOutreachOwner } from "../_shared/outreach-access.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
 
 // Outreach, step 1 (Emil, 2026-11-01): screen pasted store domains before anything
@@ -92,7 +93,7 @@ serve(async (req) => {
 
   let userId: string;
   try {
-    userId = await requireAdminUserId(req);
+    userId = await requireOutreachOwner(req);
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
   }

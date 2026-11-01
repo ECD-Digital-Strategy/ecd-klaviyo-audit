@@ -17,6 +17,7 @@ import { AppRail } from './AppRail';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAccessArea } from '../../lib/access';
+import { canUseOutreach } from '../../lib/outreach-access';
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -136,8 +137,8 @@ export default function Sidebar({ collapsed: collapsedProp, onCollapsedChange }:
           </NavLink>
         ))}
 
-        {/* Cold outreach with free web audits (Emil, 2026-11-01): admins only. */}
-        {hasRole(['admin']) && (
+        {/* Cold outreach with free web audits (Emil, 2026-11-01): Emil only, for now. */}
+        {canUseOutreach(user?.email) && (
           <NavLink to="/outreach" className={linkClass}>
             <Send className="w-[18px] h-[18px] shrink-0" />
             {!collapsed && <span>Outreach</span>}

@@ -33,6 +33,8 @@ export type OutreachProspect = {
 
 export type ScreenResult = { domain: string; status: 'new' | 'skipped' | 'exists' | 'invalid'; reason?: string; store_name?: string };
 
+export { OUTREACH_OWNER_EMAIL, canUseOutreach } from './outreach-access';
+
 export const REPORT_BASE = 'https://audit.ecdigitalstrategy.com/report/';
 
 export async function listProspects(): Promise<OutreachProspect[]> {
