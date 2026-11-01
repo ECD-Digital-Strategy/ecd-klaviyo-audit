@@ -13,6 +13,7 @@ import WebRoadmapTable from './web/WebRoadmapTable';
 import WebInvestmentSummary from './web/WebInvestmentSummary';
 import ReportCover from './ReportCover';
 import WebAgentDemoSection, { type AgentDemoKind } from './web/WebAgentDemoSection';
+import { OutreachTeaserBanner, isTeaser } from './web/OutreachTeaser';
 
 export interface WebAuditReportViewData {
   audit: Audit;
@@ -329,6 +330,7 @@ export default function WebAuditReportView({
           deliverable="Website Audit"
           description="A page-by-page review of your storefront on desktop and mobile. What is working, what is costing you orders, and what to fix first."
         />
+        {isTeaser(sections) && <OutreachTeaserBanner sections={sections} companyName={client.company_name} />}
 
         {overview && (
           <WebSectionShell

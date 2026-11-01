@@ -35,3 +35,9 @@ verify_jwt = false
 
 [functions.health_check]
 verify_jwt = false
+
+[functions.outreach_screen]
+verify_jwt = false
+
+[functions.outreach_draft]
+verify_jwt = false

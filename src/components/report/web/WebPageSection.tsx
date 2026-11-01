@@ -10,6 +10,7 @@ import ImageLightbox from '../../ui/ImageLightbox';
 import WebHighlightLayer from './WebHighlightLayer';
 import { optimizedStorageImage } from '../../../lib/storage-image';
 import WebFindingCard from './WebFindingCard';
+import { LockedFindingsCard, lockedFindings } from './OutreachTeaser';
 
 export default function WebPageSection({
   section,
@@ -475,6 +476,8 @@ export default function WebPageSection({
               })}
             </div>
           )}
+          {/* An outreach audit's public teaser: how many more this page holds back. */}
+          {!editMode && <LockedFindingsCard count={lockedFindings(section)?.[viewport] ?? 0} />}
           {editMode && (
             <button
               type="button"

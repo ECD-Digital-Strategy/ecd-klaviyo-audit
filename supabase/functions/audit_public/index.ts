@@ -10,6 +10,7 @@
 // opportunity computation, account snapshot extraction, etc.) keeps working
 // unchanged.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { teaserLockedTotal, teaserSections } from "../_shared/outreach-teaser.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
 
 const CORS_HEADERS: Record<string, string> = {
@@ -117,13 +118,17 @@ serve(async (req) => {
       if (!webClient.data) {
         return json({ ok: false, error: { code: "not_found" }, correlationId }, { status: 404 });
       }
+      const isOutreach = (audit as { is_outreach?: boolean }).is_outreach === true;
       return json({
         ok: true,
         audit,
         client: redactClient(webClient.data as Record<string, unknown>),
-        sections: webSections.data ?? [],
+        // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
+        // and screen size, the rest only counted, and no roadmap, pricing or sales data.
+        sections: isOutreach ? teaserSections(webSections.data ?? []) : webSections.data ?? [],
+        teaser: isOutreach ? { locked_total: teaserLockedTotal(webSections.data ?? []) } : null,
         webPageSnapshots: pageSnaps.data ?? [],
-        shopifySnapshots: shopifySnaps.data ?? [],
+        shopifySnapshots: isOutreach ? [] : shopifySnaps.data ?? [],
         correlationId,
       });
     }

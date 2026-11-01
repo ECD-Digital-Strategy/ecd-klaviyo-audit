@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LayoutGrid,
+  Send,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { AppRail } from './AppRail';
@@ -134,6 +135,14 @@ export default function Sidebar({ collapsed: collapsedProp, onCollapsedChange }:
             {!collapsed && <span>{item.label}</span>}
           </NavLink>
         ))}
+
+        {/* Cold outreach with free web audits (Emil, 2026-11-01): admins only. */}
+        {hasRole(['admin']) && (
+          <NavLink to="/outreach" className={linkClass}>
+            <Send className="w-[18px] h-[18px] shrink-0" />
+            {!collapsed && <span>Outreach</span>}
+          </NavLink>
+        )}
 
         {/* Settings is for every staff account now: the Line Item Catalog and
             API Connection tabs inside it are open to all, and the page itself

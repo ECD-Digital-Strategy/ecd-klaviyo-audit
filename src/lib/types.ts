@@ -28,6 +28,8 @@ export interface Client {
   api_key_placeholder: string;
   klaviyo_connected?: boolean;
   shopify_connected?: boolean;
+  /** An outreach prospect (Outreach page only), not a real client. */
+  is_outreach?: boolean;
   notes: string;
   /** Set when the client was imported from (or linked to) a HubSpot company. */
   hubspot_company_id?: string | null;
@@ -63,6 +65,8 @@ export interface Audit {
   /** Web audits: false while the "after" concept images are still generating. The
    * report is gated until this is true so it never shows with missing afters. */
   web_afters_ready?: boolean;
+  /** An outreach audit: its public link shows a teaser (audit_public). */
+  is_outreach?: boolean;
   client?: Client;
 }
 

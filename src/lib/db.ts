@@ -215,8 +215,10 @@ function requireUserId(user: Profile | null): string {
   return user.id;
 }
 
+// Outreach prospects (Emil, 2026-11-01) are clients and audits too, flagged
+// is_outreach, and live only on the Outreach page: every list below leaves them out.
 async function fetchAuditCountByClient(): Promise<Map<string, number>> {
-  const { data, error } = await supabase.from('audits').select('client_id');
+  const { data, error } = await supabase.from('audits').select('client_id').eq('is_outreach', false);
   if (error) throw error;
   const counts = new Map<string, number>();
   for (const row of data ?? []) {
@@ -234,6 +236,7 @@ export async function findClientByCompanyName(companyName: string): Promise<Clie
   const { data, error } = await supabase
     .from('clients')
     .select('*')
+    .eq('is_outreach', false)
     .ilike('company_name', trimmed)
     .order('created_at', { ascending: true })
     .limit(20);
@@ -246,7 +249,7 @@ export async function findClientByCompanyName(companyName: string): Promise<Clie
 
 export async function listClients(): Promise<Client[]> {
   const [{ data, error }, auditCounts] = await Promise.all([
-    supabase.from('clients').select('*').order('created_at', { ascending: false }),
+    supabase.from('clients').select('*').eq('is_outreach', false).order('created_at', { ascending: false }),
     fetchAuditCountByClient(),
   ]);
   if (error) throw error;
@@ -306,6 +309,7 @@ export async function listAudits(): Promise<Audit[]> {
   const { data, error } = await supabase
     .from('audits')
     .select(AUDIT_LIST_SELECT)
+    .eq('is_outreach', false)
     .order('updated_at', { ascending: false });
   if (error) throw error;
   return mapAuditsWithEmbeddedSections(data ?? []);
@@ -328,6 +332,7 @@ export async function searchClients(query: string, limit = 5): Promise<Client[]>
     supabase
       .from('clients')
       .select('*')
+      .eq('is_outreach', false)
       .or(`company_name.ilike.%${q}%,name.ilike.%${q}%,industry.ilike.%${q}%`)
       .order('created_at', { ascending: false })
       .limit(Math.max(limit * 3, limit)),
@@ -343,6 +348,7 @@ export async function searchAudits(query: string, limit = 5): Promise<Audit[]> {
   const { data, error } = await supabase
     .from('audits')
     .select('*')
+    .eq('is_outreach', false)
     .ilike('title', `%${q}%`)
     .order('updated_at', { ascending: false })
     .limit(limit);

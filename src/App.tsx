@@ -19,6 +19,7 @@ const AuditWorkspace = lazy(() => import('./pages/AuditWorkspace'));
 const PublicReport = lazy(() => import('./pages/PublicReport'));
 const PublicProposal = lazy(() => import('./pages/PublicProposal'));
 const AdminArea = lazy(() => import('./pages/AdminArea'));
+const Outreach = lazy(() => import('./pages/Outreach'));
 const Proposals = lazy(() => import('./pages/Proposals'));
 const NewProposal = lazy(() => import('./pages/NewProposal'));
 const ProposalDetail = lazy(() => import('./pages/ProposalDetail'));
@@ -181,6 +182,8 @@ function AppRoutes() {
               </>
             )}
             <Route path="/admin" element={<AdminArea />} />
+            {/* Cold outreach with free web audits (Emil, 2026-11-01): admins only. */}
+            {hasRole(['admin']) && <Route path="/outreach" element={<Outreach />} />}
             <Route path="*" element={<Navigate to={deepLinkFrom || '/'} replace />} />
           </Route>
         )}
