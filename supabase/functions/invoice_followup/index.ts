@@ -1,0 +1,164 @@
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { assertServiceRoleClient, hasCronSecret, requireStaffUserId } from "../_shared/auth.ts";
+import { xeroApi } from "../_shared/xero.ts";
+import { newYorkDate } from "../_shared/xero-plan.ts";
+import { proposalEmailHtml, sendEmail } from "../_shared/mailer.ts";
+import {
+  emailInvoiceToClient,
+  invoiceSenderId,
+  loadInvoicing,
+  patchInvoiceRecord,
+  type InvoiceRecord,
+} from "../_shared/invoice-delivery.ts";
+import { daysOverdue, longDate, money, nudgeDue } from "../_shared/invoice-email.ts";
+
+// Unpaid invoices (Emil + Isa, 2026-11-02): "if the invoice hasn't been paid
+// within so many days, email Maria to follow up". Daily (cron invoice-followup),
+// only while proposal_settings.invoicing.overdue_nudges is on:
+//  - reads each approved implementation invoice's status from Xero and records
+//    when it is paid (shown on the proposal's Xero card);
+//  - nudge_after_days past due (7), emails Maria (the cc list) and the invoice's
+//    sender, then again every 7 days until it is paid.
+// Invoices dated before nudges were turned on are left alone.
+// Also "email_invoice" (staff, from the Xero card while auto-send is on): email
+// an approved invoice to the client now, e.g. after connecting a Gmail.
+
+const corsHeaders: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "content-type": "application/json; charset=utf-8" } });
+}
+
+type Sb = ReturnType<typeof assertServiceRoleClient>;
+type Row = {
+  id: string;
+  title: string;
+  proposal_number: number | null;
+  invoice_sender_id: string | null;
+  sent_by: string | null;
+  created_by: string | null;
+  xero_invoices: InvoiceRecord[] | null;
+  client?: { company_name?: string | null } | null;
+};
+type XeroInv = { InvoiceID: string; Status?: string; AmountDue?: number; FullyPaidOnDate?: string; DueDateString?: string; CurrencyCode?: string };
+
+/** Xero's "/Date(1700000000000+0000)/" as yyyy-mm-dd. */
+const xeroDate = (v: string | undefined) => {
+  const ms = Number(v?.match(/\/Date\((\d+)/)?.[1]);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString().slice(0, 10) : null;
+};
+
+async function tick(sb: Sb) {
+  const s = await loadInvoicing(sb);
+  if (!s.overdue_nudges) return { ok: true, skipped: "off" };
+  const today = newYorkDate(new Date());
+
+  const { data } = await sb
+    .from("proposals")
+    .select("id, title, proposal_number, invoice_sender_id, sent_by, created_by, xero_invoices, client:clients(company_name)")
+    .not("xero_invoices", "is", null);
+  const watch: Array<{ p: Row; inv: InvoiceRecord }> = [];
+  for (const p of (data ?? []) as Row[]) {
+    for (const inv of p.xero_invoices ?? []) {
+      if (inv.kind !== "one_time" || inv.status !== "AUTHORISED" || inv.paid_at) continue;
+      if (s.nudges_since && inv.date && inv.date < s.nudges_since) continue;
+      watch.push({ p, inv });
+    }
+  }
+  if (watch.length === 0) return { ok: true, checked: 0 };
+
+  // Xero takes up to 100 ids a call.
+  const live = new Map<string, XeroInv>();
+  for (let i = 0; i < watch.length; i += 100) {
+    const ids = watch.slice(i, i + 100).map((w) => w.inv.id).join(",");
+    const out = await xeroApi<{ Invoices?: XeroInv[] }>(sb, `/Invoices?IDs=${ids}`);
+    for (const x of out.Invoices ?? []) live.set(x.InvoiceID, x);
+  }
+
+  const log: string[] = [];
+  for (const { p, inv } of watch) {
+    const x = live.get(inv.id);
+    if (!x) continue;
+    const company = p.client?.company_name ?? p.title;
+    if (x.Status === "PAID") {
+      await patchInvoiceRecord(sb, p.id, inv.id, { paid_at: xeroDate(x.FullyPaidOnDate) ?? today, amount_due: 0, status: "PAID" });
+      log.push(`${company} ${inv.number}: paid`);
+      continue;
+    }
+    if (x.Status === "VOIDED" || x.Status === "DELETED") {
+      await patchInvoiceRecord(sb, p.id, inv.id, { status: x.Status });
+      continue;
+    }
+    const due = xeroDate(x.DueDateString) ?? inv.due_date;
+    if (typeof x.AmountDue === "number" && x.AmountDue !== inv.amount_due) await patchInvoiceRecord(sb, p.id, inv.id, { amount_due: x.AmountDue });
+    if (!nudgeDue({ ...inv, due_date: due }, s, today)) continue;
+
+    const { data: sender } = await sb.from("profiles").select("email").eq("id", invoiceSenderId(p) ?? "").maybeSingle();
+    const to = [...new Set([...s.cc_emails, (sender as { email?: string } | null)?.email ?? ""].filter((e) => e.includes("@")).map((e) => e.toLowerCase()))];
+    if (to.length === 0) continue;
+    const late = daysOverdue(due, today);
+    const owed = money(typeof x.AmountDue === "number" ? x.AmountDue : inv.total, x.CurrencyCode || "USD");
+    const sent = await sendEmail({
+      to,
+      subject: `Unpaid: ${company} invoice ${inv.number} is ${late} days overdue`,
+      html: proposalEmailHtml({
+        heading: `${company}: invoice ${inv.number} is ${late} days overdue`,
+        bodyLines: [
+          `${owed} is still due. It was due ${longDate(due)}.`,
+          inv.emailed_at
+            ? `It was emailed to ${inv.emailed_to ?? "the client"} from ${inv.emailed_from ?? "us"} on ${longDate(inv.emailed_at.slice(0, 10))}.`
+            : "It was not emailed to the client by the proposals app.",
+          "Worth a follow-up with the client. This reminder comes again in a week until it is paid.",
+        ],
+        ctaLabel: "Open it in Xero",
+        ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,
+      }),
+    });
+    if (sent.status === "sent") {
+      await patchInvoiceRecord(sb, p.id, inv.id, { last_nudge_at: new Date().toISOString() });
+      log.push(`${company} ${inv.number}: nudged (${late} days)`);
+    }
+  }
+  return { ok: true, checked: watch.length, log };
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+  if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+  const body = (await req.json().catch(() => ({}))) as { action?: string; proposal_id?: string; invoice_id?: string };
+  const sb = assertServiceRoleClient();
+
+  if (body.action === "tick") {
+    if (!(await hasCronSecret(req, "invoice_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
+    try {
+      return json(await tick(sb));
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
+  try {
+    await requireStaffUserId(req);
+  } catch {
+    return json({ ok: false, error: "forbidden" }, 403);
+  }
+
+  if (body.action === "email_invoice") {
+    const s = await loadInvoicing(sb);
+    if (!s.auto_send) return json({ ok: false, error: "Invoice emails are switched off in Proposal settings." }, 409);
+    try {
+      const r = await emailInvoiceToClient(sb, body.proposal_id ?? "", body.invoice_id ?? "", s);
+      return json({ ok: true, ...r });
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      if (body.proposal_id && body.invoice_id) await patchInvoiceRecord(sb, body.proposal_id, body.invoice_id, { email_error: reason.slice(0, 300) });
+      return json({ ok: false, error: reason }, 409);
+    }
+  }
+
+  return json({ ok: false, error: "unknown_action" }, 400);
+});

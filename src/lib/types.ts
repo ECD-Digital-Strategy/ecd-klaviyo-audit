@@ -439,7 +439,20 @@ export interface Proposal {
     status?: string;
     /** The client-facing payment link (in.xero.com/...), for approved ones. */
     online_url?: string | null;
+    /** Emailed to the client from a person's Gmail (supabase/functions/_shared/invoice-delivery.ts). */
+    emailed_at?: string | null;
+    emailed_from?: string | null;
+    emailed_to?: string | null;
+    /** Why it could not be emailed automatically. */
+    email_error?: string | null;
+    /** From Xero, by the daily follow-up (invoice_followup). */
+    paid_at?: string | null;
+    amount_due?: number | null;
+    last_nudge_at?: string | null;
   }>;
+  /** Whose Gmail the invoice is emailed from; null = whoever sent the proposal. */
+  invoice_sender_id?: string | null;
+  sent_by?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -625,6 +638,24 @@ export interface ProposalSettings {
   };
   /** House voice/style guide the proposal AI applies to every draft. */
   voice_profile?: string;
+  /** Invoices emailed to the client from a person's Gmail. Off until turned on. */
+  invoicing: InvoicingSettings;
+}
+
+/** Keep in sync with supabase/functions/_shared/invoice-email.ts. */
+export interface InvoicingSettings {
+  /** Email the implementation invoice to the client at signing. */
+  auto_send: boolean;
+  /** Always copied on invoice emails (Maria). */
+  cc_emails: string[];
+  /** Nudge Maria and the sender about unpaid invoices. */
+  overdue_nudges: boolean;
+  /** First nudge this many days after the due date, then weekly. */
+  nudge_after_days: number;
+  /** Only invoices dated on or after this; set when nudges are turned on. */
+  nudges_since: string | null;
+  subject: string;
+  body: string;
 }
 
 // ---------------------------------------------------------------------------

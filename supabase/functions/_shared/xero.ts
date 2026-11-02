@@ -237,6 +237,16 @@ export async function xeroApi<T>(
   return JSON.parse(text) as T;
 }
 
+/** An invoice as Xero's own PDF, to attach to the email the client gets. */
+export async function xeroInvoicePdf(sb: SupabaseClient, invoiceId: string): Promise<Uint8Array> {
+  const { token, tenantId } = await accessToken(sb);
+  const res = await fetch(`${API_BASE}/Invoices/${invoiceId}`, {
+    headers: { authorization: `Bearer ${token}`, "xero-tenant-id": tenantId, accept: "application/pdf" },
+  });
+  if (!res.ok) throw new Error(`xero_pdf_${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 export function disconnectPatch() {
   return {
     tenant_id: null,

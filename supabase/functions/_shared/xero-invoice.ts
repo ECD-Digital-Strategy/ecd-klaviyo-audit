@@ -10,6 +10,7 @@ import {
 import { type FeeKind, newYorkDate, type PlanLine, planInvoices } from "./xero-plan.ts";
 import { autoCodeLines } from "./xero-autocode.ts";
 import { notificationRecipients, proposalEmailHtml, sendEmail } from "./mailer.ts";
+import { deliverNewInvoices } from "./invoice-delivery.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -55,6 +56,8 @@ export type CreatedInvoice = {
   status?: string;
   /** The client-facing Xero payment link (in.xero.com/...), for approved ones. */
   online_url?: string | null;
+  /** Why auto-send could not email it (invoice-delivery.ts), if it tried. */
+  email_error?: string | null;
 };
 
 type ProposalRow = {
@@ -128,6 +131,7 @@ async function emailPaymentLinks(sb: SupabaseClient, proposalId: string, clientN
         heading: `${clientName}: invoice ${inv.number} is ready to share`,
         bodyLines: [
           `The implementation invoice for ${clientName} (${money(inv.total)}, due ${inv.due_date}) is approved in Xero. It has not been sent to the client.`,
+          ...(inv.email_error ? [`It could not be emailed to them automatically: ${inv.email_error}`] : []),
           "Share the link below with them. They can view and pay it there.",
         ],
         ctaLabel: "Open the invoice",
@@ -361,9 +365,18 @@ export async function createDraftInvoiceForProposal(
         })
         .eq("id", proposalId);
     }
-    // Whoever sent the proposal gets the payment link to share with the client.
+    // With invoice auto-send on, the client gets it straight from the sender's
+    // Gmail (invoice-delivery.ts). Anything not emailed that way (auto-send off,
+    // the default, or the sender's Gmail not connected) goes to the sender as a
+    // payment link to share, as before.
     const fresh = created.filter((c) => c.online_url && !already.some((a) => a.id === c.id));
-    if (fresh.length) await emailPaymentLinks(sb, proposalId, contactName, fresh).catch((e) => console.warn("xero: payment link email failed", e));
+    const notEmailed = fresh.length
+      ? await deliverNewInvoices(sb, proposalId, fresh).catch((e) => {
+        console.warn("invoice: auto-send failed", e);
+        return fresh;
+      })
+      : [];
+    if (notEmailed.length) await emailPaymentLinks(sb, proposalId, contactName, notEmailed).catch((e) => console.warn("xero: payment link email failed", e));
     return { ok: true, invoices: created };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

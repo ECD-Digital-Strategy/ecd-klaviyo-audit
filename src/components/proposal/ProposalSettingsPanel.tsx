@@ -6,6 +6,7 @@ import { getProposalSettings, updateProposalSettings } from '../../lib/proposals
 import { uploadReportScreenshot } from '../../lib/db';
 import type { ProposalSettings } from '../../lib/types';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
+import InvoiceEmailSettings from './InvoiceEmailSettings';
 
 export default function ProposalSettingsPanel() {
   const toast = useToast();
@@ -234,6 +235,8 @@ export default function ProposalSettingsPanel() {
           </div>
         </div>
       </section>
+
+      <InvoiceEmailSettings value={settings.invoicing} onChange={v => patch({ invoicing: v })} inputClass={inputClass} />
 
       <VoiceProfileSection
         domain="proposal"

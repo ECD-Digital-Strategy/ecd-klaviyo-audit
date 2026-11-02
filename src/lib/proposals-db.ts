@@ -13,6 +13,7 @@ import {
 } from './msa-on-file';
 import type {
   ContractDocument,
+  InvoicingSettings,
   Proposal,
   ProposalEvent,
   ProposalEventType,
@@ -21,6 +22,27 @@ import type {
   ProposalSignature,
   ProposalTemplate,
 } from './types';
+
+/** Off until turned on. Keep in sync with supabase/functions/_shared/invoice-email.ts. */
+export const DEFAULT_INVOICING: InvoicingSettings = {
+  auto_send: false,
+  cc_emails: ['maria@ecdigitalstrategy.com'],
+  overdue_nudges: false,
+  nudge_after_days: 7,
+  nudges_since: null,
+  subject: 'Invoice {invoice_number} from ECD Digital Strategy',
+  body: [
+    'Hi {first_name},',
+    '',
+    "Thanks again for signing. Here's the invoice for {proposal_title} ({total}, due {due_date}).",
+    '',
+    'You can view and pay it here: {pay_link}',
+    '',
+    'The PDF is attached too. Let me know if anything looks off.',
+    '',
+    '{sender_first_name}',
+  ].join('\n'),
+};
 
 export const DEFAULT_PROPOSAL_SETTINGS: ProposalSettings = {
   cover: {
@@ -37,6 +59,7 @@ export const DEFAULT_PROPOSAL_SETTINGS: ProposalSettings = {
   defaults: {
     valid_days: 30,
   },
+  invoicing: DEFAULT_INVOICING,
   voice_profile: '',
 };
 
@@ -47,6 +70,11 @@ export function mergeProposalSettings(raw: unknown): ProposalSettings {
     email: { ...DEFAULT_PROPOSAL_SETTINGS.email, ...(value.email ?? {}) },
     defaults: { ...DEFAULT_PROPOSAL_SETTINGS.defaults, ...(value.defaults ?? {}) },
     voice_profile: typeof value.voice_profile === 'string' ? value.voice_profile : '',
+    invoicing: {
+      ...DEFAULT_INVOICING,
+      ...(value.invoicing ?? {}),
+      cc_emails: Array.isArray(value.invoicing?.cc_emails) ? value.invoicing!.cc_emails : DEFAULT_INVOICING.cc_emails,
+    },
   };
 }
 
@@ -312,6 +340,7 @@ export async function updateProposal(
       | 'lost_at'
       | 'lost_reason'
       | 'won_at'
+      | 'invoice_sender_id'
     >
   >,
 ): Promise<Proposal> {

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
-import { updateProposalLineItem } from '../../lib/proposals-db';
+import { getProposalSettings, updateProposalLineItem } from '../../lib/proposals-db';
+import { emailInvoiceNow } from '../../lib/invoice-sending';
 import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
@@ -29,6 +30,11 @@ export default function XeroInvoiceCard({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // Invoice emails (Proposal settings): off until switched on.
+  const [autoSend, setAutoSend] = useState(false);
+  useEffect(() => {
+    getProposalSettings().then(s => setAutoSend(s.invoicing.auto_send), () => setAutoSend(false));
+  }, []);
 
   const create = async () => {
     setBusy(true);
@@ -81,11 +87,16 @@ export default function XeroInvoiceCard({
                 Open in Xero <ExternalLink className="h-3.5 w-3.5" />
               </a>
               {inv.online_url && <PaymentLink url={inv.online_url} />}
+              {inv.kind === 'one_time' && inv.online_url && (
+                <InvoiceEmailStatus proposalId={proposal.id} invoice={inv} canEmail={autoSend} onChanged={onChanged} />
+              )}
             </li>
           ))}
           <li className="text-[11px] text-gray-400">
-            Nothing has been emailed to the client.
-            {invoices.some(i => i.online_url) ? ' Share the payment link with them; whoever sent the proposal was emailed it too.' : ''}
+            {invoices.some(i => i.emailed_at)
+              ? 'The implementation invoice was emailed to the client.'
+              : 'Nothing has been emailed to the client.'}
+            {invoices.some(i => i.online_url && !i.emailed_at) ? ' Share the payment link with them; whoever sent the proposal was emailed it too.' : ''}
             {invoices.some(i => i.status !== 'AUTHORISED') ? ' Drafts are approved and sent from Xero.' : ''}
             {invoices.some(i => i.kind === 'monthly') ? ' The retainer\'s repeating invoice is set up in Xero from the first month.' : ''}
           </li>
@@ -121,6 +132,69 @@ export default function XeroInvoiceCard({
             {proposal.xero_invoice_error ? 'Try again' : 'Create draft invoice'}
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+type InvoiceEntry = NonNullable<Proposal['xero_invoices']>[number];
+
+/** Emailed, paid or overdue, from the invoice emails and the daily Xero check. */
+function InvoiceEmailStatus({
+  proposalId,
+  invoice: inv,
+  canEmail,
+  onChanged,
+}: {
+  proposalId: string;
+  invoice: InvoiceEntry;
+  canEmail: boolean;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
+  // Only once the daily Xero check has looked (amount_due set): before that an
+  // invoice's paid state is unknown, not overdue.
+  const overdue = !inv.paid_at && typeof inv.amount_due === 'number' && inv.amount_due > 0 && inv.due_date && inv.due_date < today;
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const r = await emailInvoiceNow(proposalId, inv.id);
+      toast(`Invoice emailed to ${r.to}`);
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not email it');
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1.5 space-y-1 text-[11px]">
+      {inv.paid_at ? (
+        <p className="font-medium text-emerald-700">Paid {day(inv.paid_at.slice(0, 10))}</p>
+      ) : overdue ? (
+        <p className="font-medium text-amber-700">Overdue since {day(inv.due_date)}{inv.last_nudge_at ? `, team reminded ${day(inv.last_nudge_at.slice(0, 10))}` : ''}</p>
+      ) : null}
+      {inv.emailed_at ? (
+        <p className="text-gray-500">Emailed to {inv.emailed_to} from {inv.emailed_from} on {day(inv.emailed_at.slice(0, 10))}</p>
+      ) : (
+        <>
+          {inv.email_error && <p className="text-amber-700">Not emailed: {inv.email_error}</p>}
+          {canEmail && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={send}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Email it to the client
+            </button>
+          )}
+        </>
       )}
     </div>
   );
