@@ -1,17 +1,17 @@
 // Outreach, step 2 (Emil, 2026-11-02): what goes out, and when. Pure functions so
-// they can be tested without sending anything.
+// they can be tested without sending anything. The numbers (emails per day,
+// follow-ups, hours, spacing) are set on the Outreach page's Settings tab and
+// stored in outreach_settings; these are the defaults it starts with.
 
 /** Emails go out on US weekdays between these hours, New York time. */
 export const SEND_WINDOW = { tz: "America/New_York", startHour: 9, endHour: 16 } as const;
-/** Days after the previous email that each follow-up waits. */
-export const FOLLOWUP_GAP_DAYS = [3, 4] as const;
-/** How many follow-ups go out (Emil, 2026-11-02: one, 3 days after the first email). */
-export const MAX_FOLLOWUPS = 1;
-/** Minutes between two first emails, so a batch never lands at once. */
-export const MIN_GAP_MINUTES = 45;
 
-/** Whether `now` is a weekday inside the send window, New York time. */
-export function inSendWindow(now: Date): boolean {
+/** Whether `now` is a weekday between startHour and endHour, New York time. */
+export function inSendWindow(
+  now: Date,
+  startHour: number = SEND_WINDOW.startHour,
+  endHour: number = SEND_WINDOW.endHour,
+): boolean {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: SEND_WINDOW.tz,
     weekday: "short",
@@ -20,7 +20,7 @@ export function inSendWindow(now: Date): boolean {
   }).formatToParts(now);
   const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0") % 24;
-  return !["Sat", "Sun"].includes(weekday) && hour >= SEND_WINDOW.startHour && hour < SEND_WINDOW.endHour;
+  return !["Sat", "Sun"].includes(weekday) && hour >= startHour && hour < endHour;
 }
 
 /** Start of today in New York, as a UTC instant (for "sent today" counts). */
@@ -44,7 +44,7 @@ export function replySearchKey(contactEmail: string, storeDomain: string): strin
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 /** A plain-text email as the simplest HTML: paragraphs, line breaks, links. Reads
- * like a normal email typed in Gmail, no styling, no images, no tracking. */
+ * like a normal email typed in Gmail, no styling, no tracking. */
 export function plainHtml(text: string): string {
   const paras = text.replace(/\r\n/g, "\n").trim().split(/\n{2,}/);
   const html = paras
@@ -58,11 +58,23 @@ export function plainHtml(text: string): string {
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">\n${html}\n</div>`;
 }
 
-/** The lines under every first email: an easy way out, and the postal address once set. */
-export function footer(postalAddress: string | null | undefined): string {
-  const lines = ["P.S. Not relevant? Just reply \"no\" and I won't email again."];
-  if (postalAddress?.trim()) lines.push(`ECD Digital Strategy, ${postalAddress.trim()}`);
-  return lines.join("\n");
+/** The line under every first email: an easy way out. No postal address (Emil, 2026-11-02). */
+export function footer(): string {
+  return "P.S. Not relevant? Just reply \"no\" and I won't email again.";
+}
+
+/** With his own signature under the email, the drafted "ECD Digital Strategy" line
+ * under his name would say it twice. */
+export function withoutCompanyLine(text: string): string {
+  return text.replace(/\n+ECD Digital Strategy\s*$/i, "").trimEnd();
+}
+
+/** Emil's Gmail signature under the email, the way Gmail itself adds one: Gmail
+ * only adds it to mail written in Gmail, not to mail sent through an app password. */
+export function withSignature(html: string, signatureHtml: string | null | undefined): string {
+  const sig = (signatureHtml ?? "").trim();
+  if (!sig) return html;
+  return `${html}\n<br><div class="gmail_signature_prefix">-- </div><div class="gmail_signature">${sig}</div>`;
 }
 
 /** The short follow-ups, threaded under the first email as "Re: <subject>". */

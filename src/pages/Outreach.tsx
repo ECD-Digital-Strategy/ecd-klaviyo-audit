@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { useAuth } from '../contexts/AuthContext';
@@ -21,14 +21,18 @@ import {
   saveSendSettings,
   sendNow,
   unqueueProspect,
+  listSends,
+  testSend,
   type OutreachProspect,
+  type OutreachSend,
   type OutreachSendStatus,
   type ScreenResult,
 } from '../lib/outreach';
 
 // Outreach (Emil, 2026-11-01, sending added 2026-11-02): see src/lib/outreach.ts.
-// Emil approves every email: Send now, or Queue it for the autopilot, which sends
-// up to the daily limit on US weekdays and follows up twice unless they reply.
+// Three tabs (2026-11-02): Overview (where things stand, and every email sent),
+// Prospects (add stores, audit, draft, send or queue) and Settings (mailbox,
+// how many and when, booking link, his signature). Emil approves every email.
 
 const GROUPS: Array<{ key: string; title: string; note: string; match: (p: OutreachProspect) => boolean }> = [
   { key: 'ready', title: 'Ready to send', note: 'Check the email and who it goes to, then send it now or queue it.', match: (p) => p.status === 'ready' },
@@ -48,6 +52,9 @@ export default function Outreach() {
   const [screening, setScreening] = useState(false);
   const [lastScreen, setLastScreen] = useState<ScreenResult[] | null>(null);
   const [sending, setSending] = useState<OutreachSendStatus | null>(null);
+  const [params, setParams] = useSearchParams();
+  const tab: TabKey = (TABS.find((t) => t.key === params.get('tab'))?.key ?? 'overview');
+  const setTab = (key: TabKey) => setParams(key === 'overview' ? {} : { tab: key }, { replace: true });
   const loadSending = useCallback(async () => {
     try {
       setSending(await getSendStatus());
@@ -98,10 +105,28 @@ export default function Outreach() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <TopBar title="Outreach" subtitle="Free website audits for cold outreach. You approve and send every email." />
+      <TopBar title="Outreach" subtitle="Free website audits for cold outreach. You approve every email." />
+      <div className="border-b border-gray-200 bg-white px-4 md:px-8">
+        <nav className="flex gap-1" aria-label="Outreach sections">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              aria-current={tab === t.key ? 'page' : undefined}
+              className={`border-b-2 px-3 py-3 text-sm font-medium transition-colors ${tab === t.key ? 'border-brand-primary text-brand-primary' : 'border-transparent text-gray-500 hover:text-gray-800'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
       <div className="space-y-8 p-4 md:p-8">
-        <SendingPanel status={sending} onChanged={loadSending} />
-
+        {tab === 'overview' && (
+          <OverviewTab prospects={prospects ?? []} sending={sending} onOpenProspects={() => setTab('prospects')} />
+        )}
+        {tab === 'settings' && <SettingsTab status={sending} onChanged={loadSending} />}
+        {tab === 'prospects' && (<>
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-gray-900">Add stores</h2>
           <p className="mt-1 text-xs text-gray-500">
@@ -168,6 +193,7 @@ export default function Outreach() {
             </section>
           ))
         )}
+        </>)}
       </div>
     </div>
   );
@@ -232,6 +258,7 @@ function ProspectCard({
               {p.contact_email ? ` to ${p.contact_email}` : ''}
               {p.followups_sent ? `, ${p.followups_sent} follow-up${p.followups_sent === 1 ? '' : 's'}` : ''}
               {p.status === 'replied' ? ', replied' : p.status === 'bounced' ? ', bounced' : ''}
+              {(p.report_views ?? 0) > 0 ? `, opened their report ${p.report_views}x` : ''}
             </p>
           )}
           {p.status === 'approved' && <p className="mt-1 text-xs text-gray-500">Queued{p.contact_email ? ` for ${p.contact_email}` : ''}</p>}
@@ -342,6 +369,17 @@ function ProspectCard({
             >
               <Mail className="h-3.5 w-3.5" /> Open in Gmail
             </a>
+            {canSend && (
+              <button
+                type="button"
+                disabled={busy !== null}
+                title="Send this email to your own mailbox, exactly as they would get it"
+                onClick={() => run('test', async () => { await saveEdits(); await testSend(p.id); showToast('Test sent to your mailbox'); })}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />} Test to me
+              </button>
+            )}
             <button
               type="button"
               onClick={() => { void navigator.clipboard.writeText(`${subject}\n\n${body}`); showToast('Copied'); }}
@@ -372,18 +410,163 @@ function ProspectCard({
   );
 }
 
-function SendingPanel({ status, onChanged }: { status: OutreachSendStatus | null; onChanged: () => Promise<void> }) {
+const TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'prospects', label: 'Prospects' },
+  { key: 'settings', label: 'Settings' },
+] as const;
+type TabKey = (typeof TABS)[number]['key'];
+
+function OverviewTab({
+  prospects,
+  sending,
+  onOpenProspects,
+}: {
+  prospects: OutreachProspect[];
+  sending: OutreachSendStatus | null;
+  onOpenProspects: () => void;
+}) {
+  const [sends, setSends] = useState<OutreachSend[] | null>(null);
+  useEffect(() => {
+    listSends().then(setSends, () => setSends([]));
+  }, [prospects]);
+
+  const byId = useMemo(() => new Map(prospects.map((p) => [p.id, p])), [prospects]);
+  const count = (fn: (p: OutreachProspect) => boolean) => prospects.filter(fn).length;
+  const contacted = count((p) => Boolean(p.sent_at));
+  const replied = count((p) => p.status === 'replied');
+  const opened = count((p) => (p.report_views ?? 0) > 0);
+  const pct = (n: number) => (contacted > 0 ? `${Math.round((n / contacted) * 100)}%` : 'n/a');
+
+  const tiles: Array<{ label: string; value: string | number; note?: string }> = [
+    { label: 'Stores checked', value: prospects.length, note: `${count((p) => p.status === 'skipped')} skipped` },
+    { label: 'Audited', value: count((p) => Boolean(p.audit_id)), note: `${count((p) => p.status === 'auditing')} running now` },
+    { label: 'Ready or queued', value: count((p) => p.status === 'ready' || p.status === 'approved'), note: `${count((p) => p.status === 'approved')} queued` },
+    { label: 'Emailed', value: contacted, note: `${sending?.sent_today ?? 0} of ${sending?.settings.daily_new_cap ?? 3} today` },
+    { label: 'Opened their report', value: opened, note: pct(opened) },
+    { label: 'Replied', value: replied, note: pct(replied) },
+  ];
+
+  const kindLabel: Record<OutreachSend['kind'], string> = { initial: 'First email', followup_1: 'Follow-up', followup_2: 'Second follow-up' };
+
+  return (
+    <div className="space-y-8">
+      <section className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-gray-200 bg-white px-5 py-3 text-sm">
+        {sending?.mailbox ? (
+          sending.settings.paused ? (
+            <span className="font-medium text-amber-700">Sending is paused. {sending.settings.pause_reason ?? ''}</span>
+          ) : (
+            <span className="text-gray-700">
+              <span className="font-medium text-emerald-700">Sending is on</span> from {sending.mailbox}.{' '}
+              {sending.in_window ? 'Inside sending hours now.' : 'Outside sending hours now; queued emails wait.'}
+            </span>
+          )
+        ) : (
+          <span className="text-gray-700">No mailbox connected yet. Connect it under Settings.</span>
+        )}
+        {count((p) => p.status === 'auditing' && p.audit?.status === 'published') > 0 && (
+          <button type="button" onClick={onOpenProspects} className="text-xs font-medium text-brand-primary hover:underline">
+            {count((p) => p.status === 'auditing' && p.audit?.status === 'published')} audit(s) ready for an email draft
+          </button>
+        )}
+      </section>
+
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {tiles.map((t) => (
+          <div key={t.label} className="rounded-xl border border-gray-200 bg-white p-4">
+            <p className="text-xs text-gray-500">{t.label}</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums text-gray-900">{t.value}</p>
+            {t.note && <p className="mt-0.5 text-xs text-gray-400">{t.note}</p>}
+          </div>
+        ))}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold text-gray-900">History</h2>
+        {sends === null ? (
+          <p className="text-sm text-gray-400">Loading…</p>
+        ) : sends.length === 0 ? (
+          <p className="text-sm text-gray-500">Nothing sent yet. Emails you send or queue show up here.</p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-gray-100 text-xs text-gray-500">
+                <tr>
+                  <th className="px-4 py-2.5 font-medium">When</th>
+                  <th className="px-4 py-2.5 font-medium">Store</th>
+                  <th className="px-4 py-2.5 font-medium">To</th>
+                  <th className="px-4 py-2.5 font-medium">Email</th>
+                  <th className="px-4 py-2.5 font-medium">Where they are now</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {sends.map((s) => {
+                  const p = byId.get(s.prospect_id);
+                  const now = s.status === 'failed'
+                    ? `Not sent: ${s.error ?? 'unknown error'}`
+                    : p?.status === 'replied'
+                      ? 'Replied'
+                      : p?.status === 'bounced'
+                        ? 'Bounced'
+                        : (p?.report_views ?? 0) > 0
+                          ? `Opened their report${(p?.report_views ?? 0) > 1 ? ` ${p?.report_views} times` : ''}`
+                          : 'No reply yet';
+                  return (
+                    <tr key={s.id} className="align-top">
+                      <td className="whitespace-nowrap px-4 py-2.5 text-gray-500">
+                        {new Date(s.sent_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </td>
+                      <td className="px-4 py-2.5 font-medium text-gray-900">{p?.store_name || p?.domain || 'Removed'}</td>
+                      <td className="px-4 py-2.5 text-gray-600">{s.to_email}</td>
+                      <td className="px-4 py-2.5 text-gray-600">
+                        <span className="text-gray-900">{kindLabel[s.kind]}</span>
+                        <span className="block max-w-xs truncate text-xs text-gray-400">{s.subject}</span>
+                      </td>
+                      <td className={`px-4 py-2.5 text-xs ${s.status === 'failed' || p?.status === 'bounced' ? 'text-red-600' : p?.status === 'replied' ? 'font-medium text-emerald-700' : 'text-gray-500'}`}>
+                        {now}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null; onChanged: () => Promise<void> }) {
   const showToast = useToast();
   const [user, setUser] = useState('');
   const [pass, setPass] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  const [booking, setBooking] = useState('');
-  const [address, setAddress] = useState('');
+  const settings = status?.settings;
+  const [form, setForm] = useState({
+    daily_new_cap: 3,
+    max_followups: 1,
+    followup_gap_days: 3,
+    send_start_hour: 9,
+    send_end_hour: 16,
+    min_gap_minutes: 45,
+    booking_url: '',
+    signature_html: '',
+  });
 
   useEffect(() => {
-    setBooking(status?.settings.booking_url ?? '');
-    setAddress(status?.settings.postal_address ?? '');
-  }, [status?.settings.booking_url, status?.settings.postal_address]);
+    if (!settings) return;
+    setForm({
+      daily_new_cap: settings.daily_new_cap,
+      max_followups: settings.max_followups,
+      followup_gap_days: settings.followup_gap_days,
+      send_start_hour: settings.send_start_hour,
+      send_end_hour: settings.send_end_hour,
+      min_gap_minutes: settings.min_gap_minutes,
+      booking_url: settings.booking_url ?? '',
+      signature_html: settings.signature_html ?? '',
+    });
+  }, [settings]);
 
   const run = async (label: string, fn: () => Promise<unknown>, done?: string) => {
     setBusy(label);
@@ -398,95 +581,164 @@ function SendingPanel({ status, onChanged }: { status: OutreachSendStatus | null
     }
   };
 
-  const settings = status?.settings;
   const paused = Boolean(settings?.paused);
+  const dirty =
+    settings !== undefined &&
+    (form.daily_new_cap !== settings.daily_new_cap ||
+      form.max_followups !== settings.max_followups ||
+      form.followup_gap_days !== settings.followup_gap_days ||
+      form.send_start_hour !== settings.send_start_hour ||
+      form.send_end_hour !== settings.send_end_hour ||
+      form.min_gap_minutes !== settings.min_gap_minutes ||
+      form.booking_url !== (settings.booking_url ?? '') ||
+      form.signature_html !== (settings.signature_html ?? ''));
+
+  const num = (key: keyof typeof form, label: string, min: number, max: number, note?: string) => (
+    <label className="text-xs text-gray-500">
+      {label}
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={form[key] as number}
+        onChange={(e) => setForm((f) => ({ ...f, [key]: Number(e.target.value) }))}
+        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-900"
+      />
+      {note && <span className="mt-0.5 block text-[11px] text-gray-400">{note}</span>}
+    </label>
+  );
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">Sending</h2>
-          {status?.mailbox ? (
-            <p className="mt-1 text-xs text-gray-500">
-              From <span className="font-medium text-gray-800">{status.mailbox}</span>. {status.sent_today} of {settings?.daily_new_cap ?? 3} sent
-              today. Queued emails go out on US weekdays, 9am to 4pm New York time.
-            </p>
-          ) : (
-            <p className="mt-1 text-xs text-gray-500">Connect the mailbox the emails come from. Until then, use Open in Gmail on each email.</p>
-          )}
-          {paused && (
-            <p className="mt-2 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
-              <span className="font-semibold">Paused.</span> {settings?.pause_reason ?? ''}
-            </p>
+    <div className="space-y-6">
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Mailbox</h2>
+            {status?.mailbox ? (
+              <p className="mt-1 text-xs text-gray-500">
+                Emails go out from <span className="font-medium text-gray-800">{status.mailbox}</span>, and replies land in its inbox.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-gray-500">Connect the mailbox the emails come from.</p>
+            )}
+            {paused && (
+              <p className="mt-2 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+                <span className="font-semibold">Paused.</span> {settings?.pause_reason ?? ''}
+              </p>
+            )}
+          </div>
+          {status?.mailbox && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => run('test', () => testSend(), `Test sent to ${status.mailbox}`)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />} Send me a test
+              </button>
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => run('pause', () => saveSendSettings({ paused: !paused }), paused ? 'Sending resumed' : 'Sending paused')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${paused ? 'bg-brand-primary text-white hover:bg-brand-primary-dark' : 'border border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+              >
+                {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />} {paused ? 'Resume sending' : 'Pause sending'}
+              </button>
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => {
+                  if (window.confirm('Disconnect the mailbox? Queued emails wait until you connect it again.')) {
+                    void run('disconnect', disconnectMailbox, 'Mailbox disconnected');
+                  }
+                }}
+                className="text-xs text-gray-400 hover:text-gray-700"
+              >
+                Disconnect
+              </button>
+            </div>
           )}
         </div>
-        {status?.mailbox && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={busy !== null}
-              onClick={() => run('pause', () => saveSendSettings({ paused: !paused }), paused ? 'Sending resumed' : 'Sending paused')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${paused ? 'bg-brand-primary text-white hover:bg-brand-primary-dark' : 'border border-gray-200 text-gray-700 hover:bg-gray-50'}`}
-            >
-              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />} {paused ? 'Resume sending' : 'Pause sending'}
+        {!status?.mailbox && (
+          <form
+            className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run('connect', async () => { await connectMailbox(user, pass); setPass(''); }, 'Mailbox connected');
+            }}
+          >
+            <input value={user} onChange={(e) => setUser(e.target.value)} type="email" placeholder="emil@ecdigitalstrategy.com" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
+            <input value={pass} onChange={(e) => setPass(e.target.value)} type="password" autoComplete="new-password" placeholder="Google app password" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
+            <button type="submit" disabled={busy !== null || !user.trim() || !pass.trim()} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-primary px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50">
+              {busy === 'connect' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />} Connect
             </button>
-            <button
-              type="button"
-              disabled={busy !== null}
-              onClick={() => {
-                if (window.confirm('Disconnect the mailbox? Queued emails wait until you connect it again.')) {
-                  void run('disconnect', disconnectMailbox, 'Mailbox disconnected');
-                }
-              }}
-              className="text-xs text-gray-400 hover:text-gray-700"
-            >
-              Disconnect
-            </button>
-          </div>
+            <p className="text-[11px] text-gray-400 sm:col-span-3">
+              Make the app password at myaccount.google.com/apppasswords. We check it by signing in, store it encrypted, and it is never shown again.
+            </p>
+          </form>
         )}
-      </div>
+      </section>
 
-      {!status?.mailbox && (
-        <form
-          className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run('connect', async () => { await connectMailbox(user, pass); setPass(''); }, 'Mailbox connected');
-          }}
-        >
-          <input value={user} onChange={(e) => setUser(e.target.value)} type="email" placeholder="emil@ecdigitalstrategy.com" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
-          <input value={pass} onChange={(e) => setPass(e.target.value)} type="password" autoComplete="new-password" placeholder="Google app password" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
-          <button type="submit" disabled={busy !== null || !user.trim() || !pass.trim()} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-primary px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50">
-            {busy === 'connect' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />} Connect
-          </button>
-          <p className="text-[11px] text-gray-400 sm:col-span-3">
-            Make the app password at myaccount.google.com/apppasswords. We check it by signing in, store it encrypted, and it is never shown again.
-          </p>
-        </form>
-      )}
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-900">How much and when</h2>
+        <p className="mt-1 text-xs text-gray-500">Queued emails go out on US weekdays, New York time. Anyone who replies is never followed up.</p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          {num('daily_new_cap', 'New emails per day', 0, 10, 'First emails only. 0 stops new sends.')}
+          {num('max_followups', 'Follow-ups per person', 0, 2)}
+          {num('followup_gap_days', 'Days before a follow-up', 1, 14)}
+          {num('send_start_hour', 'Send from (hour, 0-23)', 0, 23)}
+          {num('send_end_hour', 'Send until (hour, 1-24)', 1, 24)}
+          {num('min_gap_minutes', 'Minutes between first emails', 5, 240)}
+        </div>
+      </section>
 
-      <div className="mt-4 grid gap-2 border-t border-gray-100 pt-4 sm:grid-cols-2">
-        <label className="text-xs text-gray-500">
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-900">Booking link and signature</h2>
+        <label className="mt-3 block text-xs text-gray-500">
           Booking link (used in follow-ups and on their report)
           <input
-            value={booking}
-            onChange={(e) => setBooking(e.target.value)}
-            onBlur={() => { if (booking !== (settings?.booking_url ?? '')) void run('booking', () => saveSendSettings({ booking_url: booking }), 'Saved'); }}
+            value={form.booking_url}
+            onChange={(e) => setForm((f) => ({ ...f, booking_url: e.target.value }))}
             placeholder="https://calendly.com/..."
             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-900"
           />
         </label>
-        <label className="text-xs text-gray-500">
-          Postal address (added under every first email)
-          <input
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            onBlur={() => { if (address !== (settings?.postal_address ?? '')) void run('address', () => saveSendSettings({ postal_address: address }), 'Saved'); }}
-            placeholder="Street, city, state, ZIP"
-            className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-900"
-          />
-        </label>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <label className="text-xs text-gray-500">
+            Signature (HTML, added under every email)
+            <textarea
+              value={form.signature_html}
+              onChange={(e) => setForm((f) => ({ ...f, signature_html: e.target.value }))}
+              rows={10}
+              spellCheck={false}
+              className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-[11px] text-gray-800"
+            />
+          </label>
+          <div className="text-xs text-gray-500">
+            Preview
+            {/* Sandboxed: the signature's HTML is shown, never run. */}
+            <iframe
+              title="Signature preview"
+              sandbox=""
+              srcDoc={`<body style="margin:12px;font-family:Arial,sans-serif">${form.signature_html || '<p style="color:#999;font-size:12px">No signature</p>'}</body>`}
+              className="mt-1 h-[214px] w-full rounded-lg border border-gray-200 bg-white"
+            />
+          </div>
+        </div>
+      </section>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          disabled={busy !== null || !dirty}
+          onClick={() => run('save', () => saveSendSettings(form), 'Settings saved')}
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-primary px-4 py-2 text-sm font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50"
+        >
+          {busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Save settings
+        </button>
+        {dirty && <span className="text-xs text-gray-500">Unsaved changes</span>}
       </div>
-    </section>
+    </div>
   );
 }

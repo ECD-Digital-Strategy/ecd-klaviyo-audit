@@ -123,6 +123,9 @@ serve(async (req) => {
       const bookingUrl = isOutreach
         ? ((await sb.from("outreach_settings").select("booking_url").eq("id", "default").maybeSingle()).data?.booking_url ?? null)
         : null;
+      // Counted on the Outreach page's Overview: who opened their report after being
+      // emailed (views before the email went out are Emil checking it). Best effort.
+      if (isOutreach) await sb.rpc("outreach_note_view", { p_audit_id: audit.id }).then(() => {}, () => {});
       return json({
         ok: true,
         audit,

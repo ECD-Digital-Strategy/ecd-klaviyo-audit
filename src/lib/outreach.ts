@@ -45,6 +45,9 @@ export type OutreachProspect = {
   last_sent_at?: string | null;
   replied_at?: string | null;
   followups_sent?: number;
+  /** Times their report was opened after they were emailed. */
+  report_views?: number;
+  last_viewed_at?: string | null;
   created_at: string;
   updated_at: string;
   /** Joined: the audit's progress and public link. */
@@ -167,7 +170,13 @@ export type OutreachSettings = {
   pause_reason: string | null;
   daily_new_cap: number;
   booking_url: string | null;
-  postal_address: string | null;
+  max_followups: number;
+  followup_gap_days: number;
+  send_start_hour: number;
+  send_end_hour: number;
+  min_gap_minutes: number;
+  /** Emil's Gmail signature, added under every email. */
+  signature_html: string | null;
 };
 
 export type OutreachSendStatus = {
@@ -198,3 +207,24 @@ export const sendNow = (prospectId: string) => sendFn<void>({ action: 'send_now'
 /** Queue for the autopilot: it sends queued emails in order, within the daily limit. */
 export const queueProspect = (id: string) => updateProspect(id, { status: 'approved', approved_at: new Date().toISOString() });
 export const unqueueProspect = (id: string) => updateProspect(id, { status: 'ready', approved_at: null });
+
+/** A copy to Emil's own mailbox, exactly as it would arrive: a prospect's email, or a sample. */
+export const testSend = (prospectId?: string) => sendFn<{ to: string }>({ action: 'test_send', prospect_id: prospectId });
+
+export type OutreachSend = {
+  id: string;
+  prospect_id: string;
+  kind: 'initial' | 'followup_1' | 'followup_2';
+  to_email: string;
+  subject: string;
+  status: 'sent' | 'failed';
+  error: string | null;
+  sent_at: string;
+};
+
+/** Every email sent, newest first, for the Overview's history. */
+export async function listSends(limit = 200): Promise<OutreachSend[]> {
+  const { data, error } = await supabase.from('outreach_sends').select('*').order('sent_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return (data ?? []) as OutreachSend[];
+}
