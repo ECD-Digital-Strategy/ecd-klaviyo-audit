@@ -90,11 +90,13 @@ serve(async (req) => {
 
   try {
     if (body.action === "status") {
-      const client = await googleClient(sb);
-      const { data: rows } = await sb
-        .from("mailbox_connections")
-        .select("user_id, email, connected_at, last_used_at, last_error")
-        .order("connected_at", { ascending: true });
+      // In parallel, and the role from the profile directly rather than a second
+      // sign-in check: this loads every time the settings page opens.
+      const [client, { data: rows }, { data: meProfile }] = await Promise.all([
+        googleClient(sb),
+        sb.from("mailbox_connections").select("user_id, email, connected_at, last_used_at, last_error").order("connected_at", { ascending: true }),
+        sb.from("profiles").select("role").eq("id", userId).maybeSingle(),
+      ]);
       const ids = (rows ?? []).map((r) => r.user_id as string);
       const { data: profs } = ids.length ? await sb.from("profiles").select("id, name").in("id", ids) : { data: [] };
       const names = new Map((profs ?? []).map((p) => [p.id as string, String(p.name ?? "").trim()]));
@@ -109,13 +111,7 @@ serve(async (req) => {
         last_error: (r.last_error as string | null) ?? null,
         is_me: r.user_id === userId,
       }));
-      let isAdmin = false;
-      try {
-        await requireAdminUserId(req);
-        isAdmin = true;
-      } catch {
-        // staff
-      }
+      const isAdmin = (meProfile as { role?: string } | null)?.role === "admin";
       return json({
         ok: true,
         configured: Boolean(client),
