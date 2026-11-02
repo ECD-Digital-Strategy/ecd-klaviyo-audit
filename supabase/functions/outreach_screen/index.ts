@@ -163,6 +163,10 @@ serve(async (req) => {
 
     let reason: string | null = null;
 
+    // Someone there said no before (outreach_suppressions): never again.
+    const { data: blocked } = await sb.from("outreach_suppressions").select("domain").eq("domain", domain).maybeSingle();
+    if (blocked) reason = "Asked not to be contacted";
+
     // A client here, by website. Prospects are clients too, flagged is_outreach.
     const { data: clientRows } = await sb
       .from("clients")

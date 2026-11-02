@@ -5,6 +5,11 @@ import { sendEmail } from "../_shared/mailer.ts";
 import { ImapSession } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
+import { getSecret } from "../_shared/app-secrets.ts";
+import { HubSpot, OUTREACH_HUBSPOT_SCOPES, type HubLeadStatus } from "../_shared/outreach-hubspot.ts";
+import { ALERTING, PASSING, SUPPRESSING, classifyReply, type ReplyVerdict } from "../_shared/outreach-replies.ts";
+import { parseMail } from "../_shared/mail-parse.ts";
+import { OUTREACH_OWNER_EMAIL } from "../_shared/outreach-access.ts";
 import {
   followUp,
   footer,
@@ -31,6 +36,12 @@ import {
 //  - any bounce, or Gmail refusing the password, pauses ALL sending until Emil
 //    looks (the hourly health check emails him about the pause);
 //  - no follow-up goes out unless the inbox could be read.
+// Replies (2026-11-02): each new message from them is read and sorted
+// (_shared/outreach-replies.ts). Interested, a question, a referral or "later"
+// stops the sequence and emails Emil an alert; "no" or "remove me" also puts the
+// domain on the do-not-contact list (outreach_suppressions) for good; an
+// out-of-office lets the sequence carry on. Emailed prospects, every email both
+// ways and their lead status go into HubSpot (_shared/outreach-hubspot.ts).
 // Actions: "status", "connect_mailbox", "disconnect_mailbox", "save_settings",
 // "send_now" and "test_send" (Emil, from the Outreach page); "tick" (the
 // outreach-autopilot cron, every 20 minutes).
@@ -66,6 +77,8 @@ type Settings = {
   send_end_hour: number;
   min_gap_minutes: number;
   signature_html: string | null;
+  hubspot_log: boolean;
+  reply_alerts: boolean;
   auto_pipeline: boolean;
   auto_audits_per_day: number;
   min_lead_score: number;
@@ -81,6 +94,8 @@ const DEFAULT_SETTINGS: Settings = {
   send_end_hour: 16,
   min_gap_minutes: 45,
   signature_html: null,
+  hubspot_log: true,
+  reply_alerts: true,
   auto_pipeline: false,
   auto_audits_per_day: 3,
   min_lead_score: 40,
@@ -99,6 +114,11 @@ type Prospect = {
   last_sent_at: string | null;
   message_id: string | null;
   followups_sent: number;
+  contact_title?: string | null;
+  replies_seen?: number;
+  report_views?: number;
+  hubspot_contact_id?: string | null;
+  hubspot_company_id?: string | null;
 };
 
 /** The connected mailbox, decrypted here only, or null. */
@@ -139,6 +159,82 @@ async function reportUrl(sb: Sb, p: Prospect): Promise<string | null> {
   const { data } = await sb.from("audits").select("public_share_token").eq("id", p.audit_id).maybeSingle();
   const token = (data as { public_share_token?: string | null } | null)?.public_share_token;
   return token ? `${REPORT_BASE}${token}` : null;
+}
+
+async function hubspot(): Promise<HubSpot | null> {
+  try {
+    return new HubSpot(await getSecret("hubspot_private_app_token"));
+  } catch {
+    return null;
+  }
+}
+
+/** The prospect and one email into HubSpot, best effort: a failure is noted on the prospect, never thrown. */
+async function logToHubspot(
+  sb: Sb,
+  settings: Settings,
+  p: Prospect,
+  email: { direction: "out" | "in"; subject: string; text: string; from: string; to: string },
+  status?: HubLeadStatus,
+) {
+  if (!settings.hubspot_log || !p.contact_email) return;
+  const hs = await hubspot();
+  if (!hs) return;
+  try {
+    const owner = await hs.ownerId(OUTREACH_OWNER_EMAIL);
+    let companyId = p.hubspot_company_id ?? null;
+    let contactId = p.hubspot_contact_id ?? null;
+    if (!companyId) companyId = await hs.upsertCompany(p.domain, p.store_name || p.domain, owner);
+    if (!contactId) {
+      contactId = await hs.upsertContact(
+        { email: p.contact_email, name: p.contact_name, title: p.contact_title ?? null, domain: p.domain },
+        companyId,
+        owner,
+      );
+    }
+    await hs.logEmail({ contactId, companyId, ownerId: owner, ...email });
+    if (status) await hs.setLeadStatus(contactId, status);
+    p.hubspot_company_id = companyId;
+    p.hubspot_contact_id = contactId;
+    await sb.from("outreach_prospects").update({ hubspot_company_id: companyId, hubspot_contact_id: contactId, hubspot_error: null }).eq("id", p.id);
+  } catch (e) {
+    await sb.from("outreach_prospects").update({ hubspot_error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }).eq("id", p.id);
+  }
+}
+
+/** On the do-not-contact list: someone at this company said no. */
+async function suppressed(sb: Sb, domain: string): Promise<boolean> {
+  const { data } = await sb.from("outreach_suppressions").select("domain").eq("domain", domain).maybeSingle();
+  return Boolean(data);
+}
+
+const KIND_LABEL: Record<string, string> = {
+  interested: "Interested",
+  question: "Has a question",
+  referral: "Pointed you to someone else",
+  not_now: "Not now",
+  not_interested: "Not interested",
+  unsubscribe: "Asked to be removed",
+  out_of_office: "Out of office",
+  other: "Replied",
+};
+
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+/** Emails Emil about a reply worth answering (from the app's own mailer, not his mailbox). */
+async function alertEmil(p: Prospect, verdict: ReplyVerdict, mail: { from: string; subject: string; text: string }, report: string | null) {
+  const label = KIND_LABEL[verdict.kind] ?? "Replied";
+  const gmail = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`from:${p.contact_email ?? p.domain}`)}`;
+  const html = [
+    `<p style="font-size:15px"><b>${esc(p.store_name || p.domain)}</b> replied: <b>${esc(label)}</b></p>`,
+    `<p>${esc(verdict.summary)}</p>`,
+    `<blockquote style="margin:12px 0;padding:8px 12px;border-left:3px solid #ddd;color:#444;white-space:pre-wrap">${esc(mail.text.slice(0, 2000))}</blockquote>`,
+    `<p style="color:#666;font-size:13px">From ${esc(mail.from)}${p.contact_title ? `, ${esc(p.contact_title)}` : ""}.`,
+    (p.report_views ?? 0) > 0 ? ` They opened their report ${p.report_views} time${p.report_views === 1 ? "" : "s"}.` : "",
+    `</p>`,
+    `<p><a href="${gmail}">Answer in Gmail</a>${report ? ` &middot; <a href="${report}">Their report</a>` : ""} &middot; <a href="https://audit.ecdigitalstrategy.com/outreach?tab=prospects">Outreach page</a></p>`,
+  ].join("");
+  await sendEmail({ to: [OUTREACH_OWNER_EMAIL], subject: `Outreach reply: ${p.store_name || p.domain} (${label})`, html });
 }
 
 const looksLikeAuthFailure = (reason: string) => /auth|535|534|password|credentials|login/i.test(reason);
@@ -201,22 +297,74 @@ async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings
   if (isRoleAddress(p.contact_email)) return { ok: false, error: `${p.contact_email} is a shared inbox, not a person. Find the decision-maker first.` };
   if (!p.email_subject?.trim() || !p.email_body?.trim()) return { ok: false, error: "The email is empty." };
   if (p.sent_at) return { ok: false, error: "Already sent." };
-  const r = await deliver(sb, box, settings, p, "initial", p.email_subject.trim(), initialText(p.email_body, settings));
+  if (await suppressed(sb, p.domain)) return { ok: false, error: "Someone at this company asked not to be contacted." };
+  const subject = p.email_subject.trim();
+  const text = initialText(p.email_body, settings);
+  const r = await deliver(sb, box, settings, p, "initial", subject, text);
   if (!r.ok) return r;
   const now = new Date().toISOString();
   await sb.from("outreach_prospects").update({ status: "sent", sent_at: now, last_sent_at: now, message_id: r.messageId }).eq("id", p.id);
+  await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email }, "ATTEMPTED_TO_CONTACT");
   return r;
+}
+
+/** Acts on a new message from a prospect: sorts it, then stops, remembers, alerts and logs as it says. */
+async function handleReply(
+  sb: Sb,
+  settings: Settings,
+  box: Mailbox,
+  p: Prospect,
+  seen: number,
+  mail: { from: string; subject: string; text: string },
+) {
+  let verdict: ReplyVerdict;
+  let sorted = true;
+  try {
+    verdict = await classifyReply(mail.text, mail.subject);
+  } catch {
+    // Unsorted: treat it as a person answering, so nobody is chased by mistake.
+    verdict = { kind: "other", summary: "Could not be sorted automatically; read it in Gmail." };
+    sorted = false;
+  }
+  const now = new Date().toISOString();
+  const reply = { reply_kind: verdict.kind, reply_summary: verdict.summary, reply_text: mail.text.slice(0, 4000), replies_seen: seen };
+
+  if (sorted && PASSING.has(verdict.kind)) {
+    // An away message or an automatic receipt: the sequence carries on.
+    await sb.from("outreach_prospects").update(reply).eq("id", p.id);
+    return;
+  }
+  const stop = SUPPRESSING.has(verdict.kind);
+  await sb.from("outreach_prospects").update({ ...reply, status: stop ? "unsubscribed" : "replied", replied_at: now }).eq("id", p.id);
+  if (stop) {
+    await sb.from("outreach_suppressions").upsert(
+      { domain: p.domain, email: p.contact_email, reason: `${KIND_LABEL[verdict.kind]}: ${verdict.summary}`.slice(0, 300) },
+      { onConflict: "domain" },
+    );
+  }
+  const status: HubLeadStatus = stop ? "UNQUALIFIED" : verdict.kind === "not_now" ? "BAD_TIMING" : "CONNECTED";
+  await logToHubspot(sb, settings, p, {
+    direction: "in",
+    subject: mail.subject || `Re: ${p.email_subject ?? ""}`,
+    text: mail.text,
+    from: p.contact_email ?? mail.from,
+    to: box.user,
+  }, status);
+  if (settings.reply_alerts && (ALERTING.has(verdict.kind) || !sorted)) {
+    await alertEmil(p, verdict, mail, await reportUrl(sb, p)).catch(() => {});
+  }
 }
 
 /** Replies and bounces since each prospect was emailed. Returns false if the inbox could not be read. */
 async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
   const { data } = await sb
     .from("outreach_prospects")
-    .select("id, domain, contact_email, sent_at")
+    .select("*")
     .eq("status", "sent")
     .gte("sent_at", new Date(Date.now() - 45 * 86_400_000).toISOString());
-  const sent = (data ?? []) as Array<{ id: string; domain: string; contact_email: string | null; sent_at: string }>;
+  const sent = (data ?? []) as Array<Prospect & { sent_at: string }>;
   if (sent.length === 0) return true;
+  const settings = await loadSettings(sb);
   let imap: ImapSession;
   try {
     imap = await ImapSession.open(box);
@@ -234,8 +382,9 @@ async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
         await pause(sb, `${p.contact_email} (${p.domain}) bounced. Sending is paused until you check the address list.`);
         continue;
       }
-      if ((await imap.repliesFrom(replySearchKey(p.contact_email, p.domain), since)) > 0) {
-        await sb.from("outreach_prospects").update({ status: "replied", replied_at: new Date().toISOString() }).eq("id", p.id);
+      const latest = await imap.latestFrom(replySearchKey(p.contact_email, p.domain), since);
+      if (latest.count > (p.replies_seen ?? 0)) {
+        await handleReply(sb, settings, box, p, latest.count, parseMail(latest.raw ?? ""));
       }
     }
     return true;
@@ -276,6 +425,7 @@ async function tick(sb: Sb) {
       const r = await deliver(sb, box, settings, p, n === 1 ? "followup_1" : "followup_2", subject, text);
       if (!r.ok) break;
       await sb.from("outreach_prospects").update({ followups_sent: n, last_sent_at: new Date().toISOString() }).eq("id", p.id);
+      await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email ?? "" });
       sent.push(`${p.domain}: follow-up ${n}`);
       if ((await loadSettings(sb)).paused) return { ok: true, sent, paused: true };
     }
@@ -336,6 +486,9 @@ serve(async (req) => {
     const settings = await loadSettings(sb);
     const today = await sentToday(sb, new Date());
     const box = await mailbox(sb);
+    const hs = await hubspot();
+    const scopes = hs ? await hs.scopes() : null;
+    const { count: suppressedCount } = await sb.from("outreach_suppressions").select("domain", { count: "exact", head: true });
     // The address only: the password never leaves the server.
     return json({
       ok: true,
@@ -343,7 +496,23 @@ serve(async (req) => {
       sent_today: today.initial,
       settings,
       in_window: inSendWindow(new Date(), settings.send_start_hour, settings.send_end_hour),
+      hubspot: {
+        connected: Boolean(hs),
+        // null when HubSpot would not say which scopes the token has.
+        missing_scopes: scopes ? OUTREACH_HUBSPOT_SCOPES.filter((sc) => !scopes.includes(sc)) : null,
+      },
+      suppressed: suppressedCount ?? 0,
     });
+  }
+
+  if (body.action === "do_not_contact") {
+    // By hand from a prospect's card: stop everything and never contact this company again.
+    const { data } = await sb.from("outreach_prospects").select("*").eq("id", body.prospect_id ?? "").maybeSingle();
+    if (!data) return json({ ok: false, error: "not_found" }, 404);
+    const p = data as Prospect;
+    await sb.from("outreach_suppressions").upsert({ domain: p.domain, email: p.contact_email, reason: "Marked by hand" }, { onConflict: "domain" });
+    await sb.from("outreach_prospects").update({ status: p.sent_at ? "unsubscribed" : "skipped", skip_reason: p.sent_at ? null : "Do not contact" }).eq("id", p.id);
+    return json({ ok: true });
   }
 
   if (body.action === "connect_mailbox") {
@@ -390,6 +559,8 @@ serve(async (req) => {
     if ("booking_url" in s) patch.booking_url = String(s.booking_url ?? "").trim() || null;
     if ("signature_html" in s) patch.signature_html = String(s.signature_html ?? "").trim().slice(0, 30_000) || null;
     if ("daily_new_cap" in s) patch.daily_new_cap = clampInt(s.daily_new_cap, 0, 10, current.daily_new_cap);
+    if ("hubspot_log" in s) patch.hubspot_log = Boolean(s.hubspot_log);
+    if ("reply_alerts" in s) patch.reply_alerts = Boolean(s.reply_alerts);
     if ("auto_pipeline" in s) patch.auto_pipeline = Boolean(s.auto_pipeline);
     if ("auto_audits_per_day" in s) patch.auto_audits_per_day = clampInt(s.auto_audits_per_day, 0, 10, current.auto_audits_per_day);
     if ("min_lead_score" in s) patch.min_lead_score = clampInt(s.min_lead_score, 0, 100, current.min_lead_score);

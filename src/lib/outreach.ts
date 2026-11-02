@@ -44,6 +44,12 @@ export type OutreachProspect = {
   lead_signals?: { tranco_rank: number | null; products: number | null; currency: string | null; country: string | null; apps: string[]; reasons: string[] } | null;
   /** Set when the auto-pipeline started its audit. */
   auto_started_at?: string | null;
+  /** The latest reply, sorted by the autopilot (supabase/functions/_shared/outreach-replies.ts). */
+  reply_kind?: ReplyKind | null;
+  reply_summary?: string | null;
+  reply_text?: string | null;
+  hubspot_contact_id?: string | null;
+  hubspot_error?: string | null;
   status: OutreachStatus;
   skip_reason: string | null;
   client_id: string | null;
@@ -63,6 +69,19 @@ export type OutreachProspect = {
   updated_at: string;
   /** Joined: the audit's progress and public link. */
   audit?: Pick<Audit, 'id' | 'status' | 'public_share_token'> | null;
+};
+
+export type ReplyKind = 'interested' | 'question' | 'referral' | 'not_now' | 'not_interested' | 'unsubscribe' | 'out_of_office' | 'other';
+
+export const REPLY_LABELS: Record<ReplyKind, string> = {
+  interested: 'Interested',
+  question: 'Has a question',
+  referral: 'Pointed to someone else',
+  not_now: 'Not now',
+  not_interested: 'Not interested',
+  unsubscribe: 'Asked to be removed',
+  out_of_office: 'Out of office',
+  other: 'Replied',
 };
 
 export type ScreenResult = { domain: string; status: 'new' | 'skipped' | 'exists' | 'invalid'; reason?: string; store_name?: string; lead_score?: number };
@@ -198,6 +217,10 @@ export type OutreachSettings = {
   min_gap_minutes: number;
   /** Emil's Gmail signature, added under every email. */
   signature_html: string | null;
+  /** Log emailed prospects and every email in HubSpot. */
+  hubspot_log: boolean;
+  /** Email Emil when someone replies with something worth answering. */
+  reply_alerts: boolean;
   /** Auto-pipeline: find the decision-maker, audit and draft the best new stores on its own. */
   auto_pipeline: boolean;
   auto_audits_per_day: number;
@@ -211,6 +234,9 @@ export type OutreachSendStatus = {
   sent_today: number;
   settings: OutreachSettings;
   in_window: boolean;
+  hubspot?: { connected: boolean; missing_scopes: string[] | null };
+  /** Companies on the do-not-contact list. */
+  suppressed?: number;
 };
 
 async function sendFn<T>(body: Record<string, unknown>): Promise<T> {
@@ -229,6 +255,8 @@ export const connectMailbox = (user: string, pass: string) => sendFn<{ mailbox: 
 export const disconnectMailbox = () => sendFn<void>({ action: 'disconnect_mailbox' });
 export const saveSendSettings = (settings: Partial<OutreachSettings>) => sendFn<void>({ action: 'save_settings', settings });
 export const sendNow = (prospectId: string) => sendFn<void>({ action: 'send_now', prospect_id: prospectId });
+/** Stops everything for this company and never contacts it again. */
+export const doNotContact = (prospectId: string) => sendFn<void>({ action: 'do_not_contact', prospect_id: prospectId });
 
 /** Queue for the autopilot: it sends queued emails in order, within the daily limit. */
 export const queueProspect = (id: string) => updateProspect(id, { status: 'approved', approved_at: new Date().toISOString() });

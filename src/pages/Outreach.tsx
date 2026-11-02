@@ -29,6 +29,8 @@ import {
   findDecisionMaker,
   getHunterStatus,
   isRoleAddress,
+  doNotContact,
+  REPLY_LABELS,
   type HunterStatus,
   type OutreachProspect,
   type OutreachSend,
@@ -46,8 +48,9 @@ const GROUPS: Array<{ key: string; title: string; note: string; match: (p: Outre
   { key: 'approved', title: 'Queued', note: 'Goes out on its own, in this order, within the daily limit on US weekdays.', match: (p) => p.status === 'approved' },
   { key: 'auditing', title: 'Auditing', note: 'The audit runs on the server and takes a few minutes. Draft the email once it is done.', match: (p) => p.status === 'auditing' || p.status === 'failed' },
   { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not in HubSpot, on Shopify. Best lead score first.', match: (p) => p.status === 'new' },
-  { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. Pick it up in your inbox.', match: (p) => p.status === 'replied' },
-  { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced', 'unsubscribed'].includes(p.status) },
+  { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. You get an email for each one worth answering.', match: (p) => p.status === 'replied' },
+  { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced'].includes(p.status) },
+  { key: 'unsubscribed', title: 'Said no', note: 'On the do-not-contact list for good: never screened, audited or emailed again.', match: (p) => p.status === 'unsubscribed' },
   { key: 'skipped', title: 'Skipped', note: 'Never audited or emailed.', match: (p) => p.status === 'skipped' },
 ];
 
@@ -322,6 +325,16 @@ function ProspectCard({
             </p>
           )}
           {p.status === 'approved' && <p className="mt-1 text-xs text-gray-500">Queued{p.contact_email ? ` for ${p.contact_email}` : ''}</p>}
+          {p.reply_kind && (
+            <div className="mt-2 max-w-xl rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs">
+              <p>
+                <span className={`font-semibold ${['interested', 'question', 'referral'].includes(p.reply_kind) ? 'text-emerald-700' : 'text-gray-700'}`}>{REPLY_LABELS[p.reply_kind]}</span>
+                {p.reply_summary && <span className="text-gray-600">. {p.reply_summary}</span>}
+              </p>
+              {p.reply_text && <p className="mt-1 line-clamp-3 whitespace-pre-line text-gray-500">{p.reply_text}</p>}
+            </div>
+          )}
+          {p.hubspot_error && <p className="mt-1 text-[11px] text-amber-700">Not in HubSpot: {p.hubspot_error}</p>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -378,6 +391,17 @@ function ProspectCard({
           {p.status === 'approved' && (
             <button type="button" disabled={busy !== null} onClick={() => run('unqueue', () => unqueueProspect(p.id))} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
               Back to editing
+            </button>
+          )}
+          {['sent', 'replied', 'bounced'].includes(p.status) && (
+            <button
+              type="button"
+              disabled={busy !== null}
+              title="Stop all emails and never contact this company again"
+              onClick={() => { if (window.confirm(`Never contact ${name} again?`)) void run('dnc', () => doNotContact(p.id)); }}
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-800"
+            >
+              Do not contact
             </button>
           )}
           {['new', 'auditing', 'ready', 'approved', 'failed'].includes(p.status) && (
@@ -689,8 +713,8 @@ function OverviewTab({
                   const p = byId.get(s.prospect_id);
                   const now = s.status === 'failed'
                     ? `Not sent: ${s.error ?? 'unknown error'}`
-                    : p?.status === 'replied'
-                      ? 'Replied'
+                    : p?.status === 'replied' || p?.status === 'unsubscribed'
+                      ? (p.reply_kind ? REPLY_LABELS[p.reply_kind] : p.status === 'unsubscribed' ? 'Said no' : 'Replied')
                       : p?.status === 'bounced'
                         ? 'Bounced'
                         : (p?.report_views ?? 0) > 0
@@ -740,6 +764,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     auto_pipeline: false,
     auto_audits_per_day: 3,
     min_lead_score: 40,
+    hubspot_log: true,
+    reply_alerts: true,
   });
 
   useEffect(() => {
@@ -756,6 +782,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       auto_pipeline: settings.auto_pipeline,
       auto_audits_per_day: settings.auto_audits_per_day,
       min_lead_score: settings.min_lead_score,
+      hubspot_log: settings.hubspot_log,
+      reply_alerts: settings.reply_alerts,
     });
   }, [settings]);
 
@@ -785,7 +813,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       form.signature_html !== (settings.signature_html ?? '') ||
       form.auto_pipeline !== settings.auto_pipeline ||
       form.auto_audits_per_day !== settings.auto_audits_per_day ||
-      form.min_lead_score !== settings.min_lead_score);
+      form.min_lead_score !== settings.min_lead_score ||
+      form.hubspot_log !== settings.hubspot_log ||
+      form.reply_alerts !== settings.reply_alerts);
 
   const num = (key: keyof typeof form, label: string, min: number, max: number, note?: string) => (
     <label className="text-xs text-gray-500">
@@ -901,6 +931,34 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
           {num('auto_audits_per_day', 'Stores to audit per day', 0, 10, 'New York days, two at a time.')}
           {num('min_lead_score', 'Lowest lead score to keep', 0, 100, 'Checked stores under this are skipped. 40 is a fair start.')}
         </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-900">Replies and HubSpot</h2>
+        <p className="mt-1 text-xs text-gray-500">
+          Every reply is read and sorted. Anyone who answers stops getting follow-ups; anyone who says no goes on the
+          do-not-contact list for good{status?.suppressed ? ` (${status.suppressed} so far)` : ''}. An out-of-office lets the follow-up go ahead.
+        </p>
+        <label className="mt-4 flex items-start gap-2 text-sm text-gray-800">
+          <input type="checkbox" checked={form.reply_alerts} onChange={(e) => setForm((f) => ({ ...f, reply_alerts: e.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary" />
+          <span>
+            Email me when someone replies
+            <span className="block text-xs text-gray-500">Interested, a question, a referral or "not now", with what they said and their report.</span>
+          </span>
+        </label>
+        <label className="mt-3 flex items-start gap-2 text-sm text-gray-800">
+          <input type="checkbox" checked={form.hubspot_log} onChange={(e) => setForm((f) => ({ ...f, hubspot_log: e.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary" />
+          <span>
+            Log them in HubSpot
+            <span className="block text-xs text-gray-500">
+              Once emailed: the company and contact (owned by you), every email both ways, and their lead status from the reply.
+            </span>
+            {status?.hubspot && !status.hubspot.connected && <span className="block text-xs text-amber-700">HubSpot is not connected.</span>}
+            {status?.hubspot?.missing_scopes && status.hubspot.missing_scopes.length > 0 && (
+              <span className="block text-xs text-amber-700">The HubSpot app is missing: {status.hubspot.missing_scopes.join(', ')}.</span>
+            )}
+          </span>
+        </label>
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">

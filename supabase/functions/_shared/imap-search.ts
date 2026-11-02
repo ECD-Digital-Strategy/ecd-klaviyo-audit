@@ -1,7 +1,8 @@
 // A minimal IMAP client for one job (Outreach, 2026-11-02): ask Emil's Gmail, with
 // the same app password the outreach emails are sent with, whether anything came
 // back. Read-only (EXAMINE, never SELECT), searching All Mail so a reply he has
-// already archived still counts. It never reads a message, only counts matches.
+// already archived still counts. It counts matches, and (2026-11-02) reads the
+// latest reply so it can be sorted (BODY.PEEK, so nothing is marked as read).
 
 export type ImapAuth = { user: string; pass: string; host?: string; port?: number };
 
@@ -61,9 +62,34 @@ export class ImapSession {
 
   /** How many messages match an IMAP SEARCH (e.g. `SINCE 1-Nov-2026 FROM "brand.com"`). */
   async count(criteria: string): Promise<number> {
+    return (await this.search(criteria)).length;
+  }
+
+  /** Message numbers matching an IMAP SEARCH, oldest first. */
+  async search(criteria: string): Promise<number[]> {
     const lines = await this.command(`SEARCH ${criteria}`);
     const hit = lines.find((l) => l.startsWith("* SEARCH"));
-    return hit ? hit.slice("* SEARCH".length).trim().split(/\s+/).filter(Boolean).length : 0;
+    return hit ? hit.slice("* SEARCH".length).trim().split(/\s+/).filter(Boolean).map(Number) : [];
+  }
+
+  /** The start of one message (headers and body, up to maxBytes), without marking it read. */
+  async fetchRaw(seq: number, maxBytes = 30_000): Promise<string> {
+    const lines = await this.command(`FETCH ${seq} (BODY.PEEK[]<0.${maxBytes}>)`);
+    // "* 12 FETCH (BODY[]<0> {5234}", the message's lines, then ")".
+    const start = lines.findIndex((l) => /FETCH \(.*\{\d+\}$/.test(l));
+    if (start === -1) return "";
+    const body = lines.slice(start + 1);
+    // The closing ")" is on its own line, or straight after a cut-off last line.
+    if (body.length && body[body.length - 1].trim() === ")") body.pop();
+    else if (body.length) body[body.length - 1] = body[body.length - 1].replace(/\)$/, "");
+    return body.join("\r\n");
+  }
+
+  /** How many messages came from this domain since a date, and the latest one, raw. */
+  async latestFrom(domain: string, since: Date): Promise<{ count: number; raw: string | null }> {
+    const seqs = await this.search(`SINCE ${imapDate(since)} FROM ${q(domain)}`);
+    if (seqs.length === 0) return { count: 0, raw: null };
+    return { count: seqs.length, raw: await this.fetchRaw(seqs[seqs.length - 1]) };
   }
 
   /** Anything from this domain (a reply, an out-of-office, a "please remove me") since a date. */
