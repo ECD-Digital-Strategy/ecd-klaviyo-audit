@@ -39,6 +39,7 @@ import {
   type OutreachSendStatus,
   type ScreenResult,
 } from '../lib/outreach';
+import { connectGmail } from '../lib/invoice-sending';
 
 // Outreach (Emil, 2026-11-01, sending added 2026-11-02): see src/lib/outreach.ts.
 // Three tabs (2026-11-02): Overview (where things stand, and every email sent),
@@ -630,22 +631,39 @@ function SignatureSection({ status, onChanged }: { status: OutreachSendStatus | 
   const showToast = useToast();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [needsGoogle, setNeedsGoogle] = useState(false);
   const sig = status?.settings.signature_html ?? '';
   const synced = status?.settings.signature_synced_at;
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setBusy(true);
     try {
       const r = await syncSignature();
       await onChanged();
-      showToast(r.changed ? 'Signature updated from Gmail' : 'Signature is already up to date');
-      setOpen(true);
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not read your Gmail');
+      setNeedsGoogle(Boolean(r.needs_reconnect));
+      if (r.ok) {
+        showToast(r.changed ? 'Signature updated from Gmail' : 'Signature is already up to date');
+        setOpen(true);
+      } else if (!r.needs_reconnect) {
+        showToast(r.error ?? 'Could not read your Gmail');
+      }
     } finally {
       setBusy(false);
     }
-  };
+  }, [onChanged, showToast]);
+
+  // Back from Google sign-in: read the signature straight away, then tidy the address bar.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('gmail');
+    if (!outcome) return;
+    ['gmail', 'gmail_email', 'gmail_detail'].forEach((k) => params.delete(k));
+    const qs = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    if (outcome === 'connected') void refresh();
+    else showToast('Google was not connected. Try again.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -678,6 +696,21 @@ function SignatureSection({ status, onChanged }: { status: OutreachSendStatus | 
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Refresh from Gmail
         </button>
       </div>
+      {needsGoogle && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-amber-100 bg-amber-50/60 px-5 py-3">
+          <p className="min-w-0 flex-1 text-xs text-amber-800">
+            To use the signature set in your Gmail, connect your Google account once. It only lets the app read your Gmail
+            settings and send email, never read your mail.
+          </p>
+          <button
+            type="button"
+            onClick={() => void connectGmail()}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-primary-dark"
+          >
+            <PlugZap className="h-3.5 w-3.5" /> Connect Google
+          </button>
+        </div>
+      )}
       {open && (
         <div className="border-t border-gray-100 bg-gray-50/60 px-5 py-4">
           {sig ? (
@@ -690,10 +723,10 @@ function SignatureSection({ status, onChanged }: { status: OutreachSendStatus | 
             />
           ) : (
             <p className="text-xs text-gray-500">
-              None of your recent Gmail emails has a signature. Set one in Gmail (Settings, General, Signature), send any email, then refresh.
+              No signature yet. Set one in Gmail (Settings, General, Signature), then refresh.
             </p>
           )}
-          <p className="mt-2 text-[11px] text-gray-400">To change it, edit your signature in Gmail; it shows up here by tomorrow, or straight away with Refresh.</p>
+          <p className="mt-2 text-[11px] text-gray-400">To change it, edit your signature in Gmail. It shows up here by tomorrow, or straight away with Refresh from Gmail.</p>
         </div>
       )}
     </section>

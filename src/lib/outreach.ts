@@ -259,8 +259,18 @@ export const getSendStatus = () => sendFn<OutreachSendStatus>({ action: 'status'
 export const connectMailbox = (user: string, pass: string) => sendFn<{ mailbox: string }>({ action: 'connect_mailbox', user, pass });
 export const disconnectMailbox = () => sendFn<void>({ action: 'disconnect_mailbox' });
 export const saveSendSettings = (settings: Partial<OutreachSettings>) => sendFn<void>({ action: 'save_settings', settings });
-/** Reads his signature again from the newest email he wrote in Gmail. */
-export const syncSignature = () => sendFn<{ changed: boolean }>({ action: 'sync_signature' });
+/** Reads his signature again from Gmail: its signature setting (through "Connect
+ * Gmail"), else the newest email he wrote there. needs_reconnect: connect Google
+ * once so the setting can be read. */
+export async function syncSignature(): Promise<{ ok: boolean; changed?: boolean; error?: string; needs_reconnect?: boolean }> {
+  const { data, error } = await supabase.functions.invoke('outreach_send', { body: { action: 'sync_signature' } });
+  if (error) {
+    const ctx = (error as { context?: Response }).context;
+    const parsed = ctx ? await ctx.json().catch(() => null) : null;
+    return { ok: false, error: parsed?.error ?? error.message };
+  }
+  return data as { ok: boolean; changed?: boolean; error?: string; needs_reconnect?: boolean };
+}
 export const sendNow = (prospectId: string) => sendFn<void>({ action: 'send_now', prospect_id: prospectId });
 /** Stops everything for this company and never contacts it again. */
 export const doNotContact = (prospectId: string) => sendFn<void>({ action: 'do_not_contact', prospect_id: prospectId });

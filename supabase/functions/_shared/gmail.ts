@@ -11,7 +11,10 @@ import { decryptString, encryptString } from "./crypto.ts";
 
 export const GOOGLE_CLIENT_ID_KEY = "google_oauth_client_id";
 export const GOOGLE_CLIENT_SECRET_KEY = "google_oauth_client_secret";
-export const GMAIL_SCOPES = "openid email https://www.googleapis.com/auth/gmail.send";
+// gmail.settings.basic (2026-11-02): read their Gmail signature, so outreach (and
+// any email sent as them) signs off exactly as Gmail does. Still no reading mail.
+export const GMAIL_SCOPES =
+  "openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic";
 /** Only ECD accounts may send ECD invoices. */
 export const ALLOWED_DOMAIN = "ecdigitalstrategy.com";
 
@@ -216,6 +219,24 @@ export function buildMime(m: {
   }
   lines.push(`--${boundary}--`, "");
   return lines.join("\r\n");
+}
+
+export class NeedsReconnect extends Error {}
+
+/** Their Gmail signature, from Gmail's own settings (the "send as" address).
+ * Throws NeedsReconnect when they connected before this permission was asked for. */
+export async function gmailSignature(sb: Sb, box: Mailbox): Promise<string | null> {
+  const token = await accessTokenFor(sb, box.userId);
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs/${encodeURIComponent(box.email)}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 403 || res.status === 401) {
+    throw new NeedsReconnect("Reconnect your Gmail once so the app can read your signature.");
+  }
+  if (!res.ok) throw new Error(`gmail_signature_${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const body = (await res.json()) as { signature?: string };
+  const sig = String(body.signature ?? "").trim();
+  return sig.replace(/<[^>]+>/g, "").trim() ? sig : null;
 }
 
 /** Sends as the connected person. It lands in their Sent folder like any email they write. */

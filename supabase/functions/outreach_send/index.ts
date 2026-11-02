@@ -10,6 +10,8 @@ import { HubSpot, OUTREACH_HUBSPOT_SCOPES, type HubLeadStatus } from "../_shared
 import { ALERTING, PASSING, SUPPRESSING, classifyReply, type ReplyVerdict } from "../_shared/outreach-replies.ts";
 import { extractGmailSignature, mailHeader, mailHtml, parseMail } from "../_shared/mail-parse.ts";
 import { imapDate } from "../_shared/imap-search.ts";
+import { gmailSignature, NeedsReconnect } from "../_shared/gmail.ts";
+import { mailboxByEmail } from "../_shared/invoice-delivery.ts";
 import { OUTREACH_OWNER_EMAIL } from "../_shared/outreach-access.ts";
 import {
   followUp,
@@ -389,17 +391,46 @@ async function fetchGmailSignature(box: Mailbox): Promise<string | null> {
   }
 }
 
-async function syncSignature(sb: Sb, box: Mailbox): Promise<{ ok: boolean; changed?: boolean; error?: string }> {
-  const sig = await fetchGmailSignature(box);
+/**
+ * The signature, from the best source there is: Gmail's own signature setting,
+ * through his "Connect Gmail" sign-in (Proposal settings); else the newest email
+ * he wrote in Gmail that carries one. needsReconnect: his Google sign-in predates
+ * the read-signature permission, so one reconnect is needed.
+ */
+async function syncSignature(
+  sb: Sb,
+  box: Mailbox,
+): Promise<{ ok: boolean; changed?: boolean; error?: string; needsReconnect?: boolean; source?: "settings" | "sent_mail" }> {
+  let sig: string | null = null;
+  let source: "settings" | "sent_mail" = "settings";
+  let needsReconnect = false;
+  const google = await mailboxByEmail(sb, box.user);
+  if (google) {
+    try {
+      sig = await gmailSignature(sb, google);
+    } catch (e) {
+      if (e instanceof NeedsReconnect) needsReconnect = true;
+    }
+  }
+  if (!sig) {
+    source = "sent_mail";
+    sig = await fetchGmailSignature(box).catch(() => null);
+  }
   const now = new Date().toISOString();
   if (!sig) {
     // Still mark it checked, so the daily try does not hammer the inbox.
     await sb.from("outreach_settings").update({ signature_synced_at: now }).eq("id", "default");
-    return { ok: false, error: "No signature found in your recent Gmail emails. Send one email from Gmail with your signature, then refresh." };
+    return {
+      ok: false,
+      needsReconnect: needsReconnect || !google,
+      error: needsReconnect || !google
+        ? "To read the signature set in your Gmail, connect your Google account once (it only asks to read settings and send email)."
+        : "Your Gmail has no signature set. Add one in Gmail (Settings, General, Signature), then refresh.",
+    };
   }
   const { signature_html } = await loadSettings(sb);
-  await sb.from("outreach_settings").update({ signature_html: sig, signature_synced_at: now, updated_at: now }).eq("id", "default");
-  return { ok: true, changed: sig !== signature_html };
+  await sb.from("outreach_settings").update({ signature_html: sig.slice(0, 30_000), signature_synced_at: now, updated_at: now }).eq("id", "default");
+  return { ok: true, changed: sig !== signature_html, source };
 }
 
 /** Someone who keeps opening their report without answering is worth a call:
@@ -624,7 +655,10 @@ serve(async (req) => {
     if (!box) return json({ ok: false, error: "Connect the mailbox first." }, 409);
     try {
       const r = await syncSignature(sb, box);
-      return r.ok ? json({ ok: true, changed: r.changed }) : json({ ok: false, error: r.error }, 404);
+      // 200 either way, so the page can read needs_reconnect and offer the button.
+      return json(r.ok
+        ? { ok: true, changed: r.changed, source: r.source }
+        : { ok: false, error: r.error, needs_reconnect: Boolean(r.needsReconnect) });
     } catch (e) {
       return json({ ok: false, error: `Could not read your Gmail: ${e instanceof Error ? e.message : String(e)}` }, 502);
     }
