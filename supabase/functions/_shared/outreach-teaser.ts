@@ -51,7 +51,15 @@ export function teaserFindings(findings: TeaserFinding[]): {
       .map((f, i) => ({ f, i }))
       .filter(({ f }) => onViewport(f, v))
       .sort((a, b) => rank(a.f) - rank(b.f) || a.i - b.i);
-    for (const { f } of onThis.slice(0, teaserShowCount(onThis.length))) keep.add(f);
+    // A "both" finding already kept for the other screen counts toward this one too,
+    // so a screen never shows more than its number.
+    let room = teaserShowCount(onThis.length) - onThis.filter(({ f }) => keep.has(f)).length;
+    for (const { f } of onThis) {
+      if (room <= 0) break;
+      if (keep.has(f)) continue;
+      keep.add(f);
+      room--;
+    }
   }
   const kept = shown.filter((f) => keep.has(f));
   const lockedOn = (v: "desktop" | "mobile") => shown.filter((f) => onViewport(f, v) && !keep.has(f)).length;

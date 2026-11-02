@@ -5,6 +5,22 @@ Deno.test("shows all but the two weakest, at least one", () => {
   assertEquals([0, 1, 2, 3, 4, 5, 6].map(teaserShowCount), [0, 1, 1, 1, 2, 3, 4]);
 });
 
+Deno.test("a 'both' finding kept for desktop counts toward mobile's number", () => {
+  // Desktop: 4 counting the "both" one (shows 2). Mobile: 3 (shows 1), and its
+  // strongest is the "both" one already kept, so mobile adds nothing.
+  const findings = [
+    { text: "b1", priority: "high", viewport: "both" },
+    { text: "d1", priority: "high", viewport: "desktop" },
+    { text: "d2", priority: "medium", viewport: "desktop" },
+    { text: "d3", priority: "low", viewport: "desktop" },
+    { text: "m1", priority: "medium", viewport: "mobile" },
+    { text: "m2", priority: "low", viewport: "mobile" },
+  ];
+  const { kept, locked } = teaserFindings(findings);
+  assertEquals(kept.map((f) => f.text), ["b1", "d1"]);
+  assertEquals(locked, { desktop: 2, mobile: 2 });
+});
+
 Deno.test("4 findings on a page show 2, 5 show 3, strongest first", () => {
   const four = ["low", "high", "medium", "low"].map((priority, i) => ({ text: `f${i}`, priority, viewport: "mobile" }));
   const r4 = teaserFindings(four);
