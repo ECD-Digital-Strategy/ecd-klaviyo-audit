@@ -58,7 +58,7 @@ serve(async (req) => {
 
   const correlationId = crypto.randomUUID();
   try {
-    const { token } = (await req.json().catch(() => ({}))) as { token?: string };
+    const { token, preview } = (await req.json().catch(() => ({}))) as { token?: string; preview?: boolean };
     const cleanToken = (token ?? "").trim();
     if (!cleanToken) {
       return json({ ok: false, error: { code: "bad_request", message: "Missing token" }, correlationId }, { status: 400 });
@@ -120,12 +120,18 @@ serve(async (req) => {
       }
       const isOutreach = (audit as { is_outreach?: boolean }).is_outreach === true;
       // Where the teaser's "Book a walkthrough" leads: Emil's booking link once he has set one.
-      const bookingUrl = isOutreach
-        ? ((await sb.from("outreach_settings").select("booking_url").eq("id", "default").maybeSingle()).data?.booking_url ?? null)
+      // and the short note on who made it (about_intro, from the Settings tab).
+      const outreach = isOutreach
+        ? ((await sb.from("outreach_settings").select("booking_url, about_intro").eq("id", "default").maybeSingle()).data as
+          | { booking_url?: string | null; about_intro?: string | null }
+          | null)
         : null;
+      const bookingUrl = outreach?.booking_url ?? null;
       // Counted on the Outreach page's Overview: who opened their report after being
-      // emailed (views before the email went out are Emil checking it). Best effort.
-      if (isOutreach) await sb.rpc("outreach_note_view", { p_audit_id: audit.id }).then(() => {}, () => {});
+      // emailed (views before the email went out are Emil checking it), once per
+      // visit (outreach_note_view). Emil's own links carry ?preview=1 and are not
+      // counted. Best effort.
+      if (isOutreach && !preview) await sb.rpc("outreach_note_view", { p_audit_id: audit.id }).then(() => {}, () => {});
       return json({
         ok: true,
         audit,
@@ -133,7 +139,9 @@ serve(async (req) => {
         // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
         // and screen size, the rest only counted, and no roadmap, pricing or sales data.
         sections: isOutreach ? teaserSections(webSections.data ?? []) : webSections.data ?? [],
-        teaser: isOutreach ? { locked_total: teaserLockedTotal(webSections.data ?? []), booking_url: bookingUrl } : null,
+        teaser: isOutreach
+          ? { locked_total: teaserLockedTotal(webSections.data ?? []), booking_url: bookingUrl, about_intro: outreach?.about_intro ?? null }
+          : null,
         webPageSnapshots: pageSnaps.data ?? [],
         shopifySnapshots: isOutreach ? [] : shopifySnaps.data ?? [],
         correlationId,

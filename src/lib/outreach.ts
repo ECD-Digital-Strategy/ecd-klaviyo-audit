@@ -221,6 +221,10 @@ export type OutreachSettings = {
   hubspot_log: boolean;
   /** Email Emil when someone replies with something worth answering. */
   reply_alerts: boolean;
+  /** Email Emil when a prospect opens their report this many times without replying (0 = off). */
+  hot_lead_views: number;
+  /** The short note at the end of their report on who made it. */
+  about_intro: string | null;
   /** Auto-pipeline: find the decision-maker, audit and draft the best new stores on its own. */
   auto_pipeline: boolean;
   auto_audits_per_day: number;

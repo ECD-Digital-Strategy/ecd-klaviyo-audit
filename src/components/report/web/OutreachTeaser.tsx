@@ -75,6 +75,27 @@ export function OutreachTeaserBanner({
   );
 }
 
+/** The end of the teaser: who made it, in a few plain lines (Emil, 2026-11-02: no
+ * results, no quotes, nothing salesy). The text is set on the Outreach page. */
+export function OutreachAboutNote({ intro, contactUrl = OUTREACH_CONTACT_URL }: { intro: string; contactUrl?: string }) {
+  const external = contactUrl.startsWith('http');
+  return (
+    <div className="border-t border-gray-200 pt-8">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">Who made this</p>
+      <p className="mt-2 max-w-2xl whitespace-pre-line text-sm leading-relaxed text-gray-600">{intro.trim()}</p>
+      <a
+        href={contactUrl}
+        target={external ? '_blank' : undefined}
+        rel="noreferrer"
+        className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-brand-primary hover:underline"
+      >
+        {OUTREACH_CONTACT_LABEL}
+        {external && <ExternalLink className="h-3.5 w-3.5" aria-label="Opens in a new tab" />}
+      </a>
+    </div>
+  );
+}
+
 /** Under a page's findings: how many more there are on this screen size. */
 export function LockedFindingsCard({ count, contactUrl = OUTREACH_CONTACT_URL }: { count: number; contactUrl?: string }) {
   if (count <= 0) return null;

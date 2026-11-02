@@ -13,7 +13,7 @@ import WebRoadmapTable from './web/WebRoadmapTable';
 import WebInvestmentSummary from './web/WebInvestmentSummary';
 import ReportCover from './ReportCover';
 import WebAgentDemoSection, { type AgentDemoKind } from './web/WebAgentDemoSection';
-import { OutreachTeaserBanner, isTeaser, teaserContactUrl } from './web/OutreachTeaser';
+import { OutreachAboutNote, OutreachTeaserBanner, isTeaser, teaserContactUrl } from './web/OutreachTeaser';
 
 export interface WebAuditReportViewData {
   audit: Audit;
@@ -22,7 +22,7 @@ export interface WebAuditReportViewData {
   pageSnapshots: WebPageSnapshot[];
   shopifySnapshots: ShopifyDataSnapshot[];
   /** An outreach audit's public teaser: where "Book a walkthrough" leads. */
-  teaser?: { booking_url?: string | null } | null;
+  teaser?: { booking_url?: string | null; about_intro?: string | null } | null;
 }
 
 const PAGE_SECTIONS: Array<{ key: string; title: string; page_type: WebPageType }> = [
@@ -369,6 +369,10 @@ export default function WebAuditReportView({
             </WebSectionShell>
           );
         })}
+
+        {isTeaser(sections) && data.teaser?.about_intro?.trim() && (
+          <OutreachAboutNote intro={data.teaser.about_intro} contactUrl={teaserContactUrl(data.teaser.booking_url)} />
+        )}
 
         {/* Why the performance section is absent, stated once for whoever picks
             this audit up later. Editor-only: a client never needs to read about

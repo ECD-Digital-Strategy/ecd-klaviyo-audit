@@ -686,7 +686,7 @@ export type AuditReportBundle = {
   webPageSnapshots?: WebPageSnapshot[];
   shopifySnapshots?: ShopifyDataSnapshot[];
   /** Public link of an outreach audit only: the teaser's booking link. */
-  teaser?: { locked_total?: number; booking_url?: string | null } | null;
+  teaser?: { locked_total?: number; booking_url?: string | null; about_intro?: string | null } | null;
   reportingDiagnostic?: string | null;
   klaviyoGroupNameMap?: GroupNameMap;
   accountSnapshot?: {
@@ -818,7 +818,9 @@ export async function fetchAuditReportBundleForAudit(audit: Audit): Promise<Audi
  * RLS involved) via the audit_public edge function, then runs the same enrichment as
  * the authenticated path. Returns null for an unknown/unpublished token. */
 export async function fetchPublicAuditReportBundle(token: string): Promise<AuditReportBundle | null> {
-  const { data, error } = await supabase.functions.invoke('audit_public', { body: { token } });
+  // ?preview=1 is Emil's own link from the Outreach page: not counted as an open.
+  const preview = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('preview');
+  const { data, error } = await supabase.functions.invoke('audit_public', { body: { token, preview } });
   if (error) return null;
   if (data?.ok !== true) return null;
 
@@ -837,7 +839,7 @@ export async function fetchPublicAuditReportBundle(token: string): Promise<Audit
       emailDesign: null,
       webPageSnapshots: (data.webPageSnapshots ?? []) as WebPageSnapshot[],
       shopifySnapshots: (data.shopifySnapshots ?? []) as ShopifyDataSnapshot[],
-      teaser: (data.teaser ?? null) as { locked_total?: number; booking_url?: string | null } | null,
+      teaser: (data.teaser ?? null) as { locked_total?: number; booking_url?: string | null; about_intro?: string | null } | null,
     };
   }
 

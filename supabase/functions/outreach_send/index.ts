@@ -79,6 +79,8 @@ type Settings = {
   signature_html: string | null;
   hubspot_log: boolean;
   reply_alerts: boolean;
+  hot_lead_views: number;
+  about_intro: string | null;
   auto_pipeline: boolean;
   auto_audits_per_day: number;
   min_lead_score: number;
@@ -96,6 +98,8 @@ const DEFAULT_SETTINGS: Settings = {
   signature_html: null,
   hubspot_log: true,
   reply_alerts: true,
+  hot_lead_views: 3,
+  about_intro: null,
   auto_pipeline: false,
   auto_audits_per_day: 3,
   min_lead_score: 40,
@@ -232,7 +236,7 @@ async function alertEmil(p: Prospect, verdict: ReplyVerdict, mail: { from: strin
     `<p style="color:#666;font-size:13px">From ${esc(mail.from)}${p.contact_title ? `, ${esc(p.contact_title)}` : ""}.`,
     (p.report_views ?? 0) > 0 ? ` They opened their report ${p.report_views} time${p.report_views === 1 ? "" : "s"}.` : "",
     `</p>`,
-    `<p><a href="${gmail}">Answer in Gmail</a>${report ? ` &middot; <a href="${report}">Their report</a>` : ""} &middot; <a href="https://audit.ecdigitalstrategy.com/outreach?tab=prospects">Outreach page</a></p>`,
+    `<p><a href="${gmail}">Answer in Gmail</a>${report ? ` &middot; <a href="${report}?preview=1">Their report</a>` : ""} &middot; <a href="https://audit.ecdigitalstrategy.com/outreach?tab=prospects">Outreach page</a></p>`,
   ].join("");
   await sendEmail({ to: [OUTREACH_OWNER_EMAIL], subject: `Outreach reply: ${p.store_name || p.domain} (${label})`, html });
 }
@@ -355,6 +359,29 @@ async function handleReply(
   }
 }
 
+/** Someone who keeps opening their report without answering is worth a call:
+ * one email to Emil when they reach hot_lead_views opens. */
+async function hotLeads(sb: Sb, settings: Settings) {
+  if (settings.hot_lead_views <= 0) return;
+  const { data } = await sb
+    .from("outreach_prospects")
+    .select("*")
+    .eq("status", "sent")
+    .is("hot_alert_at", null)
+    .gte("report_views", settings.hot_lead_views);
+  for (const p of (data ?? []) as Prospect[]) {
+    await sb.from("outreach_prospects").update({ hot_alert_at: new Date().toISOString() }).eq("id", p.id);
+    const report = await reportUrl(sb, p);
+    const who = p.contact_name ? `${esc(p.contact_name)}${p.contact_title ? `, ${esc(p.contact_title)},` : ""}` : "They";
+    const html = [
+      `<p style="font-size:15px"><b>${esc(p.store_name || p.domain)}</b> keeps opening their report.</p>`,
+      `<p>${who} opened it ${p.report_views} times and has not replied yet. A good moment for a short personal note or a call.</p>`,
+      `<p>${report ? `<a href="${report}?preview=1">Their report</a> &middot; ` : ""}<a href="https://audit.ecdigitalstrategy.com/outreach?tab=prospects">Outreach page</a></p>`,
+    ].join("");
+    await sendEmail({ to: [OUTREACH_OWNER_EMAIL], subject: `Outreach: ${p.store_name || p.domain} opened their report ${p.report_views} times`, html }).catch(() => {});
+  }
+}
+
 /** Replies and bounces since each prospect was emailed. Returns false if the inbox could not be read. */
 async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
   const { data } = await sb
@@ -401,6 +428,7 @@ async function tick(sb: Sb) {
   const now = new Date();
   const inboxOk = await checkInbox(sb, box);
   const settings = await loadSettings(sb);
+  await hotLeads(sb, settings);
   if (settings.paused) return { ok: true, skipped: "paused", reason: settings.pause_reason };
   if (!inSendWindow(now, settings.send_start_hour, settings.send_end_hour)) {
     return { ok: true, skipped: "outside_send_window", inbox: inboxOk };
@@ -561,6 +589,8 @@ serve(async (req) => {
     if ("daily_new_cap" in s) patch.daily_new_cap = clampInt(s.daily_new_cap, 0, 10, current.daily_new_cap);
     if ("hubspot_log" in s) patch.hubspot_log = Boolean(s.hubspot_log);
     if ("reply_alerts" in s) patch.reply_alerts = Boolean(s.reply_alerts);
+    if ("hot_lead_views" in s) patch.hot_lead_views = clampInt(s.hot_lead_views, 0, 20, current.hot_lead_views);
+    if ("about_intro" in s) patch.about_intro = String(s.about_intro ?? "").trim().slice(0, 1500) || null;
     if ("auto_pipeline" in s) patch.auto_pipeline = Boolean(s.auto_pipeline);
     if ("auto_audits_per_day" in s) patch.auto_audits_per_day = clampInt(s.auto_audits_per_day, 0, 10, current.auto_audits_per_day);
     if ("min_lead_score" in s) patch.min_lead_score = clampInt(s.min_lead_score, 0, 100, current.min_lead_score);

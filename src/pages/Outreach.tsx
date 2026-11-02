@@ -339,7 +339,7 @@ function ProspectCard({
 
         <div className="flex flex-wrap items-center gap-2">
           {reportUrl && (
-            <a href={reportUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+            <a href={`${reportUrl}?preview=1`} title="Your own look is not counted as an open" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
               <ExternalLink className="h-3.5 w-3.5" /> Their report
             </a>
           )}
@@ -766,6 +766,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     min_lead_score: 40,
     hubspot_log: true,
     reply_alerts: true,
+    hot_lead_views: 3,
+    about_intro: '',
   });
 
   useEffect(() => {
@@ -784,6 +786,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       min_lead_score: settings.min_lead_score,
       hubspot_log: settings.hubspot_log,
       reply_alerts: settings.reply_alerts,
+      hot_lead_views: settings.hot_lead_views,
+      about_intro: settings.about_intro ?? '',
     });
   }, [settings]);
 
@@ -815,7 +819,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       form.auto_audits_per_day !== settings.auto_audits_per_day ||
       form.min_lead_score !== settings.min_lead_score ||
       form.hubspot_log !== settings.hubspot_log ||
-      form.reply_alerts !== settings.reply_alerts);
+      form.reply_alerts !== settings.reply_alerts ||
+      form.hot_lead_views !== settings.hot_lead_views ||
+      form.about_intro !== (settings.about_intro ?? ''));
 
   const num = (key: keyof typeof form, label: string, min: number, max: number, note?: string) => (
     <label className="text-xs text-gray-500">
@@ -946,6 +952,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
             <span className="block text-xs text-gray-500">Interested, a question, a referral or "not now", with what they said and their report.</span>
           </span>
         </label>
+        <div className="mt-3 max-w-xs">
+          {num('hot_lead_views', 'Email me when someone opens their report this many times', 0, 20, 'Without replying. One visit counts once; your own looks never count. 0 turns it off.')}
+        </div>
         <label className="mt-3 flex items-start gap-2 text-sm text-gray-800">
           <input type="checkbox" checked={form.hubspot_log} onChange={(e) => setForm((f) => ({ ...f, hubspot_log: e.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary" />
           <span>
@@ -983,6 +992,15 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
             onChange={(e) => setForm((f) => ({ ...f, booking_url: e.target.value }))}
             placeholder="https://calendly.com/..."
             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-900"
+          />
+        </label>
+        <label className="mt-4 block text-xs text-gray-500">
+          Who made this (a few plain lines at the end of their report; empty hides it)
+          <textarea
+            value={form.about_intro}
+            onChange={(e) => setForm((f) => ({ ...f, about_intro: e.target.value }))}
+            rows={3}
+            className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800"
           />
         </label>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
