@@ -7,8 +7,15 @@ import type { AuditSection } from '../../../lib/types';
 // section_details.web.locked_findings; this just tells the reader so, and how to
 // get the full picture.
 
-/** Where "go through the rest" leads. A booking link replaces this once there is one. */
+/** Where "go through the rest" leads: Emil's booking link once it is set on the
+ * Outreach page (audit_public passes it), an email to him until then. */
 export const OUTREACH_CONTACT_URL = 'mailto:emil@ecdigitalstrategy.com?subject=Website%20audit%20walkthrough';
+
+export function teaserContactUrl(bookingUrl: string | null | undefined): string {
+  const url = (bookingUrl ?? '').trim();
+  return /^https?:\/\//i.test(url) ? url : OUTREACH_CONTACT_URL;
+}
+
 export const OUTREACH_CONTACT_LABEL = 'Book a walkthrough with Emil';
 
 type Locked = { desktop?: number; mobile?: number };
@@ -30,7 +37,15 @@ function lockedTotal(sections: AuditSection[]): number {
   }, 0);
 }
 
-export function OutreachTeaserBanner({ sections, companyName }: { sections: AuditSection[]; companyName: string }) {
+export function OutreachTeaserBanner({
+  sections,
+  companyName,
+  contactUrl = OUTREACH_CONTACT_URL,
+}: {
+  sections: AuditSection[];
+  companyName: string;
+  contactUrl?: string;
+}) {
   const more = lockedTotal(sections);
   return (
     <div className="rounded-2xl border border-brand-primary/20 bg-white p-6 shadow-sm sm:flex sm:items-center sm:gap-6">
@@ -46,7 +61,9 @@ export function OutreachTeaserBanner({ sections, companyName }: { sections: Audi
         </p>
       </div>
       <a
-        href={OUTREACH_CONTACT_URL}
+        href={contactUrl}
+        target={contactUrl.startsWith('http') ? '_blank' : undefined}
+        rel="noreferrer"
         className="mt-4 inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-primary px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-primary-dark sm:mt-0"
       >
         <CalendarDays className="h-4 w-4" />
@@ -57,11 +74,13 @@ export function OutreachTeaserBanner({ sections, companyName }: { sections: Audi
 }
 
 /** Under a page's findings: how many more there are on this screen size. */
-export function LockedFindingsCard({ count }: { count: number }) {
+export function LockedFindingsCard({ count, contactUrl = OUTREACH_CONTACT_URL }: { count: number; contactUrl?: string }) {
   if (count <= 0) return null;
   return (
     <a
-      href={OUTREACH_CONTACT_URL}
+      href={contactUrl}
+      target={contactUrl.startsWith('http') ? '_blank' : undefined}
+      rel="noreferrer"
       className="mt-3 flex items-center gap-3 rounded-xl border border-dashed border-gray-300 bg-gray-50/70 px-4 py-3 text-sm text-gray-600 transition-colors hover:border-brand-primary/40 hover:text-brand-primary"
     >
       <Lock className="h-4 w-4 shrink-0 text-gray-400" />

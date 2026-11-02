@@ -73,6 +73,19 @@ async function checkScheduledJobs(sb: ReturnType<typeof assertServiceRoleClient>
   return issues;
 }
 
+/** Outreach sending that paused itself (a bounce, or Gmail refusing the mailbox
+ * password). A pause Emil set by hand is his choice and not reported. */
+async function checkOutreach(sb: ReturnType<typeof assertServiceRoleClient>): Promise<Issue[]> {
+  const { data } = await sb.from("outreach_settings").select("paused, pause_reason").eq("id", "default").maybeSingle();
+  const row = data as { paused?: boolean; pause_reason?: string | null } | null;
+  if (!row?.paused || row.pause_reason === "Paused by hand.") return [];
+  return [{
+    key: "outreach-paused",
+    title: "Outreach sending has paused itself",
+    detail: `${row.pause_reason ?? "No reason recorded."} Nothing more goes out until you resume it on the Outreach page.`,
+  }];
+}
+
 async function checkStuckWork(sb: ReturnType<typeof assertServiceRoleClient>): Promise<Issue[]> {
   const stuckBefore = new Date(Date.now() - 45 * 60 * 1000).toISOString();
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -117,7 +130,7 @@ serve(async (req) => {
   if (!(await hasCronSecret(req, "health_check_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
 
   const sb = assertServiceRoleClient();
-  const settled = await Promise.allSettled([checkXero(sb), checkScheduledJobs(sb), checkStuckWork(sb)]);
+  const settled = await Promise.allSettled([checkXero(sb), checkScheduledJobs(sb), checkStuckWork(sb), checkOutreach(sb)]);
   const issues: Issue[] = settled.flatMap((r, i) =>
     r.status === "fulfilled"
       ? r.value

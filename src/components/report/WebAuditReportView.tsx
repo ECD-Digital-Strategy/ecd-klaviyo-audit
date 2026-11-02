@@ -13,7 +13,7 @@ import WebRoadmapTable from './web/WebRoadmapTable';
 import WebInvestmentSummary from './web/WebInvestmentSummary';
 import ReportCover from './ReportCover';
 import WebAgentDemoSection, { type AgentDemoKind } from './web/WebAgentDemoSection';
-import { OutreachTeaserBanner, isTeaser } from './web/OutreachTeaser';
+import { OutreachTeaserBanner, isTeaser, teaserContactUrl } from './web/OutreachTeaser';
 
 export interface WebAuditReportViewData {
   audit: Audit;
@@ -21,6 +21,8 @@ export interface WebAuditReportViewData {
   sections: AuditSection[];
   pageSnapshots: WebPageSnapshot[];
   shopifySnapshots: ShopifyDataSnapshot[];
+  /** An outreach audit's public teaser: where "Book a walkthrough" leads. */
+  teaser?: { booking_url?: string | null } | null;
 }
 
 const PAGE_SECTIONS: Array<{ key: string; title: string; page_type: WebPageType }> = [
@@ -330,7 +332,9 @@ export default function WebAuditReportView({
           deliverable="Website Audit"
           description="A page-by-page review of your storefront on desktop and mobile. What is working, what is costing you orders, and what to fix first."
         />
-        {isTeaser(sections) && <OutreachTeaserBanner sections={sections} companyName={client.company_name} />}
+        {isTeaser(sections) && (
+          <OutreachTeaserBanner sections={sections} companyName={client.company_name} contactUrl={teaserContactUrl(data.teaser?.booking_url)} />
+        )}
 
         {overview && (
           <WebSectionShell
@@ -361,7 +365,7 @@ export default function WebAuditReportView({
               hidden={hidden}
               onToggleHidden={(h) => toggleAuditSectionHidden(key, h)}
             >
-              <WebPageSection section={section} title={title} snapshots={snapshots} hideTitle />
+              <WebPageSection section={section} title={title} snapshots={snapshots} hideTitle teaserContactUrl={teaserContactUrl(data.teaser?.booking_url)} />
             </WebSectionShell>
           );
         })}

@@ -119,6 +119,10 @@ serve(async (req) => {
         return json({ ok: false, error: { code: "not_found" }, correlationId }, { status: 404 });
       }
       const isOutreach = (audit as { is_outreach?: boolean }).is_outreach === true;
+      // Where the teaser's "Book a walkthrough" leads: Emil's booking link once he has set one.
+      const bookingUrl = isOutreach
+        ? ((await sb.from("outreach_settings").select("booking_url").eq("id", "default").maybeSingle()).data?.booking_url ?? null)
+        : null;
       return json({
         ok: true,
         audit,
@@ -126,7 +130,7 @@ serve(async (req) => {
         // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
         // and screen size, the rest only counted, and no roadmap, pricing or sales data.
         sections: isOutreach ? teaserSections(webSections.data ?? []) : webSections.data ?? [],
-        teaser: isOutreach ? { locked_total: teaserLockedTotal(webSections.data ?? []) } : null,
+        teaser: isOutreach ? { locked_total: teaserLockedTotal(webSections.data ?? []), booking_url: bookingUrl } : null,
         webPageSnapshots: pageSnaps.data ?? [],
         shopifySnapshots: isOutreach ? [] : shopifySnaps.data ?? [],
         correlationId,

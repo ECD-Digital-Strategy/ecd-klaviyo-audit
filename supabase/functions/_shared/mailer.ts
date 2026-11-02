@@ -10,6 +10,12 @@ export type SendEmailInput = {
   from?: string;
   replyTo?: string;
   cc?: string[];
+  /** Send through another mailbox than SMTP_USER (outreach sends as Emil, 2026-11-02). */
+  smtp?: { user: string; pass: string; host?: string; port?: number };
+  /** Our own Message-ID ("<id@domain>"), so a later email can thread under it. */
+  messageId?: string;
+  /** Thread this email under an earlier one (its Message-ID). */
+  inReplyTo?: string;
 };
 
 export type SendEmailResult =
@@ -31,10 +37,10 @@ function sanitizeHtmlForQuotedPrintable(html: string): string {
 }
 
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  const host = (Deno.env.get("SMTP_HOST") ?? "smtp.gmail.com").trim();
-  const port = Number(Deno.env.get("SMTP_PORT") ?? "587");
-  const user = (Deno.env.get("SMTP_USER") ?? "").trim();
-  const pass = (Deno.env.get("SMTP_PASS") ?? "").trim();
+  const host = (input.smtp?.host ?? Deno.env.get("SMTP_HOST") ?? "smtp.gmail.com").trim();
+  const port = Number(input.smtp?.port ?? Deno.env.get("SMTP_PORT") ?? "587");
+  const user = (input.smtp?.user ?? Deno.env.get("SMTP_USER") ?? "").trim();
+  const pass = (input.smtp?.pass ?? Deno.env.get("SMTP_PASS") ?? "").trim();
 
   if (!user || !pass) return { status: "skipped", reason: "SMTP not configured" };
   if (input.to.length === 0) return { status: "skipped", reason: "No recipients" };
@@ -66,8 +72,10 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       html: sanitizeHtmlForQuotedPrintable(input.html),
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       ...(input.cc?.length ? { cc: input.cc } : {}),
+      ...(input.inReplyTo ? { inReplyTo: input.inReplyTo, references: input.inReplyTo } : {}),
+      ...(input.messageId ? { headers: { "Message-ID": input.messageId } } : {}),
     });
-    return { status: "sent", id: crypto.randomUUID() };
+    return { status: "sent", id: input.messageId ?? crypto.randomUUID() };
   } catch (e) {
     return { status: "failed", reason: e instanceof Error ? e.message : "SMTP send failed" };
   } finally {

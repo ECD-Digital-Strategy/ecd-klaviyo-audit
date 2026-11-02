@@ -68,6 +68,7 @@ export default function PublicReport() {
             sections: data.sections,
             pageSnapshots: data.webPageSnapshots ?? [],
             shopifySnapshots: data.shopifySnapshots ?? [],
+            teaser: data.teaser ?? null,
           }}
         />
       </Suspense>

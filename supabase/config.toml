@@ -41,3 +41,6 @@ verify_jwt = false
 
 [functions.outreach_draft]
 verify_jwt = false
+
+[functions.outreach_send]
+verify_jwt = false

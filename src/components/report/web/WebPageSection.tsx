@@ -17,6 +17,7 @@ export default function WebPageSection({
   title,
   snapshots,
   hideTitle = false,
+  teaserContactUrl,
 }: {
   section: AuditSection;
   title: string;
@@ -24,6 +25,8 @@ export default function WebPageSection({
   /** The report frame already renders a numbered section heading; skip the
    * card's own so the title is not printed twice. */
   hideTitle?: boolean;
+  /** An outreach teaser: where its locked-findings card leads. */
+  teaserContactUrl?: string;
 }) {
   const { editMode, updateSectionField, updateSectionDetailValue, flushSaves } = useReportEdit();
   const detail = useMemo(() => parseWebSectionDetail(section.section_details), [section.section_details]);
@@ -477,7 +480,7 @@ export default function WebPageSection({
             </div>
           )}
           {/* An outreach audit's public teaser: how many more this page holds back. */}
-          {!editMode && <LockedFindingsCard count={lockedFindings(section)?.[viewport] ?? 0} />}
+          {!editMode && <LockedFindingsCard count={lockedFindings(section)?.[viewport] ?? 0} contactUrl={teaserContactUrl} />}
           {editMode && (
             <button
               type="button"

@@ -9,7 +9,23 @@ import type { Audit, Client } from './types';
 // link is a teaser (audit_public); outreach_draft writes the email; Emil edits it,
 // sends it from his own mailbox and marks it sent.
 
-export type OutreachStatus = 'new' | 'skipped' | 'auditing' | 'ready' | 'sent' | 'replied' | 'unsubscribed' | 'failed';
+// Step 2 (2026-11-02): sending from the page. Emil connects his mailbox here (its
+// app password is stored encrypted on the server and never comes back), then either
+// sends an email now or queues it; outreach_send's autopilot sends queued emails
+// and two follow-ups in US working hours and watches his inbox for replies and
+// bounces.
+
+export type OutreachStatus =
+  | 'new'
+  | 'skipped'
+  | 'auditing'
+  | 'ready'
+  | 'approved'
+  | 'sent'
+  | 'replied'
+  | 'bounced'
+  | 'unsubscribed'
+  | 'failed';
 
 export type OutreachProspect = {
   id: string;
@@ -25,6 +41,10 @@ export type OutreachProspect = {
   email_body: string | null;
   notes: string | null;
   sent_at: string | null;
+  approved_at?: string | null;
+  last_sent_at?: string | null;
+  replied_at?: string | null;
+  followups_sent?: number;
   created_at: string;
   updated_at: string;
   /** Joined: the audit's progress and public link. */
@@ -139,3 +159,42 @@ export function gmailComposeUrl(to: string, subject: string, body: string): stri
   const q = new URLSearchParams({ view: 'cm', fs: '1', to, su: subject, body });
   return `https://mail.google.com/mail/?${q.toString()}`;
 }
+
+// ---------------------------------------------------------------- sending (step 2)
+
+export type OutreachSettings = {
+  paused: boolean;
+  pause_reason: string | null;
+  daily_new_cap: number;
+  booking_url: string | null;
+  postal_address: string | null;
+};
+
+export type OutreachSendStatus = {
+  /** The connected mailbox's address, or null. Its password never comes back. */
+  mailbox: string | null;
+  sent_today: number;
+  settings: OutreachSettings;
+  in_window: boolean;
+};
+
+async function sendFn<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke('outreach_send', { body });
+  if (error) {
+    const ctx = (error as { context?: Response }).context;
+    const parsed = ctx ? await ctx.json().catch(() => null) : null;
+    throw new Error(parsed?.error ?? error.message);
+  }
+  if (!data?.ok) throw new Error(data?.error ?? 'Request failed');
+  return data as T;
+}
+
+export const getSendStatus = () => sendFn<OutreachSendStatus>({ action: 'status' });
+export const connectMailbox = (user: string, pass: string) => sendFn<{ mailbox: string }>({ action: 'connect_mailbox', user, pass });
+export const disconnectMailbox = () => sendFn<void>({ action: 'disconnect_mailbox' });
+export const saveSendSettings = (settings: Partial<OutreachSettings>) => sendFn<void>({ action: 'save_settings', settings });
+export const sendNow = (prospectId: string) => sendFn<void>({ action: 'send_now', prospect_id: prospectId });
+
+/** Queue for the autopilot: it sends queued emails in order, within the daily limit. */
+export const queueProspect = (id: string) => updateProspect(id, { status: 'approved', approved_at: new Date().toISOString() });
+export const unqueueProspect = (id: string) => updateProspect(id, { status: 'ready', approved_at: null });
