@@ -16,9 +16,10 @@ import { longDate, money, renderInvoiceEmail } from "../_shared/invoice-email.ts
 
 // Connecting a person's Gmail so invoices can go out as them (2026-11-02; see
 // _shared/gmail.ts). POST actions, from Proposal settings:
-//  - "status": is Google sign-in set up, and is MY Gmail connected;
+//  - "status": is Google sign-in set up, whose Gmail is connected (everyone's,
+//    for the list on the settings page), and is MINE;
 //  - "start": the Google sign-in link for me;
-//  - "disconnect": forget my Gmail;
+//  - "disconnect": forget my Gmail (admins: anyone's, with user_id);
 //  - "test": an example invoice email to myself, from my Gmail;
 //  - "save_client" (admins): the Google OAuth client id and secret.
 // GET: Google's redirect after sign-in (code + state), which stores the
@@ -84,14 +85,48 @@ serve(async (req) => {
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
   }
-  const body = (await req.json().catch(() => ({}))) as { action?: string; return_to?: string; client_id?: string; client_secret?: string };
+  const body = (await req.json().catch(() => ({}))) as { action?: string; return_to?: string; client_id?: string; client_secret?: string; user_id?: string };
   const sb = assertServiceRoleClient();
 
   try {
     if (body.action === "status") {
-      const configured = Boolean(await googleClient(sb));
-      const { data: mine } = await sb.from("mailbox_connections").select("email, connected_at, last_used_at, last_error").eq("user_id", userId).maybeSingle();
-      return json({ ok: true, configured, redirect_uri: gmailRedirectUri(), mine: mine ?? null });
+      const client = await googleClient(sb);
+      const { data: rows } = await sb
+        .from("mailbox_connections")
+        .select("user_id, email, connected_at, last_used_at, last_error")
+        .order("connected_at", { ascending: true });
+      const ids = (rows ?? []).map((r) => r.user_id as string);
+      const { data: profs } = ids.length ? await sb.from("profiles").select("id, name").in("id", ids) : { data: [] };
+      const names = new Map((profs ?? []).map((p) => [p.id as string, String(p.name ?? "").trim()]));
+      // Everyone connected, so the team can see whose Gmail invoices can come from.
+      // Addresses and dates only: tokens never leave the server.
+      const connections = (rows ?? []).map((r) => ({
+        user_id: r.user_id as string,
+        name: names.get(r.user_id as string) || (r.email as string),
+        email: r.email as string,
+        connected_at: r.connected_at as string,
+        last_used_at: (r.last_used_at as string | null) ?? null,
+        last_error: (r.last_error as string | null) ?? null,
+        is_me: r.user_id === userId,
+      }));
+      let isAdmin = false;
+      try {
+        await requireAdminUserId(req);
+        isAdmin = true;
+      } catch {
+        // staff
+      }
+      return json({
+        ok: true,
+        configured: Boolean(client),
+        // Enough to recognise which Google client is saved, never the secret.
+        client_id_hint: client && isAdmin ? `${client.clientId.slice(0, 12)}…${client.clientId.slice(-28)}` : null,
+        redirect_uri: gmailRedirectUri(),
+        is_admin: isAdmin,
+        me: userId,
+        mine: connections.find((c) => c.is_me) ?? null,
+        connections,
+      });
     }
 
     if (body.action === "save_client") {
@@ -122,7 +157,16 @@ serve(async (req) => {
     }
 
     if (body.action === "disconnect") {
-      await sb.from("mailbox_connections").delete().eq("user_id", userId);
+      // Your own Gmail, or (admins) anyone's, e.g. when someone leaves.
+      const target = body.user_id && body.user_id !== userId ? body.user_id : userId;
+      if (target !== userId) {
+        try {
+          await requireAdminUserId(req);
+        } catch {
+          return json({ ok: false, error: "Only admins can disconnect someone else's Gmail." }, 403);
+        }
+      }
+      await sb.from("mailbox_connections").delete().eq("user_id", target);
       return json({ ok: true });
     }
 

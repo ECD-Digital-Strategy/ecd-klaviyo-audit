@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Mail } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Mail } from 'lucide-react';
 import { listInvoiceSenders, type InvoiceSender } from '../../lib/invoice-sending';
 import { getProposalSettings, updateProposal } from '../../lib/proposals-db';
+import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import { useToast } from '../ui/Toast';
 import type { Proposal } from '../../lib/types';
+
+/** Radix Select needs a non-empty value for "whoever sent the proposal". */
+const DEFAULT = '__sender__';
 
 /**
  * "Invoice sent by" on a proposal (Emil, 2026-11-02): whose Gmail the client's
@@ -27,13 +31,13 @@ export default function InvoiceSenderPicker({ proposal, onChanged }: { proposal:
 
   const defaultId = proposal.sent_by ?? proposal.created_by;
   const effective = proposal.invoice_sender_id ?? defaultId;
-  const connected = senders.some(s => s.user_id === effective);
+  const chosen = senders.find(s => s.user_id === effective);
   const defaultSender = senders.find(s => s.user_id === defaultId);
 
   const pick = async (value: string) => {
     setSaving(true);
     try {
-      await updateProposal(proposal.id, { invoice_sender_id: value || null });
+      await updateProposal(proposal.id, { invoice_sender_id: value === DEFAULT ? null : value });
       onChanged();
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save');
@@ -48,22 +52,32 @@ export default function InvoiceSenderPicker({ proposal, onChanged }: { proposal:
         <Mail className="h-3.5 w-3.5 text-gray-400" />
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Invoice sent by</h3>
       </div>
-      <select
-        value={proposal.invoice_sender_id ?? ''}
-        disabled={saving}
-        onChange={e => void pick(e.target.value)}
-        className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-800"
-      >
-        <option value="">{defaultSender ? `${defaultSender.name} (sent the proposal)` : 'Whoever sent the proposal'}</option>
-        {senders.filter(s => s.user_id !== defaultId).map(s => (
-          <option key={s.user_id} value={s.user_id}>{s.name}</option>
-        ))}
-      </select>
-      <p className={`mt-1.5 text-[11px] ${connected ? 'text-gray-400' : 'text-amber-700'}`}>
-        {connected
-          ? 'The client gets the invoice from this Gmail when they sign, with the usual people copied.'
-          : "This person hasn't connected their Gmail, so the payment link will go to them to forward instead."}
-      </p>
+      <Select value={proposal.invoice_sender_id ?? DEFAULT} onValueChange={v => void pick(v)} disabled={saving}>
+        <SelectTrigger className="mt-2 h-9 w-full text-sm">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={DEFAULT}>
+            <SelectItemText>{defaultSender ? `${defaultSender.name} (sent the proposal)` : 'Whoever sent the proposal'}</SelectItemText>
+          </SelectItem>
+          {senders.filter(s => s.user_id !== defaultId).map(s => (
+            <SelectItem key={s.user_id} value={s.user_id}>
+              <SelectItemText>{s.name}</SelectItemText>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {chosen ? (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+          <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0 text-emerald-600" />
+          The client gets the invoice from {chosen.email} when they sign, with the usual people copied.
+        </p>
+      ) : (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+          This person hasn&apos;t connected their Gmail, so the payment link will go to them to forward instead.
+        </p>
+      )}
     </div>
   );
 }

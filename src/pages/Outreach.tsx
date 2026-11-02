@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, BadgeCheck, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
+import { ToggleRow } from '../components/ui/ToggleSwitch';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/ui/Toast';
 import {
@@ -918,21 +919,14 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
           Every store gets a lead score (0-100) when it is checked: traffic rank, catalogue size, paid tools like Attentive or
           Recharge, and whether it sells in USD. Hover a score on the Prospects tab to see why.
         </p>
-        <label className="mt-4 flex items-start gap-2 text-sm text-gray-800">
-          <input
-            type="checkbox"
+        <div className="mt-4">
+          <ToggleRow
+            title="Run the pipeline on its own"
+            description="Takes the best stores from To audit each day: finds the decision-maker (a store with no one to email is skipped), runs the audit and drafts the email. Drafts wait in Ready to send; nothing goes out until you send or queue it."
             checked={form.auto_pipeline}
-            onChange={(e) => setForm((f) => ({ ...f, auto_pipeline: e.target.checked }))}
-            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary"
+            onChange={(v) => setForm((f) => ({ ...f, auto_pipeline: v }))}
           />
-          <span>
-            Run the pipeline on its own
-            <span className="block text-xs text-gray-500">
-              Takes the best stores from To audit each day: finds the decision-maker (a store with no one to email is skipped),
-              runs the audit and drafts the email. Drafts wait in Ready to send; nothing goes out until you send or queue it.
-            </span>
-          </span>
-        </label>
+        </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
           {num('auto_audits_per_day', 'Stores to audit per day', 0, 10, 'New York days, two at a time.')}
           {num('min_lead_score', 'Lowest lead score to keep', 0, 100, 'Checked stores under this are skipped. 40 is a fair start.')}
@@ -945,29 +939,30 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
           Every reply is read and sorted. Anyone who answers stops getting follow-ups; anyone who says no goes on the
           do-not-contact list for good{status?.suppressed ? ` (${status.suppressed} so far)` : ''}. An out-of-office lets the follow-up go ahead.
         </p>
-        <label className="mt-4 flex items-start gap-2 text-sm text-gray-800">
-          <input type="checkbox" checked={form.reply_alerts} onChange={(e) => setForm((f) => ({ ...f, reply_alerts: e.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary" />
-          <span>
-            Email me when someone replies
-            <span className="block text-xs text-gray-500">Interested, a question, a referral or "not now", with what they said and their report.</span>
-          </span>
-        </label>
+        <div className="mt-4">
+          <ToggleRow
+            title="Email me when someone replies"
+            description={'Interested, a question, a referral or "not now", with what they said and their report.'}
+            checked={form.reply_alerts}
+            onChange={(v) => setForm((f) => ({ ...f, reply_alerts: v }))}
+          />
+        </div>
         <div className="mt-3 max-w-xs">
           {num('hot_lead_views', 'Email me when someone opens their report this many times', 0, 20, 'Without replying. One visit counts once; your own looks never count. 0 turns it off.')}
         </div>
-        <label className="mt-3 flex items-start gap-2 text-sm text-gray-800">
-          <input type="checkbox" checked={form.hubspot_log} onChange={(e) => setForm((f) => ({ ...f, hubspot_log: e.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary" />
-          <span>
-            Log them in HubSpot
-            <span className="block text-xs text-gray-500">
-              Once emailed: the company and contact (owned by you), every email both ways, and their lead status from the reply.
-            </span>
-            {status?.hubspot && !status.hubspot.connected && <span className="block text-xs text-amber-700">HubSpot is not connected.</span>}
+        <div className="mt-4">
+          <ToggleRow
+            title="Log them in HubSpot"
+            description="Once emailed: the company and contact (owned by you), every email both ways, and their lead status from the reply."
+            checked={form.hubspot_log}
+            onChange={(v) => setForm((f) => ({ ...f, hubspot_log: v }))}
+          >
+            {status?.hubspot && !status.hubspot.connected && <p className="mt-1.5 text-xs text-amber-700">HubSpot is not connected.</p>}
             {status?.hubspot?.missing_scopes && status.hubspot.missing_scopes.length > 0 && (
-              <span className="block text-xs text-amber-700">The HubSpot app is missing: {status.hubspot.missing_scopes.join(', ')}.</span>
+              <p className="mt-1.5 text-xs text-amber-700">The HubSpot app is missing: {status.hubspot.missing_scopes.join(', ')}.</p>
             )}
-          </span>
-        </label>
+          </ToggleRow>
+        </div>
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">

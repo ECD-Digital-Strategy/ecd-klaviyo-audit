@@ -6,12 +6,28 @@ import { supabase } from './supabase';
 // Proposal settings (proposal_settings.invoicing); off until then. Server side:
 // supabase/functions/_shared/gmail.ts, invoice-delivery.ts, invoice_followup.
 
+export type GmailConnection = {
+  user_id: string;
+  name: string;
+  email: string;
+  connected_at: string;
+  last_used_at: string | null;
+  /** The last thing that went wrong sending from it, e.g. it needs reconnecting. */
+  last_error: string | null;
+  is_me: boolean;
+};
+
 export type GmailStatus = {
   /** Google sign-in is set up (the OAuth client is saved). */
   configured: boolean;
+  /** Admins only: which Google client is saved (never the secret). */
+  client_id_hint: string | null;
   /** The redirect URI to add on the Google OAuth client. */
   redirect_uri: string;
-  mine: { email: string; connected_at: string; last_used_at: string | null; last_error: string | null } | null;
+  is_admin: boolean;
+  mine: GmailConnection | null;
+  /** Everyone whose Gmail is connected. */
+  connections: GmailConnection[];
 };
 
 export type InvoiceSender = { user_id: string; name: string; email: string; connected_at: string };
@@ -28,7 +44,8 @@ async function call<T>(fn: string, body: Record<string, unknown>): Promise<T> {
 }
 
 export const getGmailStatus = () => call<GmailStatus>('gmail_connect', { action: 'status' });
-export const disconnectGmail = () => call<void>('gmail_connect', { action: 'disconnect' });
+/** Your own Gmail, or (admins) someone else's. */
+export const disconnectGmail = (userId?: string) => call<void>('gmail_connect', { action: 'disconnect', user_id: userId });
 export const sendGmailTest = () => call<{ to: string }>('gmail_connect', { action: 'test' });
 export const saveGoogleClient = (clientId: string, clientSecret: string) =>
   call<void>('gmail_connect', { action: 'save_client', client_id: clientId, client_secret: clientSecret });
