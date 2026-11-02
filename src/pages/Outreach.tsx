@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/ui/Toast';
@@ -23,6 +23,12 @@ import {
   unqueueProspect,
   listSends,
   testSend,
+  connectHunter,
+  disconnectHunter,
+  findDecisionMaker,
+  getHunterStatus,
+  isRoleAddress,
+  type HunterStatus,
   type OutreachProspect,
   type OutreachSend,
   type OutreachSendStatus,
@@ -222,6 +228,12 @@ function ProspectCard({
     setBody(p.email_body ?? '');
   }, [p.email_subject, p.email_body]);
 
+  // A lookup fills these on the server.
+  useEffect(() => {
+    setToEmail(p.contact_email ?? '');
+    setToName(p.contact_name ?? '');
+  }, [p.contact_email, p.contact_name]);
+
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
     try {
@@ -234,8 +246,27 @@ function ProspectCard({
     }
   };
 
-  const saveEdits = () =>
-    updateProspect(p.id, { email_subject: subject, email_body: body, contact_email: toEmail.trim() || null, contact_name: toName.trim() || null });
+  // Typing a different address makes it Emil's own pick, no longer Hunter's checked one.
+  const saveEdits = () => {
+    const email = toEmail.trim() || null;
+    const changed = email !== (p.contact_email ?? null);
+    return updateProspect(p.id, {
+      email_subject: subject,
+      email_body: body,
+      contact_email: email,
+      contact_name: toName.trim() || null,
+      ...(changed ? { contact_source: email ? 'manual' : null, contact_verified: null, contact_title: null } : {}),
+    });
+  };
+
+  const lookup = () =>
+    run('lookup', async () => {
+      const r = await findDecisionMaker(p.id);
+      if (r.found) showToast(`Found ${r.found.name ?? r.found.email}${r.found.title ? `, ${r.found.title}` : ''}`);
+      else showToast(r.message ?? 'No one found');
+    });
+  const roleAddress = Boolean(toEmail.trim()) && isRoleAddress(toEmail);
+  const canLookup = ['new', 'auditing', 'ready', 'failed'].includes(p.status);
 
   const reportUrl = p.audit?.public_share_token ? `${REPORT_BASE}${p.audit.public_share_token}` : null;
   const auditDone = p.audit?.status === 'published';
@@ -249,6 +280,14 @@ function ProspectCard({
           <a href={`https://${p.domain}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-brand-primary">
             {p.domain} <ExternalLink className="h-3 w-3" />
           </a>
+          {p.contact_email && p.status !== 'skipped' && (
+            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-600">
+              <span className="font-medium text-gray-800">{p.contact_name || p.contact_email}</span>
+              {p.contact_title && <span className="text-gray-500">{p.contact_title}</span>}
+              {p.contact_name && <span className="text-gray-400">{p.contact_email}</span>}
+              <ContactBadge prospect={p} />
+            </p>
+          )}
           {(p.skip_reason || p.notes) && (
             <p className="mt-1 whitespace-pre-line text-xs text-gray-400">{p.skip_reason ?? p.notes}</p>
           )}
@@ -274,6 +313,18 @@ function ProspectCard({
             <Link to={`/audits/${p.audit_id}`} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
               Full audit
             </Link>
+          )}
+          {canLookup && (
+            <button
+              type="button"
+              disabled={busy !== null}
+              title="Find the founder or marketing lead with Hunter, and check their address"
+              onClick={lookup}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy === 'lookup' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserSearch className="h-3.5 w-3.5" />}
+              {p.contact_email ? 'Look up again' : 'Find decision-maker'}
+            </button>
           )}
           {p.status === 'new' && (
             <button
@@ -333,6 +384,12 @@ function ProspectCard({
             <input value={toName} onChange={(e) => setToName(e.target.value)} onBlur={() => void saveEdits()} placeholder="Their name (optional)" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
             <input value={toEmail} onChange={(e) => setToEmail(e.target.value)} onBlur={() => void saveEdits()} placeholder="Their email" type="email" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
           </div>
+          {roleAddress && (
+            <p className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              That is a shared inbox, not a person, so it cannot be sent from here. Find the decision-maker instead.
+            </p>
+          )}
           <input value={subject} onChange={(e) => setSubject(e.target.value)} onBlur={() => void saveEdits()} placeholder="Subject" className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium" />
           <textarea value={body} onChange={(e) => setBody(e.target.value)} onBlur={() => void saveEdits()} rows={10} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm leading-relaxed text-gray-800" />
           <div className="flex flex-wrap items-center gap-2">
@@ -340,7 +397,7 @@ function ProspectCard({
               <>
                 <button
                   type="button"
-                  disabled={busy !== null || !toEmail.trim()}
+                  disabled={busy !== null || !toEmail.trim() || roleAddress}
                   title={toEmail.trim() ? 'Send it now from your mailbox' : 'Add their email first'}
                   onClick={() => run('send', async () => { await saveEdits(); await sendNow(p.id); })}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50"
@@ -349,7 +406,7 @@ function ProspectCard({
                 </button>
                 <button
                   type="button"
-                  disabled={busy !== null || !toEmail.trim()}
+                  disabled={busy !== null || !toEmail.trim() || roleAddress}
                   title="Send it automatically, within the daily limit, in US working hours"
                   onClick={() => run('queue', async () => { await saveEdits(); await queueProspect(p.id); })}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-brand-primary/30 px-3 py-1.5 text-xs font-medium text-brand-primary hover:bg-brand-primary/5 disabled:opacity-50"
@@ -407,6 +464,98 @@ function ProspectCard({
         </div>
       )}
     </div>
+  );
+}
+
+function ContactBadge({ prospect: p }: { prospect: OutreachProspect }) {
+  if (p.contact_verified === 'valid') {
+    return <span className="inline-flex items-center gap-0.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700"><BadgeCheck className="h-3 w-3" /> Checked</span>;
+  }
+  if (p.contact_verified === 'catch_all') {
+    return <span title="Their mail server accepts any address, so Hunter cannot confirm this one" className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">Likely, not confirmed</span>;
+  }
+  if (p.contact_email && isRoleAddress(p.contact_email)) {
+    return <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">Shared inbox</span>;
+  }
+  if (p.contact_source === 'manual') return <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">Added by hand</span>;
+  return null;
+}
+
+/** The Hunter key for decision-maker lookups, on the Settings tab. */
+function HunterSection() {
+  const showToast = useToast();
+  const [status, setStatus] = useState<HunterStatus | null>(null);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => getHunterStatus().then(setStatus, () => setStatus({ connected: false })), []);
+  useEffect(() => { void load(); }, [load]);
+
+  const act = async (fn: () => Promise<unknown>, done: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      await load();
+      showToast(done);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const a = status?.account;
+  const left = a
+    ? a.credits
+      ? `${a.credits.available - a.credits.used} of ${a.credits.available} credits left`
+      : `${a.searches.available - a.searches.used} of ${a.searches.available} searches and ${a.verifications.available - a.verifications.used} of ${a.verifications.available} checks left`
+    : null;
+
+  return (
+    <section className="rounded-xl border border-gray-200 bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Decision-maker lookup (Hunter)</h2>
+          <p className="mt-1 text-xs text-gray-500">
+            Finds the founder or marketing lead at each store and checks their address, so emails never go to a support inbox.
+            Each lookup uses one search and up to two checks.
+          </p>
+          {status?.connected && (
+            <p className="mt-2 text-xs text-gray-600">
+              Connected{a?.email ? ` as ${a.email}` : ''}{a?.plan ? ` (${a.plan})` : ''}.{left ? ` ${left} this month` : ''}
+              {a?.reset_date ? `, resets ${new Date(a.reset_date).toLocaleDateString()}` : ''}.
+              {status.error && <span className="text-amber-700"> {status.error}</span>}
+            </p>
+          )}
+        </div>
+        {status?.connected && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { if (window.confirm('Disconnect Hunter?')) void act(disconnectHunter, 'Hunter disconnected'); }}
+            className="text-xs text-gray-400 hover:text-gray-700"
+          >
+            Disconnect
+          </button>
+        )}
+      </div>
+      {status && !status.connected && (
+        <form
+          className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void act(async () => { await connectHunter(key); setKey(''); }, 'Hunter connected');
+          }}
+        >
+          <input value={key} onChange={(e) => setKey(e.target.value)} type="password" autoComplete="off" placeholder="Hunter API key" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm" />
+          <button type="submit" disabled={busy || !key.trim()} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-primary px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />} Connect
+          </button>
+          <p className="text-[11px] text-gray-400 sm:col-span-2">
+            Copy it from hunter.io/api-keys (the free plan is enough to start). We check it, store it encrypted, and it is never shown again.
+          </p>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -679,6 +828,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
           </form>
         )}
       </section>
+
+      <HunterSection />
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-gray-900">How much and when</h2>

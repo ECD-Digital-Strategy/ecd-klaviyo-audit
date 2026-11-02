@@ -33,6 +33,12 @@ export type OutreachProspect = {
   store_name: string | null;
   contact_name: string | null;
   contact_email: string | null;
+  /** From the decision-maker lookup (outreach_contacts). */
+  contact_title?: string | null;
+  contact_source?: 'hunter' | 'hunter_finder' | 'manual' | null;
+  /** Hunter's check of the address: valid, catch_all (the domain accepts anything), invalid, unknown. */
+  contact_verified?: 'valid' | 'catch_all' | 'invalid' | 'unknown' | null;
+  contact_lookup_at?: string | null;
   status: OutreachStatus;
   skip_reason: string | null;
   client_id: string | null;
@@ -228,3 +234,45 @@ export async function listSends(limit = 200): Promise<OutreachSend[]> {
   if (error) throw error;
   return (data ?? []) as OutreachSend[];
 }
+
+// ---------------------------------------------------------------- decision-makers
+
+/** Shared inboxes (support@, info@...). outreach_send refuses them; keep in sync with
+ * supabase/functions/_shared/outreach-contacts.ts. */
+const ROLE_LOCAL_PARTS = new Set([
+  'support', 'help', 'info', 'hello', 'hi', 'hey', 'contact', 'contactus', 'team', 'care', 'customercare',
+  'customerservice', 'service', 'orders', 'order', 'sales', 'shop', 'store', 'admin', 'office', 'mail',
+  'enquiries', 'inquiries', 'questions', 'returns', 'shipping', 'billing', 'accounts', 'careers', 'jobs',
+  'press', 'media', 'pr', 'partners', 'partnerships', 'wholesale', 'marketing', 'social', 'noreply',
+  'no-reply', 'donotreply', 'webmaster', 'hr', 'legal', 'privacy', 'feedback', 'community', 'ambassadors',
+  'affiliates', 'collabs', 'influencers', 'general',
+]);
+export function isRoleAddress(email: string): boolean {
+  const local = email.trim().toLowerCase().split('@')[0]?.split('+')[0] ?? '';
+  return Boolean(local) && (ROLE_LOCAL_PARTS.has(local) || ROLE_LOCAL_PARTS.has(local.replace(/[._-]/g, '')));
+}
+
+type Quota = { used: number; available: number };
+export type HunterStatus = {
+  connected: boolean;
+  account?: { email: string | null; plan: string | null; reset_date: string | null; credits: Quota | null; searches: Quota; verifications: Quota } | null;
+  error?: string;
+};
+
+async function contactsFn<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke('outreach_contacts', { body });
+  if (error) {
+    const ctx = (error as { context?: Response }).context;
+    const parsed = ctx ? await ctx.json().catch(() => null) : null;
+    throw new Error(parsed?.error ?? error.message);
+  }
+  if (!data?.ok) throw new Error(data?.error ?? 'Request failed');
+  return data as T;
+}
+
+export const getHunterStatus = () => contactsFn<HunterStatus>({ action: 'status' });
+export const connectHunter = (key: string) => contactsFn<HunterStatus>({ action: 'connect', key });
+export const disconnectHunter = () => contactsFn<void>({ action: 'disconnect' });
+/** Looks up the store's decision-maker and fills in their name, title and checked email. */
+export const findDecisionMaker = (prospectId: string) =>
+  contactsFn<{ found: { name: string | null; email: string; title: string | null; verified: string } | null; message?: string }>({ action: 'find', prospect_id: prospectId });

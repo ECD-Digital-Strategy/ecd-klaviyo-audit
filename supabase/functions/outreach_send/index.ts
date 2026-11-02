@@ -4,6 +4,7 @@ import { requireOutreachOwner } from "../_shared/outreach-access.ts";
 import { sendEmail } from "../_shared/mailer.ts";
 import { ImapSession } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
+import { isRoleAddress } from "../_shared/outreach-contacts.ts";
 import {
   followUp,
   footer,
@@ -190,6 +191,8 @@ async function deliver(
 
 async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings) {
   if (!p.contact_email?.includes("@")) return { ok: false, error: "Add their email first." };
+  // A decision-maker only: never a support or info inbox (Emil, 2026-11-02).
+  if (isRoleAddress(p.contact_email)) return { ok: false, error: `${p.contact_email} is a shared inbox, not a person. Find the decision-maker first.` };
   if (!p.email_subject?.trim() || !p.email_body?.trim()) return { ok: false, error: "The email is empty." };
   if (p.sent_at) return { ok: false, error: "Already sent." };
   const r = await deliver(sb, box, settings, p, "initial", p.email_subject.trim(), initialText(p.email_body, settings));
