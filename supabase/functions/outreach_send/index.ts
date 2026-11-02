@@ -6,6 +6,7 @@ import { ImapSession } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import {
   FOLLOWUP_GAP_DAYS,
+  MAX_FOLLOWUPS,
   MIN_GAP_MINUTES,
   followUp,
   footer,
@@ -22,7 +23,7 @@ import {
 // bounces. The guardrails agreed with Emil:
 //  - at most daily_new_cap (3) first emails per US weekday, 45 minutes apart,
 //    in New York working hours; follow-ups go in the same window;
-//  - at most 2 short follow-ups, threaded under the first email;
+//  - MAX_FOLLOWUPS (1) short follow-up, 3 days later, threaded under the first email;
 //  - anything from them (a reply, out-of-office, "no") stops the sequence;
 //  - any bounce, or Gmail refusing the password, pauses ALL sending until Emil
 //    looks (the hourly health check emails him about the pause).
@@ -199,7 +200,7 @@ async function tick(sb: Sb) {
 
   // Follow-ups, only when the inbox could be read: never chase someone who may have replied.
   if (inboxOk) {
-    const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").lt("followups_sent", 2);
+    const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").lt("followups_sent", MAX_FOLLOWUPS);
     for (const p of (data ?? []) as Prospect[]) {
       const gap = FOLLOWUP_GAP_DAYS[p.followups_sent] * 86_400_000;
       if (!p.last_sent_at || now.getTime() - Date.parse(p.last_sent_at) < gap) continue;

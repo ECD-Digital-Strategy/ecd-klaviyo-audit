@@ -36,7 +36,7 @@ const GROUPS: Array<{ key: string; title: string; note: string; match: (p: Outre
   { key: 'auditing', title: 'Auditing', note: 'The audit runs on the server and takes a few minutes. Draft the email once it is done.', match: (p) => p.status === 'auditing' || p.status === 'failed' },
   { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not in HubSpot, on Shopify.', match: (p) => p.status === 'new' },
   { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. Pick it up in your inbox.', match: (p) => p.status === 'replied' },
-  { key: 'sent', title: 'Sent', note: 'Up to two short follow-ups go out, 3 and 7 days later, unless they reply.', match: (p) => ['sent', 'bounced', 'unsubscribed'].includes(p.status) },
+  { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced', 'unsubscribed'].includes(p.status) },
   { key: 'skipped', title: 'Skipped', note: 'Never audited or emailed.', match: (p) => p.status === 'skipped' },
 ];
 

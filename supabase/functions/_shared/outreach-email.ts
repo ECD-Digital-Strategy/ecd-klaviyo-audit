@@ -5,6 +5,8 @@
 export const SEND_WINDOW = { tz: "America/New_York", startHour: 9, endHour: 16 } as const;
 /** Days after the previous email that each follow-up waits. */
 export const FOLLOWUP_GAP_DAYS = [3, 4] as const;
+/** How many follow-ups go out (Emil, 2026-11-02: one, 3 days after the first email). */
+export const MAX_FOLLOWUPS = 1;
 /** Minutes between two first emails, so a batch never lands at once. */
 export const MIN_GAP_MINUTES = 45;
 
