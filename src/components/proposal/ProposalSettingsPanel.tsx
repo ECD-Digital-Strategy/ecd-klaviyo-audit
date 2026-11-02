@@ -7,6 +7,7 @@ import { uploadReportScreenshot } from '../../lib/db';
 import type { ProposalSettings } from '../../lib/types';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
 import InvoiceEmailSettings from './InvoiceEmailSettings';
+import SettingsCard from '../ui/SettingsCard';
 
 export default function ProposalSettingsPanel() {
   const toast = useToast();
@@ -80,7 +81,7 @@ export default function ProposalSettingsPanel() {
         <div>
           <h2 className="text-base font-semibold text-gray-900">Proposal Settings</h2>
           <p className="mt-0.5 text-sm text-gray-500">
-            Cover branding, sending identity, and defaults used by every proposal.
+            Invoice emails, the AI's voice, sending defaults and the cover page. Click a section to open it.
           </p>
         </div>
         <button
@@ -95,80 +96,23 @@ export default function ProposalSettingsPanel() {
 
       {error && <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>}
 
-      <section className="rounded-xl bg-white card-shadow overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/60 px-5 py-4">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-brand-primary">
-            <ImageIcon className="h-4 w-4" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900">Cover page</h3>
-            <p className="text-xs text-gray-500">Shown at the top of every proposal.</p>
-          </div>
-        </div>
-        <div className="space-y-4 p-5">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-500">Tagline</label>
-            <input
-              type="text"
-              value={settings.cover.tagline ?? ''}
-              onChange={e => patch({ cover: { ...settings.cover, tagline: e.target.value || null } })}
-              placeholder="Lifecycle marketing that compounds."
-              className={inputClass}
-            />
-          </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">Logo (optional)</label>
-              <ImageUploadZone
-                compact
-                previewUrl={settings.cover.logo_url}
-                previewAlt="Proposal cover logo"
-                label="Add logo"
-                hint="Click, then paste with Ctrl+V, or drag & drop"
-                uploading={uploading === 'logo'}
-                onFile={file => uploadCoverImage('logo', file)}
-                onRemove={
-                  settings.cover.logo_url
-                    ? () => patch({ cover: { ...settings.cover, logo_url: null } })
-                    : undefined
-                }
-              />
-              <p className="mt-1 text-[11px] text-gray-400">Replaces the default ECD brand mark.</p>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">Background image (optional)</label>
-              <ImageUploadZone
-                compact
-                previewUrl={settings.cover.background_url}
-                previewAlt="Proposal cover background"
-                label="Add background"
-                hint="Click, then paste with Ctrl+V, or drag & drop"
-                uploading={uploading === 'background'}
-                onFile={file => uploadCoverImage('background', file)}
-                onRemove={
-                  settings.cover.background_url
-                    ? () => patch({ cover: { ...settings.cover, background_url: null } })
-                    : undefined
-                }
-              />
-              <p className="mt-1 text-[11px] text-gray-400">Blended over the purple gradient.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+      <InvoiceEmailSettings value={settings.invoicing} onChange={v => patch({ invoicing: v })} inputClass={inputClass} />
 
-      <section className="rounded-xl bg-white card-shadow overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/60 px-5 py-4">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-brand-primary">
-            <Mail className="h-4 w-4" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900">Email & defaults</h3>
-            <p className="text-xs text-gray-500">
-              Sent through the mail server configured on the backend. Until that&apos;s set up, sending falls back to copy-link.
-            </p>
-          </div>
-        </div>
+      <VoiceProfileSection
+        domain="proposal"
+        collapsible
+        value={settings.voice_profile ?? ''}
+        onChange={v => patch({ voice_profile: v })}
+      />
+
+      <SettingsCard
+        icon={<Mail className="h-4 w-4" />}
+        title="Email & defaults"
+        description="Who proposal emails come from, who hears about views and signatures, and how long a proposal stays open."
+        collapsible
+        defaultOpen={false}
+        storageKey="settings_open_proposal_email"
+      >
         <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-500">From name</label>
@@ -234,15 +178,67 @@ export default function ProposalSettingsPanel() {
             <p className="mt-1 text-[11px] text-gray-400">Comma-separated email addresses.</p>
           </div>
         </div>
-      </section>
+      </SettingsCard>
 
-      <InvoiceEmailSettings value={settings.invoicing} onChange={v => patch({ invoicing: v })} inputClass={inputClass} />
-
-      <VoiceProfileSection
-        domain="proposal"
-        value={settings.voice_profile ?? ''}
-        onChange={v => patch({ voice_profile: v })}
-      />
+      <SettingsCard
+        icon={<ImageIcon className="h-4 w-4" />}
+        title="Cover page"
+        description="The tagline, logo and background at the top of every proposal."
+        collapsible
+        defaultOpen={false}
+        storageKey="settings_open_proposal_cover"
+      >
+        <div className="space-y-4 p-5">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">Tagline</label>
+            <input
+              type="text"
+              value={settings.cover.tagline ?? ''}
+              onChange={e => patch({ cover: { ...settings.cover, tagline: e.target.value || null } })}
+              placeholder="Lifecycle marketing that compounds."
+              className={inputClass}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-500">Logo (optional)</label>
+              <ImageUploadZone
+                compact
+                previewUrl={settings.cover.logo_url}
+                previewAlt="Proposal cover logo"
+                label="Add logo"
+                hint="Click, then paste with Ctrl+V, or drag & drop"
+                uploading={uploading === 'logo'}
+                onFile={file => uploadCoverImage('logo', file)}
+                onRemove={
+                  settings.cover.logo_url
+                    ? () => patch({ cover: { ...settings.cover, logo_url: null } })
+                    : undefined
+                }
+              />
+              <p className="mt-1 text-[11px] text-gray-400">Replaces the default ECD brand mark.</p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-500">Background image (optional)</label>
+              <ImageUploadZone
+                compact
+                previewUrl={settings.cover.background_url}
+                previewAlt="Proposal cover background"
+                label="Add background"
+                hint="Click, then paste with Ctrl+V, or drag & drop"
+                uploading={uploading === 'background'}
+                onFile={file => uploadCoverImage('background', file)}
+                onRemove={
+                  settings.cover.background_url
+                    ? () => patch({ cover: { ...settings.cover, background_url: null } })
+                    : undefined
+                }
+              />
+              <p className="mt-1 text-[11px] text-gray-400">Blended over the purple gradient.</p>
+            </div>
+          </div>
+        </div>
+      </SettingsCard>
     </div>
   );
 }

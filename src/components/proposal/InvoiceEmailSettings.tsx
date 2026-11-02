@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, BellRing, CheckCircle2, Copy, KeyRound, Loader2, Mail, Plus, Receipt, Send } from 'lucide-react';
 import { useToast } from '../ui/Toast';
+import SettingsCard from '../ui/SettingsCard';
 import { ToggleRow } from '../ui/ToggleSwitch';
 import {
   connectGmail,
@@ -82,26 +83,23 @@ export default function InvoiceEmailSettings({
   };
 
   const set = (patch: Partial<InvoicingSettings>) => onChange({ ...value, ...patch });
+  // The panel's inputs are max-w-md; these read better full width.
+  const wide = inputClass.replace('max-w-md', 'max-w-3xl');
 
   return (
-    <section className="rounded-xl bg-white card-shadow overflow-hidden">
-      <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/60 px-5 py-4">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-brand-primary">
-          <Receipt className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-gray-900">Invoice emails</h3>
-          <p className="text-xs text-gray-500">
-            When a client signs, their implementation invoice is emailed to them from the Gmail of whoever is picked on the
-            proposal, with the PDF and the pay link. Monthly invoices stay drafts in Xero.
-          </p>
-        </div>
-        <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${value.auto_send ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}
-        >
+    <SettingsCard
+      icon={<Receipt className="h-4 w-4" />}
+      title="Invoice emails"
+      description="When a client signs, their implementation invoice is emailed to them from the Gmail of whoever is picked on the proposal, with the PDF and the pay link. Monthly invoices stay drafts in Xero."
+      badge={
+        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.auto_send ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
           {value.auto_send ? 'Sending on' : 'Sending off'}
         </span>
-      </div>
+      }
+      collapsible
+      defaultOpen
+      storageKey="settings_open_proposal_invoices"
+    >
 
       <div className="divide-y divide-gray-100">
         {/* 1. Who can send */}
@@ -199,14 +197,14 @@ export default function InvoiceEmailSettings({
                 set({ cc_emails: list });
               }}
               placeholder="maria@ecdigitalstrategy.com"
-              className={inputClass}
+              className={wide}
             />
             <p className="mt-1 text-[11px] text-gray-400">On every invoice email and every unpaid reminder. Separate with commas.</p>
           </div>
 
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-500">Subject</label>
-            <input type="text" value={value.subject} onChange={e => set({ subject: e.target.value })} className={inputClass} />
+            <input type="text" value={value.subject} onChange={e => set({ subject: e.target.value })} className={wide} />
           </div>
 
           <div>
@@ -214,10 +212,10 @@ export default function InvoiceEmailSettings({
             <textarea
               value={value.body}
               onChange={e => set({ body: e.target.value })}
-              rows={9}
-              className={`${inputClass} max-w-2xl leading-relaxed`}
+              rows={11}
+              className={`${wide} resize-y leading-relaxed`}
             />
-            <div className="mt-1.5 flex max-w-2xl flex-wrap items-center gap-1">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
               <span className="mr-1 text-[11px] text-gray-400">Fills in:</span>
               {PLACEHOLDERS.map(p => (
                 <code key={p} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{`{${p}}`}</code>
@@ -264,7 +262,7 @@ export default function InvoiceEmailSettings({
         {/* 4. Google app, admins only */}
         {status?.is_admin && <GoogleClientSetup status={status} busy={busy} run={run} />}
       </div>
-    </section>
+    </SettingsCard>
   );
 }
 
