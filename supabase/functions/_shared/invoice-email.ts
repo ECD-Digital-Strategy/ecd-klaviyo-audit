@@ -1,27 +1,51 @@
 // The invoice email a client gets when they sign, and when an unpaid one is worth
-// a nudge (Emil + Isa, 2026-11-02). Settings live in
+// a nudge (Emil + Isa, 2026-11-02). The flow agreed with Isa:
+//  - sent from the Gmail of whoever CREATED the proposal (a proposal can pick
+//    someone else under "Invoice sent by");
+//  - if that person hasn't connected their Gmail, it comes from the fallback
+//    sender (Xiomara) with an intro email ("Hi, I'm Xiomara..."), since the client
+//    may not know her;
+//  - unpaid 7 days after it was sent: the reminder list (Xiomara, Maria, Isa) is
+//    told, then weekly; optionally the client gets a polite reminder too;
+//  - Maria is copied on all of it.
+// Settings live in
 // platform_settings.proposal_settings.invoicing; keep the defaults in sync with
 // src/lib/proposals-db.ts DEFAULT_PROPOSAL_SETTINGS.invoicing.
 
 export type InvoicingSettings = {
   /** Email the implementation invoice to the client at signing. OFF until turned on. */
   auto_send: boolean;
-  /** Always copied on invoice emails (Maria). */
+  /** Always copied on invoice emails and client reminders (Maria). */
   cc_emails: string[];
-  /** Nudge Maria and the sender about unpaid invoices. OFF until turned on. */
+  /** Whose Gmail sends when the proposal's creator hasn't connected theirs (Xiomara). */
+  fallback_sender_email: string;
+  /** Tell the reminder list about unpaid invoices. OFF until turned on. */
   overdue_nudges: boolean;
-  /** First nudge this many days after the due date, then weekly. */
+  /** Who hears about unpaid invoices (Xiomara, Maria, Isa). */
+  reminder_emails: string[];
+  /** Also remind the CLIENT, from the same Gmail the invoice came from. OFF until turned on. */
+  client_reminders: boolean;
+  /** First reminder this many days after the invoice was sent, then weekly. */
   nudge_after_days: number;
-  /** Only invoices dated on or after this (set when nudges are turned on), so old ones are left alone. */
+  /** Only invoices dated on or after this (set when reminders are turned on), so old ones are left alone. */
   nudges_since: string | null;
   subject: string;
   body: string;
+  /** The email when it comes from the fallback sender: introduces them first. */
+  intro_subject: string;
+  intro_body: string;
+  /** The reminder the client gets, when client_reminders is on. */
+  reminder_subject: string;
+  reminder_body: string;
 };
 
 export const DEFAULT_INVOICING: InvoicingSettings = {
   auto_send: false,
   cc_emails: ["maria@ecdigitalstrategy.com"],
+  fallback_sender_email: "xiomara@ecdigitalstrategy.com",
   overdue_nudges: false,
+  reminder_emails: ["xiomara@ecdigitalstrategy.com", "maria@ecdigitalstrategy.com", "isa@ecdigitalstrategy.com"],
+  client_reminders: false,
   nudge_after_days: 7,
   nudges_since: null,
   subject: "Invoice {invoice_number} from ECD Digital Strategy",
@@ -36,17 +60,55 @@ export const DEFAULT_INVOICING: InvoicingSettings = {
     "",
     "{sender_first_name}",
   ].join("\n"),
+  intro_subject: "Invoice {invoice_number} from ECD Digital Strategy",
+  intro_body: [
+    "Hi {first_name},",
+    "",
+    "I'm {sender_first_name} from ECD Digital Strategy. I look after invoicing for the team you're working with, so you'll hear from me about payments.",
+    "",
+    "Thanks for signing. Here's the invoice for {proposal_title} ({total}, due {due_date}).",
+    "",
+    "You can view and pay it here: {pay_link}",
+    "",
+    "The PDF is attached too. If anything looks off, just reply to this email.",
+    "",
+    "{sender_first_name}",
+  ].join("\n"),
+  reminder_subject: "Reminder: invoice {invoice_number} from ECD Digital Strategy",
+  reminder_body: [
+    "Hi {first_name},",
+    "",
+    "A quick reminder about invoice {invoice_number} for {proposal_title} ({total}, due {due_date}). If it's already on its way, thank you and please ignore this.",
+    "",
+    "You can view and pay it here: {pay_link}",
+    "",
+    "{sender_first_name}",
+  ].join("\n"),
 };
+
+const emails = (v: unknown, fallback: string[]) =>
+  Array.isArray(v) ? v.filter((e): e is string => typeof e === "string" && e.includes("@")).map((e) => e.trim().toLowerCase()) : fallback;
+const text = (v: unknown, fallback: string) => (typeof v === "string" && v.trim() ? v : fallback);
 
 export function mergeInvoicing(raw: unknown): InvoicingSettings {
   const v = (raw ?? {}) as Partial<InvoicingSettings>;
+  const d = DEFAULT_INVOICING;
   return {
-    ...DEFAULT_INVOICING,
+    ...d,
     ...v,
-    cc_emails: Array.isArray(v.cc_emails) ? v.cc_emails.filter((e) => typeof e === "string" && e.includes("@")) : DEFAULT_INVOICING.cc_emails,
-    nudge_after_days: Math.max(1, Math.min(60, Math.round(Number(v.nudge_after_days ?? DEFAULT_INVOICING.nudge_after_days)) || 7)),
-    subject: typeof v.subject === "string" && v.subject.trim() ? v.subject : DEFAULT_INVOICING.subject,
-    body: typeof v.body === "string" && v.body.trim() ? v.body : DEFAULT_INVOICING.body,
+    auto_send: v.auto_send === true,
+    overdue_nudges: v.overdue_nudges === true,
+    client_reminders: v.client_reminders === true,
+    cc_emails: emails(v.cc_emails, d.cc_emails),
+    reminder_emails: emails(v.reminder_emails, d.reminder_emails),
+    fallback_sender_email: text(v.fallback_sender_email, d.fallback_sender_email).trim().toLowerCase(),
+    nudge_after_days: Math.max(1, Math.min(60, Math.round(Number(v.nudge_after_days ?? d.nudge_after_days)) || 7)),
+    subject: text(v.subject, d.subject),
+    body: text(v.body, d.body),
+    intro_subject: text(v.intro_subject, d.intro_subject),
+    intro_body: text(v.intro_body, d.intro_body),
+    reminder_subject: text(v.reminder_subject, d.reminder_subject),
+    reminder_body: text(v.reminder_body, d.reminder_body),
   };
 }
 
@@ -95,16 +157,21 @@ export function daysOverdue(dueDate: string, today: string): number {
   return Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${dueDate}T12:00:00Z`)) / 86_400_000);
 }
 
-/** Whether an unpaid invoice gets a nudge today: first at nudge_after_days past
- * due, then every 7 days after the last one. */
+/** When the invoice went to the client: the day it was emailed, else its date. */
+export const sentOn = (inv: { date: string; emailed_at?: string | null }) => (inv.emailed_at ? inv.emailed_at.slice(0, 10) : inv.date);
+
+/** Whether an unpaid invoice gets a reminder today: first nudge_after_days after
+ * it was sent (Isa: "not paid within 7 days of sending"), then every 7 days after
+ * the last one. */
 export function nudgeDue(
-  inv: { due_date: string; date: string; last_nudge_at?: string | null },
+  inv: { date: string; emailed_at?: string | null; last_nudge_at?: string | null },
   s: Pick<InvoicingSettings, "nudge_after_days" | "nudges_since">,
   today: string,
 ): boolean {
-  if (!inv.due_date) return false;
+  const sent = sentOn(inv);
+  if (!sent) return false;
   if (s.nudges_since && inv.date && inv.date < s.nudges_since) return false;
-  if (daysOverdue(inv.due_date, today) < s.nudge_after_days) return false;
+  if (daysOverdue(sent, today) < s.nudge_after_days) return false;
   if (!inv.last_nudge_at) return true;
   return daysOverdue(inv.last_nudge_at.slice(0, 10), today) >= 7;
 }

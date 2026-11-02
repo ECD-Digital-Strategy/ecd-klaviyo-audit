@@ -5,21 +5,25 @@ import { newYorkDate } from "../_shared/xero-plan.ts";
 import { proposalEmailHtml, sendEmail } from "../_shared/mailer.ts";
 import {
   emailInvoiceToClient,
-  invoiceSenderId,
   loadInvoicing,
+  mailboxByEmail,
   patchInvoiceRecord,
+  senderFirstName,
   type InvoiceRecord,
 } from "../_shared/invoice-delivery.ts";
-import { daysOverdue, longDate, money, nudgeDue } from "../_shared/invoice-email.ts";
+import { sendAsPerson } from "../_shared/gmail.ts";
+import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
 
-// Unpaid invoices (Emil + Isa, 2026-11-02): "if the invoice hasn't been paid
-// within so many days, email Maria to follow up". Daily (cron invoice-followup),
-// only while proposal_settings.invoicing.overdue_nudges is on:
+// Unpaid invoices (Emil + Isa, 2026-11-02): "if an invoice is not paid within 7
+// days of sending, an email is sent to Xiomara, Maria and Isa". Daily (cron
+// invoice-followup), only while proposal_settings.invoicing.overdue_nudges is on:
 //  - reads each approved implementation invoice's status from Xero and records
 //    when it is paid (shown on the proposal's Xero card);
-//  - nudge_after_days past due (7), emails Maria (the cc list) and the invoice's
-//    sender, then again every 7 days until it is paid.
-// Invoices dated before nudges were turned on are left alone.
+//  - nudge_after_days (7) after it was sent, emails the reminder list (Xiomara,
+//    Maria, Isa), then again every 7 days until it is paid;
+//  - with client_reminders also on, the client gets a polite reminder on the same
+//    days, from the Gmail the invoice came from, Maria copied.
+// Invoices dated before reminders were turned on are left alone.
 // Also "email_invoice" (staff, from the Xero card while auto-send is on): email
 // an approved invoice to the client now, e.g. after connecting a Gmail.
 
@@ -38,6 +42,7 @@ type Row = {
   id: string;
   title: string;
   proposal_number: number | null;
+  recipient_name: string | null;
   invoice_sender_id: string | null;
   sent_by: string | null;
   created_by: string | null;
@@ -59,7 +64,7 @@ async function tick(sb: Sb) {
 
   const { data } = await sb
     .from("proposals")
-    .select("id, title, proposal_number, invoice_sender_id, sent_by, created_by, xero_invoices, client:clients(company_name)")
+    .select("id, title, proposal_number, recipient_name, invoice_sender_id, sent_by, created_by, xero_invoices, client:clients(company_name)")
     .not("xero_invoices", "is", null);
   const watch: Array<{ p: Row; inv: InvoiceRecord }> = [];
   for (const p of (data ?? []) as Row[]) {
@@ -95,32 +100,60 @@ async function tick(sb: Sb) {
     }
     const due = xeroDate(x.DueDateString) ?? inv.due_date;
     if (typeof x.AmountDue === "number" && x.AmountDue !== inv.amount_due) await patchInvoiceRecord(sb, p.id, inv.id, { amount_due: x.AmountDue });
-    if (!nudgeDue({ ...inv, due_date: due }, s, today)) continue;
+    if (!nudgeDue(inv, s, today)) continue;
 
-    const { data: sender } = await sb.from("profiles").select("email").eq("id", invoiceSenderId(p) ?? "").maybeSingle();
-    const to = [...new Set([...s.cc_emails, (sender as { email?: string } | null)?.email ?? ""].filter((e) => e.includes("@")).map((e) => e.toLowerCase()))];
+    const to = s.reminder_emails;
     if (to.length === 0) continue;
-    const late = daysOverdue(due, today);
+    const sent = sentOn(inv);
+    const days = daysOverdue(sent, today);
     const owed = money(typeof x.AmountDue === "number" ? x.AmountDue : inv.total, x.CurrencyCode || "USD");
-    const sent = await sendEmail({
+    const mail = await sendEmail({
       to,
-      subject: `Unpaid: ${company} invoice ${inv.number} is ${late} days overdue`,
+      subject: `Unpaid: ${company} invoice ${inv.number}, sent ${days} days ago`,
       html: proposalEmailHtml({
-        heading: `${company}: invoice ${inv.number} is ${late} days overdue`,
+        heading: `${company}: invoice ${inv.number} is still unpaid`,
         bodyLines: [
-          `${owed} is still due. It was due ${longDate(due)}.`,
+          `${owed} is still due. It was sent ${longDate(sent)}${due ? ` and is due ${longDate(due)}` : ""}.`,
           inv.emailed_at
-            ? `It was emailed to ${inv.emailed_to ?? "the client"} from ${inv.emailed_from ?? "us"} on ${longDate(inv.emailed_at.slice(0, 10))}.`
+            ? `It was emailed to ${inv.emailed_to ?? "the client"} from ${inv.emailed_from ?? "us"}.`
             : "It was not emailed to the client by the proposals app.",
-          "Worth a follow-up with the client. This reminder comes again in a week until it is paid.",
+          s.client_reminders && inv.emailed_at
+            ? "The client is getting a short reminder from the same address today."
+            : "Worth a follow-up with the client.",
+          "This comes again in a week until it is paid.",
         ],
         ctaLabel: "Open it in Xero",
         ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,
       }),
     });
-    if (sent.status === "sent") {
+    if (mail.status === "sent") {
       await patchInvoiceRecord(sb, p.id, inv.id, { last_nudge_at: new Date().toISOString() });
-      log.push(`${company} ${inv.number}: nudged (${late} days)`);
+      log.push(`${company} ${inv.number}: team reminded (${days} days)`);
+    }
+
+    // The client too, when turned on: from the Gmail it was sent from, Maria copied.
+    if (s.client_reminders && inv.emailed_at && inv.emailed_to && inv.online_url) {
+      try {
+        const box = await mailboxByEmail(sb, inv.emailed_from);
+        if (!box) throw new Error(`${inv.emailed_from} is no longer connected`);
+        const { full, first } = await senderFirstName(sb, box.userId);
+        const email = renderInvoiceEmail({ subject: s.reminder_subject, body: s.reminder_body }, {
+          first_name: (p.recipient_name ?? "").trim().split(/\s+/)[0] || "there",
+          company: p.client?.company_name ?? "",
+          proposal_title: p.title,
+          invoice_number: inv.number,
+          total: owed,
+          due_date: due ? longDate(due) : "on receipt",
+          pay_link: inv.online_url,
+          sender_first_name: first,
+        });
+        const cc = s.cc_emails.filter((e) => e !== box.email.toLowerCase() && e !== inv.emailed_to!.toLowerCase());
+        await sendAsPerson(sb, box, { fromName: full || null, to: [inv.emailed_to], cc, subject: email.subject, html: email.html, text: email.text });
+        await patchInvoiceRecord(sb, p.id, inv.id, { last_client_reminder_at: new Date().toISOString() });
+        log.push(`${company} ${inv.number}: client reminded`);
+      } catch (e) {
+        log.push(`${company} ${inv.number}: client reminder failed (${e instanceof Error ? e.message : String(e)})`);
+      }
     }
   }
   return { ok: true, checked: watch.length, log };

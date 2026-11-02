@@ -443,6 +443,9 @@ export interface Proposal {
     emailed_at?: string | null;
     emailed_from?: string | null;
     emailed_to?: string | null;
+    /** Sent by the fallback sender, with the intro email. */
+    emailed_as_fallback?: boolean | null;
+    last_client_reminder_at?: string | null;
     /** Why it could not be emailed automatically. */
     email_error?: string | null;
     /** From Xero, by the daily follow-up (invoice_followup). */
@@ -646,16 +649,28 @@ export interface ProposalSettings {
 export interface InvoicingSettings {
   /** Email the implementation invoice to the client at signing. */
   auto_send: boolean;
-  /** Always copied on invoice emails (Maria). */
+  /** Always copied on invoice emails and client reminders (Maria). */
   cc_emails: string[];
-  /** Nudge Maria and the sender about unpaid invoices. */
+  /** Whose Gmail sends when the proposal's creator hasn't connected theirs (Xiomara). */
+  fallback_sender_email: string;
+  /** Tell the reminder list about unpaid invoices. */
   overdue_nudges: boolean;
-  /** First nudge this many days after the due date, then weekly. */
+  /** Who hears about unpaid invoices (Xiomara, Maria, Isa). */
+  reminder_emails: string[];
+  /** Also remind the client, from the Gmail the invoice came from. */
+  client_reminders: boolean;
+  /** First reminder this many days after the invoice was sent, then weekly. */
   nudge_after_days: number;
-  /** Only invoices dated on or after this; set when nudges are turned on. */
+  /** Only invoices dated on or after this; set when reminders are turned on. */
   nudges_since: string | null;
   subject: string;
   body: string;
+  /** From the fallback sender: introduces them first. */
+  intro_subject: string;
+  intro_body: string;
+  /** The client's reminder. */
+  reminder_subject: string;
+  reminder_body: string;
 }
 
 // ---------------------------------------------------------------------------

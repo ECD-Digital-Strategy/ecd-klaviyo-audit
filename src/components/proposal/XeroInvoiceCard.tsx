@@ -180,7 +180,10 @@ function InvoiceEmailStatus({
         <p className="font-medium text-amber-700">Overdue since {day(inv.due_date)}{inv.last_nudge_at ? `, team reminded ${day(inv.last_nudge_at.slice(0, 10))}` : ''}</p>
       ) : null}
       {inv.emailed_at ? (
-        <p className="text-gray-500">Emailed to {inv.emailed_to} from {inv.emailed_from} on {day(inv.emailed_at.slice(0, 10))}</p>
+        <p className="text-gray-500">
+          Emailed to {inv.emailed_to} from {inv.emailed_from}{inv.emailed_as_fallback ? ' (with the intro email)' : ''} on {day(inv.emailed_at.slice(0, 10))}
+          {inv.last_client_reminder_at ? `, client reminded ${day(inv.last_client_reminder_at.slice(0, 10))}` : ''}
+        </p>
       ) : (
         <>
           {inv.email_error && <p className="text-amber-700">Not emailed: {inv.email_error}</p>}

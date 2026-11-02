@@ -1,15 +1,19 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { xeroApi, xeroInvoicePdf } from "./xero.ts";
-import { mailboxFor, sendAsPerson, type Attachment } from "./gmail.ts";
+import { mailboxFor, sendAsPerson, type Attachment, type Mailbox } from "./gmail.ts";
 import { longDate, mergeInvoicing, money, renderInvoiceEmail, type InvoicingSettings } from "./invoice-email.ts";
 
-// Emails a signed proposal's implementation invoice to the client, from the
-// Gmail of the person picked on the proposal ("Invoice sent by", else whoever
-// sent it), with the PDF and the Xero pay link, Maria copied (Emil + Isa,
-// 2026-11-02). Only while proposal_settings.invoicing.auto_send is on; with it
-// off (the default) nothing here runs and the payment link goes to the sender to
-// forward, as before. If the sender's Gmail is not connected, or anything fails,
-// the invoice is left for that fallback and the reason is kept on the invoice.
+// Emails a signed proposal's implementation invoice to the client, with the PDF
+// and the Xero pay link, Maria copied (Emil + Isa, 2026-11-02). Who it comes from,
+// as agreed with Isa:
+//  1. the person picked on the proposal ("Invoice sent by"), else whoever
+//     CREATED it, when their Gmail is connected;
+//  2. otherwise the fallback sender (Xiomara), with the intro email, because the
+//     client may not know her;
+//  3. otherwise nobody: the payment link goes to the proposal's sender to forward,
+//     as before, and the reason is kept on the invoice.
+// Only while proposal_settings.invoicing.auto_send is on; with it off (the
+// default) nothing here runs.
 
 type Sb = SupabaseClient;
 
@@ -26,7 +30,11 @@ export type InvoiceRecord = {
   emailed_at?: string | null;
   emailed_from?: string | null;
   emailed_to?: string | null;
+  /** True when it went from the fallback sender with the intro email. */
+  emailed_as_fallback?: boolean | null;
   email_error?: string | null;
+  /** Client reminders sent (client_reminders on). */
+  last_client_reminder_at?: string | null;
   /** From Xero, by the daily follow-up. */
   paid_at?: string | null;
   amount_due?: number | null;
@@ -50,9 +58,37 @@ export async function loadInvoicing(sb: Sb): Promise<InvoicingSettings> {
   return mergeInvoicing((data?.proposal_settings as { invoicing?: unknown } | null)?.invoicing);
 }
 
-/** Who the invoice comes from: the proposal's pick, else whoever sent it, else who made it. */
+/** Who the invoice should come from: the proposal's pick, else whoever created it (Isa, 2026-11-02). */
 export const invoiceSenderId = (p: Pick<ProposalForEmail, "invoice_sender_id" | "sent_by" | "created_by">) =>
-  p.invoice_sender_id ?? p.sent_by ?? p.created_by;
+  p.invoice_sender_id ?? p.created_by ?? p.sent_by;
+
+/** A connected mailbox by address (the fallback sender). */
+export async function mailboxByEmail(sb: Sb, email: string | null | undefined): Promise<Mailbox | null> {
+  const e = (email ?? "").trim().toLowerCase();
+  if (!e) return null;
+  const { data } = await sb.from("mailbox_connections").select("user_id, email").eq("email", e).maybeSingle();
+  return data ? { userId: data.user_id as string, email: data.email as string } : null;
+}
+
+/** The mailbox an invoice goes from, and whether that is the fallback (so it introduces itself). */
+export async function resolveSender(
+  sb: Sb,
+  p: Pick<ProposalForEmail, "invoice_sender_id" | "sent_by" | "created_by">,
+  s: InvoicingSettings,
+): Promise<{ box: Mailbox; fallback: boolean } | null> {
+  const preferredId = invoiceSenderId(p);
+  const preferred = await mailboxFor(sb, preferredId);
+  if (preferred) return { box: preferred, fallback: false };
+  const fallback = await mailboxByEmail(sb, s.fallback_sender_email);
+  if (fallback) return { box: fallback, fallback: fallback.userId !== preferredId };
+  return null;
+}
+
+export async function senderFirstName(sb: Sb, userId: string): Promise<{ full: string; first: string }> {
+  const { data } = await sb.from("profiles").select("name").eq("id", userId).maybeSingle();
+  const full = String((data as { name?: string } | null)?.name ?? "").trim();
+  return { full, first: full.split(/\s+/)[0] || "ECD Digital Strategy" };
+}
 
 /** Writes fields onto one invoice in proposals.xero_invoices, re-reading first so nothing else is lost. */
 export async function patchInvoiceRecord(sb: Sb, proposalId: string, invoiceId: string, patch: Partial<InvoiceRecord>) {
@@ -81,11 +117,10 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
   if (inv.kind !== "one_time" || !inv.online_url) throw new Error("Only the approved implementation invoice is emailed; monthly ones stay drafts for Maria.");
   const to = (p.recipient_email ?? "").trim();
   if (!to.includes("@")) throw new Error("The proposal has no client email.");
-  const senderId = invoiceSenderId(p);
-  const box = await mailboxFor(sb, senderId);
-  if (!box) throw new Error("The invoice sender has not connected their Gmail.");
-  const { data: prof } = await sb.from("profiles").select("name").eq("id", box.userId).maybeSingle();
-  const senderName = String((prof as { name?: string } | null)?.name ?? "").trim();
+  const sender = await resolveSender(sb, p, s);
+  if (!sender) throw new Error("Neither the proposal's creator nor the fallback sender has connected their Gmail.");
+  const { box, fallback } = sender;
+  const { full: senderName, first: senderFirst } = await senderFirstName(sb, box.userId);
 
   const company = p.client?.company_name ?? "";
   const vars = {
@@ -96,9 +131,10 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
     total: money(inv.total),
     due_date: inv.due_date ? longDate(inv.due_date) : "on receipt",
     pay_link: inv.online_url,
-    sender_first_name: senderName.split(/\s+/)[0] || "ECD Digital Strategy",
+    sender_first_name: senderFirst,
   };
-  const email = renderInvoiceEmail(s, vars);
+  // From the fallback sender, the client may not know them: the intro email.
+  const email = renderInvoiceEmail(fallback ? { subject: s.intro_subject, body: s.intro_body } : s, vars);
 
   // The PDF is a nice-to-have: without it the pay link still carries everything.
   const attachments: Attachment[] = [];
@@ -118,8 +154,14 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
     body: { HistoryRecords: [{ Details: `Emailed to ${to} from ${box.email} by the proposals app${cc.length ? `, copying ${cc.join(", ")}` : ""}.` }] },
   }).catch(() => {});
 
-  await patchInvoiceRecord(sb, proposalId, inv.id, { emailed_at: new Date().toISOString(), emailed_from: box.email, emailed_to: to, email_error: null });
-  return { to, from: box.email, cc };
+  await patchInvoiceRecord(sb, proposalId, inv.id, {
+    emailed_at: new Date().toISOString(),
+    emailed_from: box.email,
+    emailed_to: to,
+    emailed_as_fallback: fallback,
+    email_error: null,
+  });
+  return { to, from: box.email, cc, fallback };
 }
 
 /**

@@ -33,13 +33,24 @@ Deno.test("settings: off by default, Maria copied, bad values fixed", () => {
   assertEquals(mergeInvoicing(null).cc_emails, ["maria@ecdigitalstrategy.com"]);
 });
 
-Deno.test("nudges: 7 days past due, then weekly; old invoices left alone", () => {
+Deno.test("reminders: 7 days after it was sent, then weekly; old invoices left alone", () => {
   const s = { nudge_after_days: 7, nudges_since: "2026-11-01" };
-  const inv = { date: "2026-11-02", due_date: "2026-11-10" };
-  assertEquals(daysOverdue("2026-11-10", "2026-11-17"), 7);
-  assertEquals(nudgeDue(inv, s, "2026-11-16"), false);
-  assertEquals(nudgeDue(inv, s, "2026-11-17"), true);
-  assertEquals(nudgeDue({ ...inv, last_nudge_at: "2026-11-17T14:00:00Z" }, s, "2026-11-20"), false);
-  assertEquals(nudgeDue({ ...inv, last_nudge_at: "2026-11-17T14:00:00Z" }, s, "2026-11-24"), true);
-  assertEquals(nudgeDue({ date: "2026-10-01", due_date: "2026-10-01" }, s, "2026-11-24"), false);
+  const inv = { date: "2026-11-02", emailed_at: "2026-11-03T15:00:00Z" };
+  assertEquals(daysOverdue("2026-11-03", "2026-11-10"), 7);
+  assertEquals(nudgeDue(inv, s, "2026-11-09"), false);
+  assertEquals(nudgeDue(inv, s, "2026-11-10"), true);
+  assertEquals(nudgeDue({ ...inv, last_nudge_at: "2026-11-10T14:00:00Z" }, s, "2026-11-13"), false);
+  assertEquals(nudgeDue({ ...inv, last_nudge_at: "2026-11-10T14:00:00Z" }, s, "2026-11-17"), true);
+  // Not emailed by the app: counted from the invoice date.
+  assertEquals(nudgeDue({ date: "2026-11-02" }, s, "2026-11-09"), true);
+  assertEquals(nudgeDue({ date: "2026-10-01" }, s, "2026-11-24"), false);
+});
+
+Deno.test("settings: Xiomara is the fallback, the reminder list is Xiomara, Maria and Isa", () => {
+  const s = mergeInvoicing({});
+  assertEquals(s.fallback_sender_email, "xiomara@ecdigitalstrategy.com");
+  assertEquals(s.reminder_emails, ["xiomara@ecdigitalstrategy.com", "maria@ecdigitalstrategy.com", "isa@ecdigitalstrategy.com"]);
+  assertEquals(s.client_reminders, false);
+  const intro = renderInvoiceEmail({ subject: s.intro_subject, body: s.intro_body }, { ...buildVarsForTest(), sender_first_name: "Xiomara" });
+  assertEquals(intro.text.includes("I'm Xiomara from ECD Digital Strategy."), true);
 });

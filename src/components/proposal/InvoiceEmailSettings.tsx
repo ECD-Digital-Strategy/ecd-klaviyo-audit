@@ -3,6 +3,7 @@ import { AlertTriangle, BellRing, CheckCircle2, Copy, KeyRound, Loader2, Mail, P
 import { useToast } from '../ui/Toast';
 import SettingsCard from '../ui/SettingsCard';
 import { ToggleRow } from '../ui/ToggleSwitch';
+import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import {
   connectGmail,
   disconnectGmail,
@@ -22,6 +23,9 @@ import type { InvoicingSettings } from '../../lib/types';
 // connected people, and an obvious "set up" state for Google sign-in.
 
 const PLACEHOLDERS = ['first_name', 'company', 'proposal_title', 'invoice_number', 'total', 'due_date', 'pay_link', 'sender_first_name'];
+
+const parseEmails = (raw: string) =>
+  raw.split(/[,;\s]+/).map(e => e.trim().toLowerCase()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
 const shortDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
@@ -43,6 +47,7 @@ export default function InvoiceEmailSettings({
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [ccRaw, setCcRaw] = useState(value.cc_emails.join(', '));
+  const [remindRaw, setRemindRaw] = useState(value.reminder_emails.join(', '));
 
   const load = useCallback(async () => {
     try {
@@ -85,6 +90,12 @@ export default function InvoiceEmailSettings({
   const set = (patch: Partial<InvoicingSettings>) => onChange({ ...value, ...patch });
   // The panel's inputs are max-w-md; these read better full width.
   const wide = inputClass.replace('max-w-md', 'max-w-3xl');
+  // The fallback can be anyone connected, plus whatever is saved (even if not connected yet).
+  const fallbackConnected = Boolean(status?.connections.some(c => c.email.toLowerCase() === value.fallback_sender_email));
+  const fallbackOptions = [
+    ...(status?.connections ?? []).map(c => ({ email: c.email.toLowerCase(), label: `${c.name} (${c.email})` })),
+    ...(fallbackConnected || !value.fallback_sender_email ? [] : [{ email: value.fallback_sender_email, label: `${value.fallback_sender_email} (not connected)` }]),
+  ];
 
   return (
     <SettingsCard
@@ -175,15 +186,49 @@ export default function InvoiceEmailSettings({
         <div className="space-y-5 p-5">
           <ToggleRow
             title="Email the invoice to the client when they sign"
-            description={
-              <>
-                The implementation invoice goes from the proposal&apos;s &quot;Invoice sent by&quot; (its sender by default). If that
-                person hasn&apos;t connected their Gmail, the payment link goes to them to forward, as now.
-              </>
-            }
+            description="The implementation invoice goes out as if its sender wrote it, with the PDF and the pay link. Monthly invoices stay drafts for Maria."
             checked={value.auto_send}
             onChange={v => set({ auto_send: v })}
           />
+
+          {/* Who it comes from, as agreed with Isa (2026-11-02). */}
+          <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-4">
+            <p className="text-xs font-semibold text-gray-700">Who it comes from</p>
+            <ol className="mt-2 space-y-1.5 text-xs text-gray-600">
+              <li className="flex gap-2">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">1</span>
+                Whoever created the proposal, from their own Gmail (a proposal can pick someone else under &quot;Invoice sent by&quot;).
+              </li>
+              <li className="flex gap-2">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">2</span>
+                If they haven&apos;t connected their Gmail, the fallback sender below, with the intro email so the client knows who they are.
+              </li>
+              <li className="flex gap-2">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">3</span>
+                If neither is connected, nothing goes to the client: the payment link goes to the proposal&apos;s sender to forward.
+              </li>
+            </ol>
+            <div className="mt-4">
+              <label className="mb-1 block text-xs font-medium text-gray-500">Fallback sender</label>
+              <Select value={value.fallback_sender_email} onValueChange={v => set({ fallback_sender_email: v })}>
+                <SelectTrigger className="h-9 w-full max-w-sm bg-white text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {fallbackOptions.map(o => (
+                    <SelectItem key={o.email} value={o.email}>
+                      <SelectItemText>{o.label}</SelectItemText>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {status && !fallbackConnected && (
+                <p className="mt-1 flex items-center gap-1.5 text-[11px] text-amber-700">
+                  <AlertTriangle className="h-3 w-3" /> {value.fallback_sender_email} hasn&apos;t connected their Gmail yet, so step 2 can&apos;t happen until they do.
+                </p>
+              )}
+            </div>
+          </div>
 
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-500">Always copy</label>
@@ -192,47 +237,33 @@ export default function InvoiceEmailSettings({
               value={ccRaw}
               onChange={e => setCcRaw(e.target.value)}
               onBlur={() => {
-                const list = ccRaw.split(/[,;\s]+/).map(s => s.trim()).filter(s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+                const list = parseEmails(ccRaw);
                 setCcRaw(list.join(', '));
                 set({ cc_emails: list });
               }}
               placeholder="maria@ecdigitalstrategy.com"
               className={wide}
             />
-            <p className="mt-1 text-[11px] text-gray-400">On every invoice email and every unpaid reminder. Separate with commas.</p>
+            <p className="mt-1 text-[11px] text-gray-400">On every invoice email and every client reminder. Separate with commas.</p>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-500">Subject</label>
-            <input type="text" value={value.subject} onChange={e => set({ subject: e.target.value })} className={wide} />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-500">Email</label>
-            <textarea
-              value={value.body}
-              onChange={e => set({ body: e.target.value })}
-              rows={11}
-              className={`${wide} resize-y leading-relaxed`}
-            />
-            <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <span className="mr-1 text-[11px] text-gray-400">Fills in:</span>
-              {PLACEHOLDERS.map(p => (
-                <code key={p} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{`{${p}}`}</code>
-              ))}
-            </div>
-            <p className="mt-1 text-[11px] text-gray-400">The sender&apos;s Gmail signature isn&apos;t added, so sign off in the text.</p>
-          </div>
+          <TemplateEditor
+            tabs={[
+              { key: 'usual', label: 'Usual email', hint: 'From the proposal’s creator.', subject: value.subject, body: value.body, onSubject: v => set({ subject: v }), onBody: v => set({ body: v }) },
+              { key: 'intro', label: 'Intro email (fallback sender)', hint: 'When it comes from the fallback sender, who the client may not know.', subject: value.intro_subject, body: value.intro_body, onSubject: v => set({ intro_subject: v }), onBody: v => set({ intro_body: v }) },
+            ]}
+            inputClass={wide}
+          />
         </div>
 
         {/* 3. Reminders */}
-        <div className="p-5">
+        <div className="space-y-5 p-5">
           <ToggleRow
             title="Remind the team about unpaid invoices"
             description={
               <>
-                Checks Xero every morning. When an invoice is overdue it emails the people copied above and its sender, then
-                weekly until it&apos;s paid.
+                Checks Xero every morning. If an invoice is still unpaid a set number of days after it was sent, the people below
+                get an email, then weekly until it&apos;s paid.
                 {value.nudges_since ? ` Covers invoices from ${shortDate(`${value.nudges_since}T12:00:00`)} on.` : ' Covers invoices from the day you switch it on.'}
               </>
             }
@@ -254,15 +285,96 @@ export default function InvoiceEmailSettings({
                 onChange={e => set({ nudge_after_days: Math.max(1, Math.min(60, Number(e.target.value) || 7)) })}
                 className="w-16 rounded-lg border border-gray-200 px-2 py-1 text-center text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20"
               />
-              days after the due date
+              days after the invoice is sent
             </div>
           </ToggleRow>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">Who hears about it</label>
+            <input
+              type="text"
+              value={remindRaw}
+              onChange={e => setRemindRaw(e.target.value)}
+              onBlur={() => {
+                const list = parseEmails(remindRaw);
+                setRemindRaw(list.join(', '));
+                set({ reminder_emails: list });
+              }}
+              placeholder="xiomara@ecdigitalstrategy.com, maria@ecdigitalstrategy.com, isa@ecdigitalstrategy.com"
+              className={wide}
+            />
+          </div>
+
+          <div className="border-t border-gray-100 pt-5">
+            <ToggleRow
+              title="Also remind the client"
+              description="On the same days, a short, polite reminder to the client from the Gmail the invoice came from, with the people in Always copy copied."
+              checked={value.client_reminders}
+              onChange={v => set({ client_reminders: v })}
+              disabled={!value.overdue_nudges}
+            />
+            {!value.overdue_nudges && <p className="mt-1 text-[11px] text-gray-400">Turn on team reminders first.</p>}
+            {value.client_reminders && (
+              <div className="mt-4">
+                <TemplateEditor
+                  tabs={[{ key: 'reminder', label: 'Client reminder', hint: 'Sent to the client.', subject: value.reminder_subject, body: value.reminder_body, onSubject: v => set({ reminder_subject: v }), onBody: v => set({ reminder_body: v }) }]}
+                  inputClass={wide}
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 4. Google app, admins only */}
         {status?.is_admin && <GoogleClientSetup status={status} busy={busy} run={run} />}
       </div>
     </SettingsCard>
+  );
+}
+
+type TemplateTab = {
+  key: string;
+  label: string;
+  hint: string;
+  subject: string;
+  body: string;
+  onSubject: (v: string) => void;
+  onBody: (v: string) => void;
+};
+
+/** Subject and body of one or more emails, a tab each. */
+function TemplateEditor({ tabs, inputClass }: { tabs: TemplateTab[]; inputClass: string }) {
+  const [active, setActive] = useState(tabs[0].key);
+  const tab = tabs.find(t => t.key === active) ?? tabs[0];
+  return (
+    <div>
+      {tabs.length > 1 && (
+        <div className="mb-3 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+          {tabs.map(t => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setActive(t.key)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${t.key === tab.key ? 'bg-white text-brand-primary shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="mb-2 text-[11px] text-gray-400">{tab.hint}</p>
+      <label className="mb-1 block text-xs font-medium text-gray-500">Subject</label>
+      <input type="text" value={tab.subject} onChange={e => tab.onSubject(e.target.value)} className={inputClass} />
+      <label className="mb-1 mt-3 block text-xs font-medium text-gray-500">Email</label>
+      <textarea value={tab.body} onChange={e => tab.onBody(e.target.value)} rows={11} className={`${inputClass} resize-y leading-relaxed`} />
+      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-[11px] text-gray-400">Fills in:</span>
+        {PLACEHOLDERS.map(p => (
+          <code key={p} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{`{${p}}`}</code>
+        ))}
+      </div>
+      <p className="mt-1 text-[11px] text-gray-400">The sender&apos;s Gmail signature isn&apos;t added, so sign off in the text.</p>
+    </div>
   );
 }
 
