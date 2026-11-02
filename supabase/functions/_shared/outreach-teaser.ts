@@ -1,8 +1,9 @@
 // The teaser an outreach audit's public link shows (Emil, 2026-11-01): "more of a
 // teaser but still insightful, so they know we know what we're talking about".
 //
-// Each page keeps its strongest finding per screen size (desktop and mobile, a
-// finding tagged "both" counting for each), recommendation included. Everything
+// Each page keeps its strongest findings per screen size (desktop and mobile, a
+// finding tagged "both" counting for each): all but the two weakest, at least one
+// (teaserShowCount), recommendations included. Everything
 // else is taken out of the payload, not just hidden, so the full audit never
 // reaches the prospect's browser; the page says how many more there are. The
 // roadmap with pricing and the sales analytics are hidden. The email writer
@@ -31,6 +32,12 @@ const onViewport = (f: TeaserFinding, v: "desktop" | "mobile") => {
   return vp === v || vp === "both" || vp === "";
 };
 
+/** How many of a screen size's findings the teaser shows (Emil, 2026-11-02): all
+ * but the two weakest, and always at least one. 3 shows 1, 4 shows 2, 5 shows 3. */
+export function teaserShowCount(total: number): number {
+  return total <= 0 ? 0 : Math.max(1, total - 2);
+}
+
 /** The findings a page keeps, and how many each screen size has locked away. */
 export function teaserFindings(findings: TeaserFinding[]): {
   kept: TeaserFinding[];
@@ -39,12 +46,12 @@ export function teaserFindings(findings: TeaserFinding[]): {
   const shown = findings.filter(live);
   const keep = new Set<TeaserFinding>();
   for (const v of ["desktop", "mobile"] as const) {
-    // Stable sort: equal priority keeps the analyst's order.
-    const best = shown
+    // Strongest first; a stable sort keeps the analyst's order on equal priority.
+    const onThis = shown
       .map((f, i) => ({ f, i }))
       .filter(({ f }) => onViewport(f, v))
-      .sort((a, b) => rank(a.f) - rank(b.f) || a.i - b.i)[0];
-    if (best) keep.add(best.f);
+      .sort((a, b) => rank(a.f) - rank(b.f) || a.i - b.i);
+    for (const { f } of onThis.slice(0, teaserShowCount(onThis.length))) keep.add(f);
   }
   const kept = shown.filter((f) => keep.has(f));
   const lockedOn = (v: "desktop" | "mobile") => shown.filter((f) => onViewport(f, v) && !keep.has(f)).length;

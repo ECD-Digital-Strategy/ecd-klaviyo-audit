@@ -40,7 +40,7 @@ Rules:
 - From Emil, first person ("I"), to a busy founder or marketing lead. Warm, direct, confident, never salesy or flattering.
 - 70 to 110 words in the body. Plain text: no markdown, no bullet points, no emojis, no bold.
 - Open with ONE concrete finding about their site, in plain words, using the finding given (the page it is on and what it costs them). No "I hope you're well", no "I came across your brand".
-- Then one sentence on what the preview is: we looked at their key pages on desktop and mobile; the link shows the top issue on each page, and there is more.
+- Then one sentence on what the preview is: we looked at their key pages on desktop and mobile; the link shows the biggest issues on each page, and there is more.
 - Put the link on its own line, exactly as the token ${LINK}. Do not write any other URL.
 - Close with one low-pressure question asking if they'd like a short call to go through the rest. No "Best regards" style sign-off beyond the given signature.
 - Never invent numbers, revenue, conversion rates, clients or results. Only use what the finding says.

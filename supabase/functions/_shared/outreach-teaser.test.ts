@@ -1,5 +1,20 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { teaserFindings, teaserLockedTotal, teaserSections } from "./outreach-teaser.ts";
+import { teaserFindings, teaserLockedTotal, teaserSections, teaserShowCount } from "./outreach-teaser.ts";
+
+Deno.test("shows all but the two weakest, at least one", () => {
+  assertEquals([0, 1, 2, 3, 4, 5, 6].map(teaserShowCount), [0, 1, 1, 1, 2, 3, 4]);
+});
+
+Deno.test("4 findings on a page show 2, 5 show 3, strongest first", () => {
+  const four = ["low", "high", "medium", "low"].map((priority, i) => ({ text: `f${i}`, priority, viewport: "mobile" }));
+  const r4 = teaserFindings(four);
+  assertEquals(r4.kept.map((f) => f.text), ["f1", "f2"]);
+  assertEquals(r4.locked, { desktop: 0, mobile: 2 });
+  const five = [...four, { text: "f4", priority: "high", viewport: "mobile" }];
+  const r5 = teaserFindings(five);
+  assertEquals(r5.kept.map((f) => f.text).sort(), ["f1", "f2", "f4"]);
+  assertEquals(r5.locked, { desktop: 0, mobile: 2 });
+});
 
 Deno.test("keeps the strongest finding per screen size and counts the rest as locked", () => {
   const findings = [

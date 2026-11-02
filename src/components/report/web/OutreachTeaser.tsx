@@ -1,9 +1,9 @@
-import { Lock, CalendarDays } from 'lucide-react';
+import { Lock, CalendarDays, ExternalLink } from 'lucide-react';
 import type { AuditSection } from '../../../lib/types';
 
 // The teaser around an outreach audit's public link (Emil, 2026-11-01). The server
 // (audit_public, _shared/outreach-teaser.ts) has already cut each page to its
-// strongest finding and left only a count of the rest in
+// strongest findings (all but the two weakest) and left only a count of the rest in
 // section_details.web.locked_findings; this just tells the reader so, and how to
 // get the full picture.
 
@@ -55,7 +55,7 @@ export function OutreachTeaserBanner({
           We looked at {companyName}&apos;s storefront on desktop and mobile.
         </h2>
         <p className="mt-1.5 text-sm leading-relaxed text-gray-600">
-          Below is the top issue we found on each page.
+          Below are the biggest issues we found on each page.
           {more > 0 ? ` There are ${more} more we'd like to walk you through,` : ' We would be glad to walk you through it,'} along with
           what to fix first. It takes about 20 minutes.
         </p>
@@ -68,6 +68,8 @@ export function OutreachTeaserBanner({
       >
         <CalendarDays className="h-4 w-4" />
         {OUTREACH_CONTACT_LABEL}
+        {/* A booking link opens in a new tab; say so. */}
+        {contactUrl.startsWith('http') && <ExternalLink className="h-3.5 w-3.5 opacity-80" aria-label="Opens in a new tab" />}
       </a>
     </div>
   );
