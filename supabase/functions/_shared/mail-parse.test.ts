@@ -1,5 +1,17 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { decodeHeader, parseMail } from "./mail-parse.ts";
+import { decodeHeader, extractGmailSignature, parseMail } from "./mail-parse.ts";
+
+Deno.test("the Gmail signature from the new part, nested divs kept, quoted ones ignored", () => {
+  const html = [
+    '<div dir="ltr">Hi Sam,<br>Sounds good.<br clear="all"><br>',
+    '<span class="gmail_signature_prefix">-- </span><br>',
+    '<div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr"><b>Emil</b><div>Web Manager</div></div></div>',
+    '</div><br><div class="gmail_quote">On Mon, Sam wrote:<div class="gmail_signature">Sam Smith</div></div>',
+  ].join("");
+  assertEquals(extractGmailSignature(html), '<div dir="ltr"><b>Emil</b><div>Web Manager</div></div>');
+  assertEquals(extractGmailSignature('<div class="gmail_quote"><div class="gmail_signature">Sam</div></div>'), null);
+  assertEquals(extractGmailSignature("<div>No signature here</div>"), null);
+});
 
 Deno.test("a Gmail multipart reply: plain text, quote removed", () => {
   const raw = [

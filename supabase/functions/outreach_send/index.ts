@@ -8,7 +8,8 @@ import { isRoleAddress } from "../_shared/outreach-contacts.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
 import { HubSpot, OUTREACH_HUBSPOT_SCOPES, type HubLeadStatus } from "../_shared/outreach-hubspot.ts";
 import { ALERTING, PASSING, SUPPRESSING, classifyReply, type ReplyVerdict } from "../_shared/outreach-replies.ts";
-import { parseMail } from "../_shared/mail-parse.ts";
+import { extractGmailSignature, mailHeader, mailHtml, parseMail } from "../_shared/mail-parse.ts";
+import { imapDate } from "../_shared/imap-search.ts";
 import { OUTREACH_OWNER_EMAIL } from "../_shared/outreach-access.ts";
 import {
   followUp,
@@ -77,6 +78,8 @@ type Settings = {
   send_end_hour: number;
   min_gap_minutes: number;
   signature_html: string | null;
+  /** When the signature was last read from his Gmail (it follows Gmail, not a copy typed here). */
+  signature_synced_at: string | null;
   hubspot_log: boolean;
   reply_alerts: boolean;
   hot_lead_views: number;
@@ -96,6 +99,7 @@ const DEFAULT_SETTINGS: Settings = {
   send_end_hour: 16,
   min_gap_minutes: 45,
   signature_html: null,
+  signature_synced_at: null,
   hubspot_log: true,
   reply_alerts: true,
   hot_lead_views: 3,
@@ -359,6 +363,45 @@ async function handleReply(
   }
 }
 
+/**
+ * His Gmail signature, read from the newest email he wrote in Gmail (Emil,
+ * 2026-11-02: "I already updated it in my Gmail, can you just fetch it"). Emails
+ * this tool sent are skipped, so an old saved copy can never feed itself back.
+ * Null when none of his recent emails carries one.
+ */
+async function fetchGmailSignature(box: Mailbox): Promise<string | null> {
+  const imap = await ImapSession.open(box);
+  try {
+    const since = new Date(Date.now() - 120 * 86_400_000);
+    const seqs = await imap.search(`SINCE ${imapDate(since)} FROM "${box.user.replace(/"/g, "")}"`);
+    for (const seq of seqs.slice(-15).reverse()) {
+      const raw = await imap.fetchRaw(seq, 150_000);
+      const id = mailHeader(raw, "message-id");
+      const subject = mailHeader(raw, "subject");
+      if (/outreach-/i.test(id) || /^\[test\]|^test: your outreach/i.test(subject)) continue;
+      const html = mailHtml(raw);
+      const sig = html ? extractGmailSignature(html) : null;
+      if (sig) return sig.slice(0, 30_000);
+    }
+    return null;
+  } finally {
+    await imap.close();
+  }
+}
+
+async function syncSignature(sb: Sb, box: Mailbox): Promise<{ ok: boolean; changed?: boolean; error?: string }> {
+  const sig = await fetchGmailSignature(box);
+  const now = new Date().toISOString();
+  if (!sig) {
+    // Still mark it checked, so the daily try does not hammer the inbox.
+    await sb.from("outreach_settings").update({ signature_synced_at: now }).eq("id", "default");
+    return { ok: false, error: "No signature found in your recent Gmail emails. Send one email from Gmail with your signature, then refresh." };
+  }
+  const { signature_html } = await loadSettings(sb);
+  await sb.from("outreach_settings").update({ signature_html: sig, signature_synced_at: now, updated_at: now }).eq("id", "default");
+  return { ok: true, changed: sig !== signature_html };
+}
+
 /** Someone who keeps opening their report without answering is worth a call:
  * one email to Emil when they reach hot_lead_views opens. */
 async function hotLeads(sb: Sb, settings: Settings) {
@@ -427,8 +470,13 @@ async function tick(sb: Sb) {
   if (!box) return { ok: true, skipped: "mailbox_not_connected" };
   const now = new Date();
   const inboxOk = await checkInbox(sb, box);
-  const settings = await loadSettings(sb);
+  let settings = await loadSettings(sb);
   await hotLeads(sb, settings);
+  // Once a day, pick up any change he made to his signature in Gmail.
+  if (!settings.signature_synced_at || Date.now() - Date.parse(settings.signature_synced_at) > 86_400_000) {
+    await syncSignature(sb, box).catch(() => null);
+    settings = await loadSettings(sb);
+  }
   if (settings.paused) return { ok: true, skipped: "paused", reason: settings.pause_reason };
   if (!inSendWindow(now, settings.send_start_hour, settings.send_end_hour)) {
     return { ok: true, skipped: "outside_send_window", inbox: inboxOk };
@@ -569,6 +617,17 @@ serve(async (req) => {
     );
     if (error) return json({ ok: false, error: error.message }, 500);
     return json({ ok: true, mailbox: address });
+  }
+
+  if (body.action === "sync_signature") {
+    const box = await mailbox(sb);
+    if (!box) return json({ ok: false, error: "Connect the mailbox first." }, 409);
+    try {
+      const r = await syncSignature(sb, box);
+      return r.ok ? json({ ok: true, changed: r.changed }) : json({ ok: false, error: r.error }, 404);
+    } catch (e) {
+      return json({ ok: false, error: `Could not read your Gmail: ${e instanceof Error ? e.message : String(e)}` }, 502);
+    }
   }
 
   if (body.action === "disconnect_mailbox") {

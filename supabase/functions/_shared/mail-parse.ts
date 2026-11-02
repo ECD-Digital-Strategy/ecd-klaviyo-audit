@@ -120,6 +120,46 @@ export function stripQuoted(text: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/** The HTML part of a message (null when it is plain text only), and a header. */
+export function mailHtml(raw: string): string | null {
+  return partText(raw).html;
+}
+export function mailHeader(raw: string, name: string): string {
+  return decodeHeader(splitHeaders(raw).headers[name.toLowerCase()] ?? "");
+}
+
+/**
+ * The Gmail signature in an email someone wrote in Gmail (Outreach, 2026-11-02:
+ * "I already updated it in my Gmail, can you just fetch it"). Gmail wraps it in
+ * <div class="gmail_signature">; only the one in the new part counts, never one in
+ * the quoted email below (class gmail_quote), which may be someone else's.
+ * Scripts and inline event handlers are dropped.
+ */
+export function extractGmailSignature(html: string): string | null {
+  const quoteAt = html.search(/class="[^"]*gmail_quote/i);
+  const scope = quoteAt > 0 ? html.slice(0, quoteAt) : html;
+  const open = /<div[^>]*class="[^"]*gmail_signature[^"]*"[^>]*>/i.exec(scope);
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  const tags = /<\/?div\b[^>]*>/gi;
+  tags.lastIndex = start;
+  let depth = 1;
+  let end = scope.length;
+  for (let t = tags.exec(scope); t; t = tags.exec(scope)) {
+    depth += t[0][1] === "/" ? -1 : 1;
+    if (depth === 0) {
+      end = t.index;
+      break;
+    }
+  }
+  const sig = scope
+    .slice(start, end)
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*')/gi, "")
+    .trim();
+  return sig.replace(/<[^>]+>/g, "").trim() ? sig : null;
+}
+
 export function parseMail(raw: string): ParsedMail {
   const { headers } = splitHeaders(raw);
   const { plain, html } = partText(raw);

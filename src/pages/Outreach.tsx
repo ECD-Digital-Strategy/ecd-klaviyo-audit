@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, BadgeCheck, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CheckCircle2, ChevronDown, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { ToggleRow } from '../components/ui/ToggleSwitch';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,6 +25,7 @@ import {
   unqueueProspect,
   listSends,
   testSend,
+  syncSignature,
   connectHunter,
   disconnectHunter,
   findDecisionMaker,
@@ -620,6 +621,85 @@ function HunterSection() {
   );
 }
 
+/**
+ * The signature under every outreach email follows his Gmail (Emil, 2026-11-02):
+ * read from the newest email he wrote there, on demand and once a day, never
+ * typed here. Folded away by default: it is checked, not edited.
+ */
+function SignatureSection({ status, onChanged }: { status: OutreachSendStatus | null; onChanged: () => Promise<void> }) {
+  const showToast = useToast();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const sig = status?.settings.signature_html ?? '';
+  const synced = status?.settings.signature_synced_at;
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const r = await syncSignature();
+      await onChanged();
+      showToast(r.changed ? 'Signature updated from Gmail' : 'Signature is already up to date');
+      setOpen(true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not read your Gmail');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+          <div className="min-w-0 flex-1">
+            <h2 className="flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-900">
+              Signature
+              {sig ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                  <CheckCircle2 className="h-3 w-3" /> From your Gmail
+                </span>
+              ) : (
+                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">Not found yet</span>
+              )}
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Added under every outreach email. It follows the signature in your Gmail and refreshes once a day
+              {synced ? `; last checked ${new Date(synced).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}.
+            </p>
+          </div>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+        <button
+          type="button"
+          disabled={busy || !status?.mailbox}
+          onClick={refresh}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Refresh from Gmail
+        </button>
+      </div>
+      {open && (
+        <div className="border-t border-gray-100 bg-gray-50/60 px-5 py-4">
+          {sig ? (
+            /* Sandboxed: the signature's HTML is shown, never run. */
+            <iframe
+              title="Signature preview"
+              sandbox=""
+              srcDoc={`<body style="margin:0;padding:12px;font-family:Arial,sans-serif;background:#fff">${sig}</body>`}
+              className="h-56 w-full max-w-xl rounded-lg border border-gray-200 bg-white"
+            />
+          ) : (
+            <p className="text-xs text-gray-500">
+              None of your recent Gmail emails has a signature. Set one in Gmail (Settings, General, Signature), send any email, then refresh.
+            </p>
+          )}
+          <p className="mt-2 text-[11px] text-gray-400">To change it, edit your signature in Gmail; it shows up here by tomorrow, or straight away with Refresh.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'prospects', label: 'Prospects' },
@@ -761,7 +841,6 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     send_end_hour: 16,
     min_gap_minutes: 45,
     booking_url: '',
-    signature_html: '',
     auto_pipeline: false,
     auto_audits_per_day: 3,
     min_lead_score: 40,
@@ -781,7 +860,6 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       send_end_hour: settings.send_end_hour,
       min_gap_minutes: settings.min_gap_minutes,
       booking_url: settings.booking_url ?? '',
-      signature_html: settings.signature_html ?? '',
       auto_pipeline: settings.auto_pipeline,
       auto_audits_per_day: settings.auto_audits_per_day,
       min_lead_score: settings.min_lead_score,
@@ -815,7 +893,6 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       form.send_end_hour !== settings.send_end_hour ||
       form.min_gap_minutes !== settings.min_gap_minutes ||
       form.booking_url !== (settings.booking_url ?? '') ||
-      form.signature_html !== (settings.signature_html ?? '') ||
       form.auto_pipeline !== settings.auto_pipeline ||
       form.auto_audits_per_day !== settings.auto_audits_per_day ||
       form.min_lead_score !== settings.min_lead_score ||
@@ -979,7 +1056,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Booking link and signature</h2>
+        <h2 className="text-sm font-semibold text-gray-900">Booking link and report note</h2>
         <label className="mt-3 block text-xs text-gray-500">
           Booking link (used in follow-ups and on their report)
           <input
@@ -998,29 +1075,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
             className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800"
           />
         </label>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <label className="text-xs text-gray-500">
-            Signature (HTML, added under every email)
-            <textarea
-              value={form.signature_html}
-              onChange={(e) => setForm((f) => ({ ...f, signature_html: e.target.value }))}
-              rows={10}
-              spellCheck={false}
-              className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-[11px] text-gray-800"
-            />
-          </label>
-          <div className="text-xs text-gray-500">
-            Preview
-            {/* Sandboxed: the signature's HTML is shown, never run. */}
-            <iframe
-              title="Signature preview"
-              sandbox=""
-              srcDoc={`<body style="margin:12px;font-family:Arial,sans-serif">${form.signature_html || '<p style="color:#999;font-size:12px">No signature</p>'}</body>`}
-              className="mt-1 h-[214px] w-full rounded-lg border border-gray-200 bg-white"
-            />
-          </div>
-        </div>
       </section>
+
+      <SignatureSection status={status} onChanged={onChanged} />
 
       <div className="flex items-center gap-3">
         <button

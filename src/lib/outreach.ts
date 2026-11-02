@@ -215,8 +215,9 @@ export type OutreachSettings = {
   send_start_hour: number;
   send_end_hour: number;
   min_gap_minutes: number;
-  /** Emil's Gmail signature, added under every email. */
+  /** Emil's Gmail signature, added under every email: read from his Gmail, not typed here. */
   signature_html: string | null;
+  signature_synced_at?: string | null;
   /** Log emailed prospects and every email in HubSpot. */
   hubspot_log: boolean;
   /** Email Emil when someone replies with something worth answering. */
@@ -258,6 +259,8 @@ export const getSendStatus = () => sendFn<OutreachSendStatus>({ action: 'status'
 export const connectMailbox = (user: string, pass: string) => sendFn<{ mailbox: string }>({ action: 'connect_mailbox', user, pass });
 export const disconnectMailbox = () => sendFn<void>({ action: 'disconnect_mailbox' });
 export const saveSendSettings = (settings: Partial<OutreachSettings>) => sendFn<void>({ action: 'save_settings', settings });
+/** Reads his signature again from the newest email he wrote in Gmail. */
+export const syncSignature = () => sendFn<{ changed: boolean }>({ action: 'sync_signature' });
 export const sendNow = (prospectId: string) => sendFn<void>({ action: 'send_now', prospect_id: prospectId });
 /** Stops everything for this company and never contacts it again. */
 export const doNotContact = (prospectId: string) => sendFn<void>({ action: 'do_not_contact', prospect_id: prospectId });
