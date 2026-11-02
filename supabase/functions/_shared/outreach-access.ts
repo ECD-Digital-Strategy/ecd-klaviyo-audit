@@ -1,4 +1,4 @@
-import { assertServiceRoleClient, requireAdminUserId } from "./auth.ts";
+import { assertServiceRoleClient, isServiceRoleAuthorization, requireAdminUserId } from "./auth.ts";
 
 /** Outreach is Emil's alone for now (Emil, 2026-11-01); the page, the
  * outreach_prospects policy and these functions all check this address. */
@@ -11,4 +11,11 @@ export async function requireOutreachOwner(req: Request): Promise<string> {
   const email = String((data as { email?: string } | null)?.email ?? "").trim().toLowerCase();
   if (email !== OUTREACH_OWNER_EMAIL) throw new Error("Forbidden");
   return userId;
+}
+
+/** Emil, or the server itself (outreach_pipeline calls with the service role key): null for the server. */
+export async function requireOutreachOwnerOrServer(req: Request): Promise<string | null> {
+  const token = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (token && isServiceRoleAuthorization(token)) return null;
+  return await requireOutreachOwner(req);
 }

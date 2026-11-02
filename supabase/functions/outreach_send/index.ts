@@ -66,6 +66,9 @@ type Settings = {
   send_end_hour: number;
   min_gap_minutes: number;
   signature_html: string | null;
+  auto_pipeline: boolean;
+  auto_audits_per_day: number;
+  min_lead_score: number;
 };
 const DEFAULT_SETTINGS: Settings = {
   paused: false,
@@ -78,6 +81,9 @@ const DEFAULT_SETTINGS: Settings = {
   send_end_hour: 16,
   min_gap_minutes: 45,
   signature_html: null,
+  auto_pipeline: false,
+  auto_audits_per_day: 3,
+  min_lead_score: 40,
 };
 type Prospect = {
   id: string;
@@ -384,6 +390,9 @@ serve(async (req) => {
     if ("booking_url" in s) patch.booking_url = String(s.booking_url ?? "").trim() || null;
     if ("signature_html" in s) patch.signature_html = String(s.signature_html ?? "").trim().slice(0, 30_000) || null;
     if ("daily_new_cap" in s) patch.daily_new_cap = clampInt(s.daily_new_cap, 0, 10, current.daily_new_cap);
+    if ("auto_pipeline" in s) patch.auto_pipeline = Boolean(s.auto_pipeline);
+    if ("auto_audits_per_day" in s) patch.auto_audits_per_day = clampInt(s.auto_audits_per_day, 0, 10, current.auto_audits_per_day);
+    if ("min_lead_score" in s) patch.min_lead_score = clampInt(s.min_lead_score, 0, 100, current.min_lead_score);
     if ("max_followups" in s) patch.max_followups = clampInt(s.max_followups, 0, 2, current.max_followups);
     if ("followup_gap_days" in s) patch.followup_gap_days = clampInt(s.followup_gap_days, 1, 14, current.followup_gap_days);
     if ("min_gap_minutes" in s) patch.min_gap_minutes = clampInt(s.min_gap_minutes, 5, 240, current.min_gap_minutes);

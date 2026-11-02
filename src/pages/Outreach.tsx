@@ -12,6 +12,7 @@ import {
   listProspects,
   parseDomains,
   screenDomains,
+  SCREEN_MAX,
   startOutreachAudit,
   updateProspect,
   connectMailbox,
@@ -44,7 +45,7 @@ const GROUPS: Array<{ key: string; title: string; note: string; match: (p: Outre
   { key: 'ready', title: 'Ready to send', note: 'Check the email and who it goes to, then send it now or queue it.', match: (p) => p.status === 'ready' },
   { key: 'approved', title: 'Queued', note: 'Goes out on its own, in this order, within the daily limit on US weekdays.', match: (p) => p.status === 'approved' },
   { key: 'auditing', title: 'Auditing', note: 'The audit runs on the server and takes a few minutes. Draft the email once it is done.', match: (p) => p.status === 'auditing' || p.status === 'failed' },
-  { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not in HubSpot, on Shopify.', match: (p) => p.status === 'new' },
+  { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not in HubSpot, on Shopify. Best lead score first.', match: (p) => p.status === 'new' },
   { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. Pick it up in your inbox.', match: (p) => p.status === 'replied' },
   { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced', 'unsubscribed'].includes(p.status) },
   { key: 'skipped', title: 'Skipped', note: 'Never audited or emailed.', match: (p) => p.status === 'skipped' },
@@ -57,6 +58,7 @@ export default function Outreach() {
   const [paste, setPaste] = useState('');
   const [screening, setScreening] = useState(false);
   const [lastScreen, setLastScreen] = useState<ScreenResult[] | null>(null);
+  const [screenProgress, setScreenProgress] = useState<{ done: number; total: number } | null>(null);
   const [sending, setSending] = useState<OutreachSendStatus | null>(null);
   const [params, setParams] = useSearchParams();
   const tab: TabKey = (TABS.find((t) => t.key === params.get('tab'))?.key ?? 'overview');
@@ -92,8 +94,12 @@ export default function Outreach() {
     const domains = parseDomains(paste);
     if (domains.length === 0) return;
     setScreening(true);
+    setScreenProgress({ done: 0, total: Math.min(domains.length, SCREEN_MAX) });
     try {
-      const results = await screenDomains(domains);
+      const results = await screenDomains(domains, (done, partial) => {
+        setScreenProgress({ done, total: Math.min(domains.length, SCREEN_MAX) });
+        setLastScreen(partial);
+      });
       setLastScreen(results);
       setPaste('');
       await load();
@@ -101,11 +107,16 @@ export default function Outreach() {
       showToast(e instanceof Error ? e.message : 'Screening failed');
     } finally {
       setScreening(false);
+      setScreenProgress(null);
     }
   };
 
   const grouped = useMemo(
-    () => GROUPS.map((g) => ({ ...g, items: (prospects ?? []).filter(g.match) })),
+    () => GROUPS.map((g) => {
+      const items = (prospects ?? []).filter(g.match);
+      if (g.key === 'new') items.sort((a, b) => (b.lead_score ?? -1) - (a.lead_score ?? -1));
+      return { ...g, items };
+    }),
     [prospects],
   );
 
@@ -136,8 +147,8 @@ export default function Outreach() {
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-gray-900">Add stores</h2>
           <p className="mt-1 text-xs text-gray-500">
-            Paste store websites, one per line (up to 50). Anyone already a client or in HubSpot is skipped, and so is
-            anything not on Shopify.
+            Paste store websites, one per line (up to {SCREEN_MAX}). Anyone already a client or in HubSpot is skipped, and so is
+            anything not on Shopify or scoring under the lead score set in Settings.
           </p>
           <textarea
             value={paste}
@@ -156,7 +167,12 @@ export default function Outreach() {
               {screening ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {screening ? 'Checking…' : 'Check and add'}
             </button>
-            {screening && <span className="text-xs text-gray-500">Checking HubSpot and each website, a few seconds per store.</span>}
+            {screening && (
+              <span className="text-xs text-gray-500">
+                Checking HubSpot, each website and its traffic, a few seconds per store
+                {screenProgress && screenProgress.total > 15 ? ` (${screenProgress.done} of ${screenProgress.total})` : ''}.
+              </span>
+            )}
           </div>
           {lastScreen && (
             <ul className="mt-4 space-y-1 border-t border-gray-100 pt-3 text-xs">
@@ -166,6 +182,7 @@ export default function Outreach() {
                     {r.status === 'new' ? 'Added' : r.status === 'exists' ? 'Already listed' : r.status === 'invalid' ? 'Not added' : 'Skipped'}
                   </span>
                   <span className="text-gray-900">{r.store_name ? `${r.store_name} (${r.domain})` : r.domain}</span>
+                  {r.lead_score !== undefined && r.status === 'new' && <span className="tabular-nums text-gray-500">score {r.lead_score}</span>}
                   {r.reason && <span className="text-gray-400">{r.reason}</span>}
                 </li>
               ))}
@@ -276,7 +293,11 @@ function ProspectCard({
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-gray-900">{name}</p>
+          <p className="flex items-center gap-2 truncate text-sm font-semibold text-gray-900">
+            {name}
+            <LeadScoreBadge prospect={p} />
+            {p.auto_started_at && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">Auto</span>}
+          </p>
           <a href={`https://${p.domain}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-brand-primary">
             {p.domain} <ExternalLink className="h-3 w-3" />
           </a>
@@ -368,6 +389,11 @@ function ProspectCard({
               className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
             >
               <X className="h-4 w-4" />
+            </button>
+          )}
+          {p.status === 'skipped' && /^(Low lead score|No decision-maker)/.test(p.skip_reason ?? '') && (
+            <button type="button" disabled={busy !== null} onClick={() => run('keep', () => updateProspect(p.id, { status: 'new', skip_reason: null }))} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+              Keep anyway
             </button>
           )}
           {p.status === 'skipped' && (
@@ -464,6 +490,16 @@ function ProspectCard({
         </div>
       )}
     </div>
+  );
+}
+
+function LeadScoreBadge({ prospect: p }: { prospect: OutreachProspect }) {
+  if (p.lead_score === null || p.lead_score === undefined) return null;
+  const tone = p.lead_score >= 60 ? 'bg-emerald-50 text-emerald-700' : p.lead_score >= 40 ? 'bg-gray-100 text-gray-600' : 'bg-amber-50 text-amber-700';
+  return (
+    <span title={(p.lead_signals?.reasons ?? []).join('\n')} className={`cursor-help rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${tone}`}>
+      Score {p.lead_score}
+    </span>
   );
 }
 
@@ -701,6 +737,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     min_gap_minutes: 45,
     booking_url: '',
     signature_html: '',
+    auto_pipeline: false,
+    auto_audits_per_day: 3,
+    min_lead_score: 40,
   });
 
   useEffect(() => {
@@ -714,6 +753,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       min_gap_minutes: settings.min_gap_minutes,
       booking_url: settings.booking_url ?? '',
       signature_html: settings.signature_html ?? '',
+      auto_pipeline: settings.auto_pipeline,
+      auto_audits_per_day: settings.auto_audits_per_day,
+      min_lead_score: settings.min_lead_score,
     });
   }, [settings]);
 
@@ -740,7 +782,10 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       form.send_end_hour !== settings.send_end_hour ||
       form.min_gap_minutes !== settings.min_gap_minutes ||
       form.booking_url !== (settings.booking_url ?? '') ||
-      form.signature_html !== (settings.signature_html ?? ''));
+      form.signature_html !== (settings.signature_html ?? '') ||
+      form.auto_pipeline !== settings.auto_pipeline ||
+      form.auto_audits_per_day !== settings.auto_audits_per_day ||
+      form.min_lead_score !== settings.min_lead_score);
 
   const num = (key: keyof typeof form, label: string, min: number, max: number, note?: string) => (
     <label className="text-xs text-gray-500">
@@ -830,6 +875,33 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       </section>
 
       <HunterSection />
+
+      <section className="rounded-xl border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-900">Lead quality and auto-pipeline</h2>
+        <p className="mt-1 text-xs text-gray-500">
+          Every store gets a lead score (0-100) when it is checked: traffic rank, catalogue size, paid tools like Attentive or
+          Recharge, and whether it sells in USD. Hover a score on the Prospects tab to see why.
+        </p>
+        <label className="mt-4 flex items-start gap-2 text-sm text-gray-800">
+          <input
+            type="checkbox"
+            checked={form.auto_pipeline}
+            onChange={(e) => setForm((f) => ({ ...f, auto_pipeline: e.target.checked }))}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-primary"
+          />
+          <span>
+            Run the pipeline on its own
+            <span className="block text-xs text-gray-500">
+              Takes the best stores from To audit each day: finds the decision-maker (a store with no one to email is skipped),
+              runs the audit and drafts the email. Drafts wait in Ready to send; nothing goes out until you send or queue it.
+            </span>
+          </span>
+        </label>
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          {num('auto_audits_per_day', 'Stores to audit per day', 0, 10, 'New York days, two at a time.')}
+          {num('min_lead_score', 'Lowest lead score to keep', 0, 100, 'Checked stores under this are skipped. 40 is a fair start.')}
+        </div>
+      </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-gray-900">How much and when</h2>

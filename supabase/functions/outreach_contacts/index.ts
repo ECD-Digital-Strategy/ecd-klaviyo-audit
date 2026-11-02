@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
-import { requireOutreachOwner } from "../_shared/outreach-access.ts";
+import { requireOutreachOwnerOrServer } from "../_shared/outreach-access.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import {
   founderNames,
@@ -177,7 +177,7 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
   try {
-    await requireOutreachOwner(req);
+    await requireOutreachOwnerOrServer(req);
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
   }

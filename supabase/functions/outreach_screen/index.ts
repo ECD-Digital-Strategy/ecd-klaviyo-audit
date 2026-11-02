@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
 import { requireOutreachOwner } from "../_shared/outreach-access.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
+import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-score.ts";
 
 // Outreach, step 1 (Emil, 2026-11-01): screen pasted store domains before anything
 // is audited or emailed. Each domain is kept once in outreach_prospects, either as
@@ -12,8 +13,11 @@ import { getSecret } from "../_shared/app-secrets.ts";
 //    and contacts are left alone entirely: no audit, no email),
 //  - not a Shopify store.
 // The homepage is read once for the store's name and a few size signals (Attentive
-// and Postscript are sold to bigger brands; Klaviyo alone is weak). Signals go in
-// notes for Emil to judge; nothing is skipped on them yet.
+// and Postscript are sold to bigger brands; Klaviyo alone is weak).
+// Lead score (2026-11-02): those signals, the store's traffic rank, catalogue size
+// and currency add up to a 0-100 score (_shared/outreach-score.ts). Below the
+// threshold on the Settings tab the store is skipped, with the score in the reason
+// so Emil can keep it anyway.
 
 const corsHeaders: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -42,7 +46,7 @@ export function normalizeDomain(input: string): string | null {
 
 const hostOf = (url: string | null | undefined) => (url ? normalizeDomain(url) : null);
 
-type Screened = { domain: string; status: "new" | "skipped" | "exists" | "invalid"; reason?: string; store_name?: string };
+type Screened = { domain: string; status: "new" | "skipped" | "exists" | "invalid"; reason?: string; store_name?: string; lead_score?: number };
 
 async function hubspotHas(token: string, object: "companies" | "contacts", property: string, domain: string): Promise<boolean | null> {
   const res = await fetch(`https://api.hubapi.com/crm/v3/objects/${object}/search`, {
@@ -56,7 +60,7 @@ async function hubspotHas(token: string, object: "companies" | "contacts", prope
 }
 
 /** Name and size signals from the homepage. shopify=false means it is not a Shopify store. */
-async function readHomepage(domain: string): Promise<{ shopify: boolean; name: string | null; signals: string[] } | null> {
+async function readHomepage(domain: string): Promise<{ shopify: boolean; name: string | null; signals: string[]; currency: string | null; country: string | null } | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10_000);
   try {
@@ -79,11 +83,38 @@ async function readHomepage(domain: string): Promise<{ shopify: boolean; name: s
       [/okendo/i, "Okendo"],
       [/rechargeapps|rechargepayments/i, "Recharge"],
     ].filter(([re]) => (re as RegExp).test(html)).map(([, label]) => label as string);
-    return { shopify, name, signals };
+    return { shopify, name, signals, ...shopifyLocale(html) };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** The store's latest Tranco rank (top 1M sites), or null when it is not ranked. */
+async function trancoRank(domain: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://tranco-list.eu/api/ranks/domain/${domain}`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { ranks?: Array<{ rank?: number }> };
+    return body.ranks?.[0]?.rank ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Products on the first page of the public catalogue (max 250), or null when it is closed. */
+async function productCount(domain: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://${domain}/products.json?limit=250`, {
+      signal: AbortSignal.timeout(10_000),
+      headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36" },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { products?: unknown[] };
+    return Array.isArray(body.products) ? body.products.length : null;
+  } catch {
+    return null;
   }
 }
 
@@ -99,10 +130,13 @@ serve(async (req) => {
   }
 
   const body = (await req.json().catch(() => ({}))) as { domains?: unknown };
-  const inputs = Array.isArray(body.domains) ? body.domains.map(String).slice(0, 50) : [];
+  // 15 per call keeps a batch well inside the function time limit; the page sends longer lists in batches.
+  const inputs = Array.isArray(body.domains) ? body.domains.map(String).slice(0, 15) : [];
   if (inputs.length === 0) return json({ ok: false, error: "no_domains" }, 400);
 
   const sb = assertServiceRoleClient();
+  const { data: settingsRow } = await sb.from("outreach_settings").select("min_lead_score").eq("id", "default").maybeSingle();
+  const minScore = Number((settingsRow as { min_lead_score?: number } | null)?.min_lead_score ?? 40);
   let hubspotToken = "";
   try {
     hubspotToken = await getSecret("hubspot_private_app_token");
@@ -152,9 +186,21 @@ serve(async (req) => {
       reason = "HubSpot is not connected, so skipped to be safe";
     }
 
-    const home = reason ? null : await readHomepage(domain);
+    const [home, rank, products] = reason
+      ? [null, null, null]
+      : await Promise.all([readHomepage(domain), trancoRank(domain), productCount(domain)]);
     if (!reason && !home) reason = "Website did not load";
     if (!reason && home && !home.shopify) reason = "Not a Shopify store";
+
+    let lead: (LeadSignals & { reasons: string[] }) | null = null;
+    let leadScore: number | null = null;
+    if (!reason && home) {
+      const signals: LeadSignals = { tranco_rank: rank, products, currency: home.currency, country: home.country, apps: home.signals };
+      const scored = scoreLead(signals);
+      lead = { ...signals, reasons: scored.reasons };
+      leadScore = scored.score;
+      if (scored.score < minScore) reason = `Low lead score (${scored.score}, needs ${minScore})`;
+    }
 
     const row = {
       domain,
@@ -162,6 +208,8 @@ serve(async (req) => {
       status: reason ? "skipped" : "new",
       skip_reason: reason,
       notes: home?.signals.length ? `Signals: ${home.signals.join(", ")}` : null,
+      lead_score: leadScore,
+      lead_signals: lead,
       created_by: userId,
     };
     const { error } = await sb.from("outreach_prospects").insert(row);
@@ -169,7 +217,7 @@ serve(async (req) => {
       results.push({ domain, status: "invalid", reason: error.message });
       continue;
     }
-    results.push({ domain, status: row.status as "new" | "skipped", reason: reason ?? undefined, store_name: row.store_name ?? undefined });
+    results.push({ domain, status: row.status as "new" | "skipped", reason: reason ?? undefined, store_name: row.store_name ?? undefined, lead_score: leadScore ?? undefined });
   }
 
   return json({ ok: true, results });

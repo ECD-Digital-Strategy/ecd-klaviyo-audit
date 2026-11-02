@@ -39,6 +39,11 @@ export type OutreachProspect = {
   /** Hunter's check of the address: valid, catch_all (the domain accepts anything), invalid, unknown. */
   contact_verified?: 'valid' | 'catch_all' | 'invalid' | 'unknown' | null;
   contact_lookup_at?: string | null;
+  /** 0-100 from outside signals (supabase/functions/_shared/outreach-score.ts). */
+  lead_score?: number | null;
+  lead_signals?: { tranco_rank: number | null; products: number | null; currency: string | null; country: string | null; apps: string[]; reasons: string[] } | null;
+  /** Set when the auto-pipeline started its audit. */
+  auto_started_at?: string | null;
   status: OutreachStatus;
   skip_reason: string | null;
   client_id: string | null;
@@ -60,7 +65,7 @@ export type OutreachProspect = {
   audit?: Pick<Audit, 'id' | 'status' | 'public_share_token'> | null;
 };
 
-export type ScreenResult = { domain: string; status: 'new' | 'skipped' | 'exists' | 'invalid'; reason?: string; store_name?: string };
+export type ScreenResult = { domain: string; status: 'new' | 'skipped' | 'exists' | 'invalid'; reason?: string; store_name?: string; lead_score?: number };
 
 export { OUTREACH_OWNER_EMAIL, canUseOutreach } from './outreach-access';
 
@@ -80,11 +85,21 @@ export function parseDomains(text: string): string[] {
   return [...new Set(text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean))];
 }
 
-export async function screenDomains(domains: string[]): Promise<ScreenResult[]> {
-  const { data, error } = await supabase.functions.invoke('outreach_screen', { body: { domains } });
-  if (error) throw new Error(error.message);
-  if (!data?.ok) throw new Error(data?.error ?? 'Screening failed');
-  return data.results as ScreenResult[];
+/** The server checks 15 stores per call; longer lists go in batches, reporting as they go. */
+export const SCREEN_BATCH = 15;
+export const SCREEN_MAX = 300;
+
+export async function screenDomains(domains: string[], onProgress?: (done: number, results: ScreenResult[]) => void): Promise<ScreenResult[]> {
+  const results: ScreenResult[] = [];
+  const list = domains.slice(0, SCREEN_MAX);
+  for (let i = 0; i < list.length; i += SCREEN_BATCH) {
+    const { data, error } = await supabase.functions.invoke('outreach_screen', { body: { domains: list.slice(i, i + SCREEN_BATCH) } });
+    if (error) throw new Error(error.message);
+    if (!data?.ok) throw new Error(data?.error ?? 'Screening failed');
+    results.push(...(data.results as ScreenResult[]));
+    onProgress?.(Math.min(list.length, i + SCREEN_BATCH), [...results]);
+  }
+  return results;
 }
 
 export async function updateProspect(id: string, patch: Partial<OutreachProspect>): Promise<void> {
@@ -183,6 +198,11 @@ export type OutreachSettings = {
   min_gap_minutes: number;
   /** Emil's Gmail signature, added under every email. */
   signature_html: string | null;
+  /** Auto-pipeline: find the decision-maker, audit and draft the best new stores on its own. */
+  auto_pipeline: boolean;
+  auto_audits_per_day: number;
+  /** Stores scoring under this are skipped when checked. */
+  min_lead_score: number;
 };
 
 export type OutreachSendStatus = {
