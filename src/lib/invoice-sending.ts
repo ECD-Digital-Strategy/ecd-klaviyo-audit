@@ -59,7 +59,7 @@ export type SignatureState = 'added' | 'none_set' | 'needs_reconnect' | 'off';
 export function signatureNote(state: SignatureState | undefined): string {
   if (state === 'added') return 'with your Gmail signature';
   if (state === 'needs_reconnect') return 'without your signature: reconnect your Gmail once so it can be added';
-  if (state === 'none_set') return 'without a signature: none is set in your Gmail';
+  if (state === 'none_set') return 'without a signature: in Gmail settings, set your signature as the default for new emails';
   return '';
 }
 export const saveGoogleClient = (clientId: string, clientSecret: string) =>
