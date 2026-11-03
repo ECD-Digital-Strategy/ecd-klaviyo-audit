@@ -402,9 +402,9 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                     {...rowNavProps(`/proposals/${proposal.id}`, navigate)}
                     className="hover:bg-gray-50/50 cursor-pointer transition-colors"
                   >
-                    {/* w-full + max-w-0: this column takes whatever width is left and truncates, so the table never outgrows the card. */}
+                    {/* w-full + max-w-0: this column takes whatever width is left, titles wrap to two lines, so the table never outgrows the card. */}
                     <td className="w-full max-w-0 px-5 py-4">
-                      <p className="truncate text-sm font-medium text-gray-900" title={proposal.title || undefined}>
+                      <p className="line-clamp-2 text-sm font-medium leading-snug text-gray-900" title={proposal.title || undefined}>
                         {proposal.title || 'Untitled proposal'}
                       </p>
                       <p className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
@@ -414,7 +414,7 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                     <td className="whitespace-nowrap px-5 py-4">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <SiteFavicon url={proposal.client?.website_url} />
-                        <span className="max-w-[12rem] truncate text-sm text-gray-600" title={proposal.client?.company_name || undefined}>
+                        <span className="max-w-[10rem] truncate text-sm text-gray-600" title={proposal.client?.company_name || undefined}>
                           {proposal.client?.company_name || 'Unknown'}
                         </span>
                       </div>
