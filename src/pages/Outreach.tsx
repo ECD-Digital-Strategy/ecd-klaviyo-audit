@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, BadgeCheck, CheckCircle2, ChevronDown, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { ToggleRow } from '../components/ui/ToggleSwitch';
+import UnsavedChangesBar from '../components/ui/UnsavedChangesBar';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/ui/Toast';
 import {
@@ -883,7 +884,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     about_intro: '',
   });
 
-  useEffect(() => {
+  const resetForm = useCallback(() => {
     if (!settings) return;
     setForm({
       daily_new_cap: settings.daily_new_cap,
@@ -902,6 +903,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       about_intro: settings.about_intro ?? '',
     });
   }, [settings]);
+  useEffect(() => { resetForm(); }, [resetForm]);
 
   const run = async (label: string, fn: () => Promise<unknown>, done?: string) => {
     setBusy(label);
@@ -1123,6 +1125,12 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
         </button>
         {dirty && <span className="text-xs text-gray-500">Unsaved changes</span>}
       </div>
+      <UnsavedChangesBar
+        show={dirty}
+        saving={busy === 'save'}
+        onSave={() => void run('save', () => saveSendSettings(form), 'Settings saved')}
+        onDiscard={resetForm}
+      />
     </div>
   );
 }

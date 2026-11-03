@@ -8,6 +8,7 @@ import type { ProposalSettings } from '../../lib/types';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
 import InvoiceEmailSettings from './InvoiceEmailSettings';
 import SettingsCard from '../ui/SettingsCard';
+import UnsavedChangesBar from '../ui/UnsavedChangesBar';
 
 export default function ProposalSettingsPanel() {
   const toast = useToast();
@@ -16,12 +17,15 @@ export default function ProposalSettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<'logo' | 'background' | null>(null);
   const [error, setError] = useState('');
+  // What was last loaded or saved, to know when something changed (and to Discard).
+  const [saved, setSaved] = useState<{ settings: ProposalSettings; teamEmailsRaw: string } | null>(null);
 
   useEffect(() => {
     getProposalSettings()
       .then(s => {
         setSettings(s);
         setTeamEmailsRaw(s.email.team_notification_emails.join(', '));
+        setSaved({ settings: s, teamEmailsRaw: s.email.team_notification_emails.join(', ') });
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Failed to load settings'));
   }, []);
@@ -56,20 +60,33 @@ export default function ProposalSettingsPanel() {
         .split(/[,;\s]+/)
         .map(s => s.trim())
         .filter(s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
-      await updateProposalSettings({
+      const next: ProposalSettings = {
         ...settings,
         email: { ...settings.email, team_notification_emails: teamEmails },
         defaults: {
           valid_days: Math.max(1, Math.round(Number(settings.defaults.valid_days) || 30)),
         },
-      });
+      };
+      await updateProposalSettings(next);
+      setSettings(next);
       setTeamEmailsRaw(teamEmails.join(', '));
+      setSaved({ settings: next, teamEmailsRaw: teamEmails.join(', ') });
       toast('Proposal settings saved');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save settings');
     } finally {
       setSaving(false);
     }
+  };
+
+  const dirty =
+    saved !== null &&
+    (JSON.stringify(settings) !== JSON.stringify(saved.settings) || teamEmailsRaw !== saved.teamEmailsRaw);
+  const discard = () => {
+    if (!saved) return;
+    setSettings(saved.settings);
+    setTeamEmailsRaw(saved.teamEmailsRaw);
+    setError('');
   };
 
   const inputClass =
@@ -95,6 +112,8 @@ export default function ProposalSettingsPanel() {
       </div>
 
       {error && <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>}
+
+      <UnsavedChangesBar show={dirty} saving={saving} onSave={() => void save()} onDiscard={discard} />
 
       <InvoiceEmailSettings value={settings.invoicing} onChange={v => patch({ invoicing: v })} inputClass={inputClass} />
 

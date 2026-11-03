@@ -48,6 +48,11 @@ export default function InvoiceEmailSettings({
   const [busy, setBusy] = useState<string | null>(null);
   const [ccRaw, setCcRaw] = useState(value.cc_emails.join(', '));
   const [remindRaw, setRemindRaw] = useState(value.reminder_emails.join(', '));
+  // When the lists change from outside (Discard on the unsaved-changes bar), show them again.
+  const ccJoined = value.cc_emails.join(', ');
+  const remindJoined = value.reminder_emails.join(', ');
+  useEffect(() => { setCcRaw(ccJoined); }, [ccJoined]);
+  useEffect(() => { setRemindRaw(remindJoined); }, [remindJoined]);
 
   const load = useCallback(async () => {
     try {

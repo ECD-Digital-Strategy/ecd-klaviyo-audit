@@ -3,6 +3,7 @@ import { Mail } from 'lucide-react';
 import { useToast } from '../ui/Toast';
 import { getDocumentSettings, updateDocumentSettings } from '../../lib/documents-db';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
+import UnsavedChangesBar from '../ui/UnsavedChangesBar';
 import type { DocumentSettings } from '../../lib/types';
 
 export default function DocumentSettingsPanel() {
@@ -11,12 +12,15 @@ export default function DocumentSettingsPanel() {
   const [teamEmailsRaw, setTeamEmailsRaw] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // What was last loaded or saved, to know when something changed (and to Discard).
+  const [saved, setSaved] = useState<{ settings: DocumentSettings; teamEmailsRaw: string } | null>(null);
 
   useEffect(() => {
     getDocumentSettings()
       .then(s => {
         setSettings(s);
         setTeamEmailsRaw(s.email.team_notification_emails.join(', '));
+        setSaved({ settings: s, teamEmailsRaw: s.email.team_notification_emails.join(', ') });
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Failed to load settings'));
   }, []);
@@ -36,20 +40,33 @@ export default function DocumentSettingsPanel() {
         .split(/[,;\s]+/)
         .map(s => s.trim())
         .filter(s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
-      await updateDocumentSettings({
+      const next: DocumentSettings = {
         ...settings,
         email: { ...settings.email, team_notification_emails: teamEmails },
         defaults: {
           valid_days: Math.max(0, Math.round(Number(settings.defaults.valid_days) || 0)),
         },
-      });
+      };
+      await updateDocumentSettings(next);
+      setSettings(next);
       setTeamEmailsRaw(teamEmails.join(', '));
+      setSaved({ settings: next, teamEmailsRaw: teamEmails.join(', ') });
       toast('Document settings saved');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save settings');
     } finally {
       setSaving(false);
     }
+  };
+
+  const dirty =
+    saved !== null &&
+    (JSON.stringify(settings) !== JSON.stringify(saved.settings) || teamEmailsRaw !== saved.teamEmailsRaw);
+  const discard = () => {
+    if (!saved) return;
+    setSettings(saved.settings);
+    setTeamEmailsRaw(saved.teamEmailsRaw);
+    setError('');
   };
 
   const inputClass =
@@ -73,6 +90,8 @@ export default function DocumentSettingsPanel() {
       </div>
 
       {error && <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>}
+
+      <UnsavedChangesBar show={dirty} saving={saving} onSave={() => void save()} onDiscard={discard} />
 
       <section className="rounded-xl bg-white card-shadow overflow-hidden">
         <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/60 px-5 py-4">

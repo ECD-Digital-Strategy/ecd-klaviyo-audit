@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import { useToast } from '../ui/Toast';
+import UnsavedChangesBar from '../ui/UnsavedChangesBar';
 import {
   deleteXeroServiceAccount,
   listXeroServiceAccounts,
@@ -74,6 +75,14 @@ export default function XeroServiceAccountsEditor({ accounts }: { accounts: Xero
       .finally(() => setLoading(false));
   }, []);
 
+
+  const discard = () => {
+    setLoading(true);
+    listXeroServiceAccounts()
+      .then(r => { setRows(r); setDirty(false); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
 
   const patch = (index: number, next: Partial<XeroServiceAccount>) => {
     setRows(prev => prev.map((r, i) => (i === index ? { ...r, ...next } : r)));
@@ -217,6 +226,13 @@ export default function XeroServiceAccountsEditor({ accounts }: { accounts: Xero
           ))}
         </div>
       )}
+      <UnsavedChangesBar
+        show={dirty}
+        saving={saving}
+        onSave={() => void save()}
+        onDiscard={discard}
+        message="Unsaved changes to the revenue accounts"
+      />
       {/* Which bucket each service belongs to is set once, in the Line Item Catalog
           (2026-11-03: a table here edited the same field twice). */}
     </div>
