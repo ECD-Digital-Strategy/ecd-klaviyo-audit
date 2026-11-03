@@ -37,6 +37,7 @@ import {
 } from '../lib/db';
 import type { CatalogAuditType, RevenueOpportunityTemplate } from '../lib/types';
 import XeroSettingsPanel from '../components/proposal/XeroSettingsPanel';
+import GoogleSignInSetup from '../components/proposal/GoogleSignInSetup';
 import { listXeroServiceAccounts, type XeroServiceAccount } from '../lib/xero';
 import XeroItemPicker, { useXeroItems } from '../components/proposal/XeroItemPicker';
 
@@ -1726,6 +1727,8 @@ function SettingsTab() {
         </div>
 
         <WebAuditRateCard />
+
+        <GoogleSignInSetup />
 
         <ApiKeyCard
           provider="openai"

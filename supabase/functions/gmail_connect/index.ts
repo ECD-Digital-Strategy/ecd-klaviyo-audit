@@ -85,7 +85,7 @@ serve(async (req) => {
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
   }
-  const body = (await req.json().catch(() => ({}))) as { action?: string; return_to?: string; client_id?: string; client_secret?: string; user_id?: string };
+  const body = (await req.json().catch(() => ({}))) as { action?: string; return_to?: string; client_id?: string; client_secret?: string; user_id?: string; template?: string; subject?: string; email_body?: string };
   const sb = assertServiceRoleClient();
 
   try {
@@ -167,13 +167,24 @@ serve(async (req) => {
     }
 
     if (body.action === "test") {
-      // An example invoice email to myself, so the wording and the sender can be checked.
+      // An example email to myself, so the wording and the sender can be checked.
+      // template: which one (usual, intro, reminder); subject/email_body: the text as
+      // it stands in the settings form, so unsaved edits can be tried before saving.
       const box = await mailboxFor(sb, userId);
       if (!box) return json({ ok: false, error: "Connect your Gmail first." }, 409);
       const s = await loadInvoicing(sb);
+      const saved = body.template === "intro"
+        ? { subject: s.intro_subject, body: s.intro_body }
+        : body.template === "reminder"
+          ? { subject: s.reminder_subject, body: s.reminder_body }
+          : { subject: s.subject, body: s.body };
+      const draft = {
+        subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.slice(0, 300) : saved.subject,
+        body: typeof body.email_body === "string" && body.email_body.trim() ? body.email_body.slice(0, 10_000) : saved.body,
+      };
       const { data: prof } = await sb.from("profiles").select("name").eq("id", userId).maybeSingle();
       const name = String((prof as { name?: string } | null)?.name ?? "").trim();
-      const email = renderInvoiceEmail(s, {
+      const email = renderInvoiceEmail(draft, {
         first_name: name.split(/\s+/)[0] || "there",
         company: "Example Brand",
         proposal_title: "Website retainer",
@@ -183,7 +194,7 @@ serve(async (req) => {
         pay_link: "https://in.xero.com/example",
         sender_first_name: name.split(/\s+/)[0] || "ECD Digital Strategy",
       });
-      await sendAsPerson(sb, box, { fromName: name || null, to: [box.email], subject: `[Test] ${email.subject}`, html: email.html, text: email.text });
+      await sendAsPerson(sb, box, { fromName: name || null, to: [box.email], subject: `[Test${body.template === "intro" ? ", intro" : body.template === "reminder" ? ", client reminder" : ""}] ${email.subject}`, html: email.html, text: email.text });
       return json({ ok: true, to: box.email });
     }
 

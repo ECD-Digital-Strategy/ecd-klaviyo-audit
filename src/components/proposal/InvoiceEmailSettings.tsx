@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, BellRing, CheckCircle2, Copy, KeyRound, Loader2, Mail, Plus, Receipt, Send } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, KeyRound, Loader2, Mail, Plus, Receipt, Send } from 'lucide-react';
 import { useToast } from '../ui/Toast';
 import SettingsCard from '../ui/SettingsCard';
-import { ToggleRow } from '../ui/ToggleSwitch';
+import ToggleSwitch, { ToggleRow } from '../ui/ToggleSwitch';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import {
   connectGmail,
   disconnectGmail,
   getGmailStatus,
-  saveGoogleClient,
   sendGmailTest,
   type GmailConnection,
   type GmailStatus,
@@ -102,10 +101,17 @@ export default function InvoiceEmailSettings({
       icon={<Receipt className="h-4 w-4" />}
       title="Invoice emails"
       description="When a client signs, their implementation invoice is emailed to them from the Gmail of whoever is picked on the proposal, with the PDF and the pay link. Monthly invoices stay drafts in Xero."
-      badge={
-        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.auto_send ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-          {value.auto_send ? 'Sending on' : 'Sending off'}
-        </span>
+      control={
+        <>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.auto_send ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+            {value.auto_send ? 'Sending on' : 'Sending off'}
+          </span>
+          <ToggleSwitch
+            checked={value.auto_send}
+            onChange={v => set({ auto_send: v })}
+            aria-label="Email the invoice to the client when they sign"
+          />
+        </>
       }
       collapsible
       defaultOpen
@@ -151,7 +157,7 @@ export default function InvoiceEmailSettings({
             ) : !status.configured ? (
               <div className="flex items-center gap-2 rounded-lg border border-dashed border-gray-200 px-4 py-3 text-sm text-gray-500">
                 <KeyRound className="h-4 w-4 text-gray-400" />
-                Google sign-in isn&apos;t set up yet{status.is_admin ? '. Add it below.' : '. An admin needs to add it first.'}
+                Google sign-in isn&apos;t set up yet{status.is_admin ? '. Add it under Settings, API Connection.' : '. An admin needs to add it first.'}
               </div>
             ) : status.connections.length === 0 ? (
               <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center">
@@ -167,7 +173,7 @@ export default function InvoiceEmailSettings({
                     connection={c}
                     canRemove={c.is_me || status.is_admin}
                     busy={busy}
-                    onTest={() => run('test', sendGmailTest, `Test sent to ${c.email}`)}
+                    onTest={() => run('test', () => sendGmailTest(), `Test sent to ${c.email}`)}
                     onReconnect={() => run('connect', connectGmail)}
                     onRemove={() => {
                       const msg = c.is_me
@@ -184,13 +190,6 @@ export default function InvoiceEmailSettings({
 
         {/* 2. Sending */}
         <div className="space-y-5 p-5">
-          <ToggleRow
-            title="Email the invoice to the client when they sign"
-            description="The implementation invoice goes out as if its sender wrote it, with the PDF and the pay link. Monthly invoices stay drafts for Maria."
-            checked={value.auto_send}
-            onChange={v => set({ auto_send: v })}
-          />
-
           {/* Who it comes from, as agreed with Isa (2026-11-02). */}
           <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-4">
             <p className="text-xs font-semibold text-gray-700">Who it comes from</p>
@@ -253,6 +252,8 @@ export default function InvoiceEmailSettings({
               { key: 'intro', label: 'Intro email (fallback sender)', hint: 'When it comes from the fallback sender, who the client may not know.', subject: value.intro_subject, body: value.intro_body, onSubject: v => set({ intro_subject: v }), onBody: v => set({ intro_body: v }) },
             ]}
             inputClass={wide}
+            canTest={Boolean(status?.mine)}
+            testDisabledReason="Connect your Gmail above to send yourself a test"
           />
         </div>
 
@@ -319,6 +320,8 @@ export default function InvoiceEmailSettings({
                 <TemplateEditor
                   tabs={[{ key: 'reminder', label: 'Client reminder', hint: 'Sent to the client.', subject: value.reminder_subject, body: value.reminder_body, onSubject: v => set({ reminder_subject: v }), onBody: v => set({ reminder_body: v }) }]}
                   inputClass={wide}
+                  canTest={Boolean(status?.mine)}
+                  testDisabledReason="Connect your Gmail above to send yourself a test"
                 />
               </div>
             )}
@@ -326,7 +329,6 @@ export default function InvoiceEmailSettings({
         </div>
 
         {/* 4. Google app, admins only */}
-        {status?.is_admin && <GoogleClientSetup status={status} busy={busy} run={run} />}
       </div>
     </SettingsCard>
   );
@@ -343,8 +345,21 @@ type TemplateTab = {
 };
 
 /** Subject and body of one or more emails, a tab each. */
-function TemplateEditor({ tabs, inputClass }: { tabs: TemplateTab[]; inputClass: string }) {
+function TemplateEditor({
+  tabs,
+  inputClass,
+  canTest,
+  testDisabledReason,
+}: {
+  tabs: TemplateTab[];
+  inputClass: string;
+  /** Whether your own Gmail is connected, so a test can go out. */
+  canTest: boolean;
+  testDisabledReason?: string;
+}) {
+  const toast = useToast();
   const [active, setActive] = useState(tabs[0].key);
+  const [testing, setTesting] = useState(false);
   const tab = tabs.find(t => t.key === active) ?? tabs[0];
   return (
     <div>
@@ -373,7 +388,28 @@ function TemplateEditor({ tabs, inputClass }: { tabs: TemplateTab[]; inputClass:
           <code key={p} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{`{${p}}`}</code>
         ))}
       </div>
-      <p className="mt-1 text-[11px] text-gray-400">The sender&apos;s Gmail signature isn&apos;t added, so sign off in the text.</p>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] text-gray-400">The sender&apos;s Gmail signature isn&apos;t added, so sign off in the text.</p>
+        <button
+          type="button"
+          disabled={!canTest || testing}
+          title={canTest ? 'Sends this email, as it stands now, to your own inbox from your Gmail, with example values' : testDisabledReason}
+          onClick={async () => {
+            setTesting(true);
+            try {
+              const r = await sendGmailTest({ template: tab.key as 'usual' | 'intro' | 'reminder', subject: tab.subject, body: tab.body });
+              toast(`Test of the ${tab.label.toLowerCase()} sent to ${r.to}`);
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Could not send the test');
+            } finally {
+              setTesting(false);
+            }
+          }}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send me a test
+        </button>
+      </div>
     </div>
   );
 }
@@ -448,100 +484,5 @@ function ConnectionRow({
         )}
       </div>
     </li>
-  );
-}
-
-function GoogleClientSetup({
-  status,
-  busy,
-  run,
-}: {
-  status: GmailStatus;
-  busy: string | null;
-  run: (label: string, fn: () => Promise<unknown>, done?: string) => Promise<void>;
-}) {
-  const toast = useToast();
-  const [editing, setEditing] = useState(!status.configured);
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-
-  return (
-    <div className="bg-gray-50/50 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-            Google sign-in
-            {status.configured ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-                <CheckCircle2 className="h-3 w-3" /> Set up
-              </span>
-            ) : (
-              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">Not set up</span>
-            )}
-            <span className="text-[11px] font-normal text-gray-400">Admins only</span>
-          </h4>
-          <p className="mt-0.5 text-xs text-gray-500">
-            {status.configured
-              ? 'The Google app that "Connect my Gmail" signs in through.'
-              : 'A Google Cloud OAuth client (Web application, Internal, Gmail API on) so people can connect their Gmail.'}
-          </p>
-          {status.configured && status.client_id_hint && (
-            <p className="mt-1.5 font-mono text-[11px] text-gray-500">Client ID {status.client_id_hint}</p>
-          )}
-        </div>
-        {status.configured && !editing && (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Replace credentials
-          </button>
-        )}
-      </div>
-
-      {editing && (
-        <div className="mt-4 space-y-3">
-          <div>
-            <p className="text-[11px] text-gray-500">Authorised redirect URI to add on the Google client:</p>
-            <div className="mt-1 flex max-w-xl items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5">
-              <code className="min-w-0 flex-1 truncate text-[11px] text-gray-700">{status.redirect_uri}</code>
-              <button
-                type="button"
-                onClick={() => { void navigator.clipboard.writeText(status.redirect_uri); toast('Copied'); }}
-                className="shrink-0 text-gray-400 hover:text-brand-primary"
-                title="Copy"
-              >
-                <Copy className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-          <form
-            className="grid max-w-xl gap-2 sm:grid-cols-2"
-            onSubmit={e => {
-              e.preventDefault();
-              void run('client', async () => {
-                await saveGoogleClient(clientId, clientSecret);
-                setClientId('');
-                setClientSecret('');
-                setEditing(false);
-              }, 'Google sign-in saved');
-            }}
-          >
-            <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="Client ID" className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20" />
-            <input value={clientSecret} onChange={e => setClientSecret(e.target.value)} type="password" autoComplete="off" placeholder="Client secret" className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20" />
-            <div className="flex items-center gap-3 sm:col-span-2">
-              <button type="submit" disabled={busy !== null || !clientId.trim() || !clientSecret.trim()} className="rounded-lg gradient-bg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
-                {busy === 'client' ? 'Saving…' : 'Save credentials'}
-              </button>
-              {status.configured && (
-                <button type="button" onClick={() => setEditing(false)} className="text-xs text-gray-500 hover:text-gray-800">Cancel</button>
-              )}
-              <span className="text-[11px] text-gray-400">Stored encrypted and never shown again.</span>
-            </div>
-          </form>
-        </div>
-      )}
-    </div>
   );
 }

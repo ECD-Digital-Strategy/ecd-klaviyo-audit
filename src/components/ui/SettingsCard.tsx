@@ -13,6 +13,7 @@ export default function SettingsCard({
   description,
   badge,
   action,
+  control,
   collapsible = false,
   defaultOpen = true,
   storageKey,
@@ -25,6 +26,8 @@ export default function SettingsCard({
   badge?: ReactNode;
   /** A button on the right of the header; shown only while open. */
   action?: ReactNode;
+  /** A control on the right of the header, shown open or folded (e.g. an on/off switch). */
+  control?: ReactNode;
   collapsible?: boolean;
   defaultOpen?: boolean;
   storageKey?: string;
@@ -78,6 +81,7 @@ export default function SettingsCard({
           <div className="flex min-w-0 flex-1 items-center gap-3">{heading}</div>
         )}
         {open && action}
+        {control && <div className="flex shrink-0 items-center gap-2">{control}</div>}
       </div>
       {open && children}
     </section>

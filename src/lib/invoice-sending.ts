@@ -46,7 +46,11 @@ async function call<T>(fn: string, body: Record<string, unknown>): Promise<T> {
 export const getGmailStatus = () => call<GmailStatus>('gmail_connect', { action: 'status' });
 /** Your own Gmail, or (admins) someone else's. */
 export const disconnectGmail = (userId?: string) => call<void>('gmail_connect', { action: 'disconnect', user_id: userId });
-export const sendGmailTest = () => call<{ to: string }>('gmail_connect', { action: 'test' });
+/** An example email to yourself from your Gmail: the usual email, the intro email
+ * (fallback sender) or the client reminder, using the text as it stands in the
+ * form (unsaved edits included) when given. */
+export const sendGmailTest = (opts: { template?: 'usual' | 'intro' | 'reminder'; subject?: string; body?: string } = {}) =>
+  call<{ to: string }>('gmail_connect', { action: 'test', template: opts.template, subject: opts.subject, email_body: opts.body });
 export const saveGoogleClient = (clientId: string, clientSecret: string) =>
   call<void>('gmail_connect', { action: 'save_client', client_id: clientId, client_secret: clientSecret });
 
