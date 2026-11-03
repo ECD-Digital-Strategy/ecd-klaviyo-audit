@@ -111,6 +111,10 @@ function YearPicker({
 }
 
 /**
+ * /proposals?ask=<text> opens a new AI Assistant chat with that request written in the composer, unsent: Titan's
+ * "Draft the proposal" on a Pitched opportunity in the Client Tracker (Isa's brief 5.6, Nov 3). The person reads it,
+ * changes what they like and sends it; nothing is created until Apply.
+ *
  * /proposals?chat=<id> opens that AI Assistant chat. It is the link Claude
  * hands over after drafting a proposal through the ECD Hub connector in
  * Athena (Emil, 2026-10-27): the draft waits here as an ordinary draft card,
@@ -120,8 +124,20 @@ function YearPicker({
  */
 function OpenChatFromLink() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { open, selectConversation } = useProposalAgent();
+  const { open, selectConversation, resetChat, setPrefill } = useProposalAgent();
   const chat = searchParams.get('chat');
+  const ask = searchParams.get('ask');
+  useEffect(() => {
+    if (!ask) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('ask');
+    setSearchParams(next, { replace: true });
+    const text = ask.trim().slice(0, 4000);
+    if (!text) return;
+    resetChat();
+    open();
+    setPrefill(text);
+  }, [ask, searchParams, setSearchParams, open, resetChat, setPrefill]);
   useEffect(() => {
     if (!chat) return;
     const next = new URLSearchParams(searchParams);

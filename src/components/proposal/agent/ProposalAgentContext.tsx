@@ -77,6 +77,9 @@ type ProposalAgentContextValue = {
   closeHistory: () => void;
   selectConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
+  /** Text to put in the composer, unsent (a link such as Titan's ?ask=); the panel takes it and clears it. */
+  prefill: string | null;
+  setPrefill: (text: string | null) => void;
 };
 
 const ProposalAgentContext = createContext<ProposalAgentContextValue | null>(null);
@@ -304,6 +307,8 @@ export function ProposalAgentProvider({
     [applyingMessageId, conversationId],
   );
 
+  const [prefill, setPrefill] = useState<string | null>(null);
+
   const value = useMemo<ProposalAgentContextValue>(
     () => ({
       isOpen,
@@ -330,6 +335,8 @@ export function ProposalAgentProvider({
       closeHistory,
       selectConversation,
       deleteConversation,
+      prefill,
+      setPrefill,
     }),
     [
       isOpen,
@@ -351,6 +358,7 @@ export function ProposalAgentProvider({
       closeHistory,
       selectConversation,
       deleteConversation,
+      prefill,
     ],
   );
 
