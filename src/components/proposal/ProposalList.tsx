@@ -49,20 +49,29 @@ function isClosedProposal(proposal: Proposal): boolean {
   return proposal.status === 'won' || proposal.status === 'lost';
 }
 
-function proposalValueSummary(proposal: Proposal): string {
+/**
+ * The Value cell: the one-time total on top and the monthly total under it, so
+ * the column stays narrow (2026-11-03: "See line items + See items/mo" on one
+ * line pushed the table wider than the card). Lines priced only by a label
+ * ("from $X") read "See line items", once.
+ */
+function proposalValueSummary(proposal: Proposal): { main: string; sub: string | null } {
   const items = proposal.line_items ?? [];
-  if (items.length === 0) return '—';
+  if (items.length === 0) return { main: '—', sub: null };
   const totals = computeProposalTotals(items, proposalDiscountFromRow(proposal));
-  const parts: string[] = [];
-  if (totals.oneTimeTotal > 0 || totals.oneTimeHasLabelOnly) {
-    parts.push(formatProposalTotal(totals.oneTimeTotal, totals.oneTimeHasLabelOnly));
-  }
-  if (totals.monthlyTotal > 0) {
-    parts.push(`${formatCurrency(totals.monthlyTotal)}/mo`);
-  } else if (totals.monthlyHasLabelOnly) {
-    parts.push('See items/mo');
-  }
-  return parts.length ? parts.join(' + ') : '—';
+  const oneTime = totals.oneTimeTotal > 0 || totals.oneTimeHasLabelOnly
+    ? formatProposalTotal(totals.oneTimeTotal, totals.oneTimeHasLabelOnly)
+    : null;
+  const monthly = totals.monthlyTotal > 0
+    ? `${formatCurrency(totals.monthlyTotal)}/mo`
+    : totals.monthlyHasLabelOnly
+      ? 'monthly, see line items'
+      : null;
+  if (oneTime === 'See line items' && monthly === 'monthly, see line items') return { main: 'See line items', sub: 'one-time and monthly' };
+  if (oneTime && monthly) return { main: oneTime, sub: `+ ${monthly}` };
+  if (oneTime) return { main: oneTime, sub: null };
+  if (monthly) return { main: monthly === 'monthly, see line items' ? 'See line items' : monthly, sub: monthly === 'monthly, see line items' ? 'monthly' : null };
+  return { main: '—', sub: null };
 }
 
 /** Countdown to expiry, with the exact end-of-day date in a branded tooltip.
@@ -371,8 +380,8 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
           action={proposals.length === 0 ? emptyAction : undefined}
         />
       ) : (
-        <div className="bg-white rounded-xl card-shadow overflow-hidden">
-          <table className="w-full">
+        <div className="bg-white rounded-xl card-shadow overflow-x-auto">
+          <table className="w-full min-w-[880px]">
             <thead>
               <tr className="bg-gray-50">
                 <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Proposal</th>
@@ -394,7 +403,7 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                     className="hover:bg-gray-50/50 cursor-pointer transition-colors"
                   >
                     <td className="px-6 py-4">
-                      <p className="text-sm font-medium text-gray-900 truncate">
+                      <p className="max-w-[26rem] truncate text-sm font-medium text-gray-900" title={proposal.title || undefined}>
                         {proposal.title || 'Untitled proposal'}
                       </p>
                       <p className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
@@ -404,15 +413,21 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <SiteFavicon url={proposal.client?.website_url} />
-                        <span className="text-sm text-gray-600 truncate">
+                        <span className="max-w-[12rem] truncate text-sm text-gray-600" title={proposal.client?.company_name || undefined}>
                           {proposal.client?.company_name || 'Unknown'}
                         </span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">
-                        {proposalValueSummary(proposal)}
-                      </span>
+                      {(() => {
+                        const value = proposalValueSummary(proposal);
+                        return (
+                          <>
+                            <p className="whitespace-nowrap text-sm font-semibold text-gray-900">{value.main}</p>
+                            {value.sub && <p className="mt-0.5 whitespace-nowrap text-[11px] text-gray-500">{value.sub}</p>}
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4">
                       <StatusBadge status={displayStatus} />
