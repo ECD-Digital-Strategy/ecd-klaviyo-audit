@@ -36,7 +36,7 @@ export default function Login() {
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md">
           <div className="mb-8">
-            <ReportBrandMark size="md" subtitle="Klaviyo Audit Platform" />
+            <ReportBrandMark size="md" subtitle="Audits, Proposals & Documents" />
           </div>
 
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Sign in</h2>
@@ -101,17 +101,17 @@ export default function Login() {
 
       <div className="hidden lg:flex flex-1 gradient-bg items-center justify-center p-12">
         <div className="max-w-md text-white">
-          <h2 className="text-3xl font-bold mb-4">Professional Klaviyo Audits</h2>
+          <h2 className="text-3xl font-bold mb-4">Everything from audit to signature</h2>
           <p className="text-white/80 text-lg mb-8">
-            Run strategic email audits, uncover revenue opportunities, and deliver
-            polished reports that convert prospects into clients.
+            Audit a client&apos;s Klaviyo or website, turn what you find into a proposal,
+            and get it signed, all in one place.
           </p>
           <div className="space-y-4">
             {[
-              'AI-powered audit analysis',
-              'Side-by-side visual comparisons',
-              'Revenue opportunity calculator',
-              'Shareable client-facing reports',
+              'Klaviyo audits with AI analysis and revenue opportunities',
+              'Website audits of every page, on desktop and mobile',
+              'Proposals that clients review and sign online',
+              'Documents with built-in e-signatures',
             ].map((item, i) => (
               <div key={i} className="flex items-center gap-3">
                 <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center">

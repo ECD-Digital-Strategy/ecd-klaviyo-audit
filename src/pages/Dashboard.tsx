@@ -8,7 +8,6 @@ import {
   Plus,
   UserPlus,
   ArrowRight,
-  Clock,
 } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import KPICard from '../components/ui/KPICard';
@@ -72,7 +71,6 @@ export default function Dashboard() {
   const clientById = useMemo(() => new Map(clients.map(c => [c.id, c])), [clients]);
 
   const totalAudits = audits.length;
-  const inReview = audits.filter(a => a.status === 'in_review').length;
   const published = audits.filter(a => a.status === 'published').length;
   const totalRevOpp = audits.reduce((s, a) => s + a.total_revenue_opportunity, 0);
   const openPipelineValue = proposals.filter(isProposalOpen).reduce((sum, p) => sum + proposalValue(p), 0);
@@ -87,13 +85,12 @@ export default function Dashboard() {
         ) : (showAudits || showProposals) && (
           <div
             className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${
-              showAudits && showProposals ? 'lg:grid-cols-5' : showAudits ? 'lg:grid-cols-4' : 'lg:grid-cols-1 sm:grid-cols-1 max-w-sm'
+              showAudits && showProposals ? 'lg:grid-cols-4' : showAudits ? 'lg:grid-cols-3' : 'lg:grid-cols-1 sm:grid-cols-1 max-w-sm'
             }`}
           >
             {showAudits && (
               <>
                 <KPICard icon={ClipboardCheck} label="Total Audits" value={totalAudits} accent="primary" />
-                <KPICard icon={Clock} label="Audits in Review" value={inReview} accent="warning" />
                 <KPICard icon={FileText} label="Audits Published" value={published} accent="success" />
                 <KPICard icon={TrendingUp} label="Revenue Identified" value={formatCurrency(totalRevOpp)} accent="secondary" />
               </>
