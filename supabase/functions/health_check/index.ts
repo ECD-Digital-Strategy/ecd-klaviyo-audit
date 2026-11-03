@@ -60,6 +60,10 @@ async function checkScheduledJobs(sb: ReturnType<typeof assertServiceRoleClient>
     });
   }
   for (const c of s.failed_calls ?? []) {
+    // One failed call is a blip (2026-11-03: during a Supabase slowdown the health
+    // check could not read its own secret and refused itself once, which read as
+    // "a key is stale"). A stale key or a real outage fails every run, so it repeats.
+    if (c.count < 2) continue;
     const what = c.timed_out ? "timed out" : c.status ? `returned ${c.status}` : "got no answer";
     const auth = c.status === 401 || c.status === 403;
     issues.push({
