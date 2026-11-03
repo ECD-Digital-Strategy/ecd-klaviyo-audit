@@ -384,13 +384,13 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
           <table className="w-full min-w-[880px]">
             <thead>
               <tr className="bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Proposal</th>
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Client</th>
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Value</th>
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Expires</th>
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-6 py-3">Updated</th>
-                <th className="px-6 py-3"></th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Proposal</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Client</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Value</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Status</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Expires</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide px-5 py-3">Updated</th>
+                <th className="px-5 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
@@ -402,15 +402,16 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                     {...rowNavProps(`/proposals/${proposal.id}`, navigate)}
                     className="hover:bg-gray-50/50 cursor-pointer transition-colors"
                   >
-                    <td className="px-6 py-4">
-                      <p className="max-w-[26rem] truncate text-sm font-medium text-gray-900" title={proposal.title || undefined}>
+                    {/* w-full + max-w-0: this column takes whatever width is left and truncates, so the table never outgrows the card. */}
+                    <td className="w-full max-w-0 px-5 py-4">
+                      <p className="truncate text-sm font-medium text-gray-900" title={proposal.title || undefined}>
                         {proposal.title || 'Untitled proposal'}
                       </p>
                       <p className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
                         ECD-{String(proposal.proposal_number).padStart(4, '0')}
                       </p>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="whitespace-nowrap px-5 py-4">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <SiteFavicon url={proposal.client?.website_url} />
                         <span className="max-w-[12rem] truncate text-sm text-gray-600" title={proposal.client?.company_name || undefined}>
@@ -418,7 +419,7 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="whitespace-nowrap px-5 py-4">
                       {(() => {
                         const value = proposalValueSummary(proposal);
                         return (
@@ -429,16 +430,16 @@ export default function ProposalList({ proposals, onDeleted, onUpdated, emptyAct
                         );
                       })()}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="whitespace-nowrap px-5 py-4">
                       <StatusBadge status={displayStatus} />
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="whitespace-nowrap px-5 py-4">
                       <ProposalExpiryCell proposal={proposal} validDays={validDays} />
                     </td>
-                    <td className="px-6 py-4 text-xs text-gray-400">
+                    <td className="whitespace-nowrap px-5 py-4 text-xs text-gray-400">
                       {new Date(proposal.updated_at).toLocaleDateString()}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="whitespace-nowrap px-5 py-4">
                       <div className="flex items-center justify-end">
                         <button
                           type="button"
