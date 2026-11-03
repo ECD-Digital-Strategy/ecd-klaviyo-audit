@@ -458,9 +458,20 @@ export default function ProposalAgentPanel({
     conversationId,
     selectConversation,
     deleteConversation,
+    prefill,
+    setPrefill,
   } = useProposalAgent();
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // A request handed over by a link (Titan's "Draft the proposal"): into the composer, unsent, for the person to
+  // read, change and send.
+  useEffect(() => {
+    if (!prefill || !isOpen) return;
+    setInput(prefill);
+    setPrefill(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [prefill, isOpen, setPrefill]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Files the user has attached to the next message (PDFs). Each starts
