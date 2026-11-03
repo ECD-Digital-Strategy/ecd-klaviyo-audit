@@ -125,17 +125,32 @@ export async function generateVoiceProfile(domain: 'proposal' | 'document'): Pro
   return String(data.voice_profile ?? '');
 }
 
-export async function getProposalSettings(): Promise<ProposalSettings> {
-  const { data, error } = await supabase
-    .from('platform_settings')
-    .select('proposal_settings')
-    .eq('id', 'default')
-    .maybeSingle();
-  if (error || !data) return DEFAULT_PROPOSAL_SETTINGS;
-  return mergeProposalSettings(data.proposal_settings);
+// One request shared by everything on a page (2026-11-03: a proposal page asked
+// for these settings four times). Kept for 30 seconds; saving clears it. A failed
+// read is not kept, so the next caller tries again.
+let settingsCache: { at: number; value: Promise<ProposalSettings> } | null = null;
+const SETTINGS_TTL_MS = 30_000;
+
+export function getProposalSettings(): Promise<ProposalSettings> {
+  if (settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL_MS) return settingsCache.value;
+  const value = (async () => {
+    const { data, error } = await supabase
+      .from('platform_settings')
+      .select('proposal_settings')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (error || !data) {
+      settingsCache = null;
+      return DEFAULT_PROPOSAL_SETTINGS;
+    }
+    return mergeProposalSettings(data.proposal_settings);
+  })();
+  settingsCache = { at: Date.now(), value };
+  return value;
 }
 
 export async function updateProposalSettings(settings: ProposalSettings): Promise<void> {
+  settingsCache = null;
   const { error } = await supabase
     .from('platform_settings')
     .update({ proposal_settings: settings, updated_at: new Date().toISOString() })
