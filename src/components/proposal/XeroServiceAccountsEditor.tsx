@@ -2,9 +2,6 @@ import { useEffect, useState } from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import { useToast } from '../ui/Toast';
-import { listRevenueOpportunityTemplates } from '../../lib/db';
-import XeroLineItemMapping from './XeroLineItemMapping';
-import type { RevenueOpportunityTemplate } from '../../lib/types';
 import {
   deleteXeroServiceAccount,
   listXeroServiceAccounts,
@@ -63,29 +60,18 @@ const slugify = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/
  * the shared MRR account, unless a service needs its own, which is what the
  * second column is for.
  */
-export default function XeroServiceAccountsEditor({
-  accounts,
-  mrrAccountCode,
-}: {
-  accounts: XeroAccount[];
-  /** Shown as the resolved monthly account for buckets without an override. */
-  mrrAccountCode: string | null;
-}) {
+export default function XeroServiceAccountsEditor({ accounts }: { accounts: XeroAccount[] }) {
   const toast = useToast();
   const [rows, setRows] = useState<XeroServiceAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [catalog, setCatalog] = useState<RevenueOpportunityTemplate[]>([]);
 
   useEffect(() => {
     listXeroServiceAccounts()
       .then(setRows)
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-    // Best effort: the row still works without the catalog, it just cannot show
-    // which services feed the bucket.
-    listRevenueOpportunityTemplates().then(setCatalog).catch(() => {});
   }, []);
 
 
@@ -232,14 +218,9 @@ export default function XeroServiceAccountsEditor({
         </div>
       )}
 
-      <XeroLineItemMapping
-        templates={catalog}
-        services={rows.filter(r => r.service_key)}
-        mrrAccountCode={mrrAccountCode}
-        onChanged={(slug, key) =>
-          setCatalog(prev => prev.map(t => (t.slug === slug ? { ...t, xero_service_key: key } : t)))
-        }
-      />
+      {/* Which bucket each service belongs to is set once, in the Line Item Catalog
+          (2026-11-03: it was here as well, the same field twice). */}
+      <p className="mt-3 text-[11px] text-gray-400">Each service's bucket and Xero Items are set in the Line Item Catalog.</p>
     </div>
   );
 }

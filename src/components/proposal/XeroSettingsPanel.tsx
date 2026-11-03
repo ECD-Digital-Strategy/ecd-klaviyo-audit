@@ -184,7 +184,7 @@ export default function XeroSettingsPanel() {
       )}
 
       <div className="mt-4">
-        <XeroServiceAccountsEditor accounts={accounts} mrrAccountCode={status?.mrr_account_code ?? null} />
+        <XeroServiceAccountsEditor accounts={accounts} />
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
