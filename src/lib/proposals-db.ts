@@ -145,6 +145,20 @@ export async function updateProposalSettings(settings: ProposalSettings): Promis
 
 const PROPOSAL_LIST_SELECT = '*, client:clients(*), line_items:proposal_line_items(*)';
 
+/** For lists (Proposals, Dashboard, a client's page): everything but the page
+ * content and the signed contracts' text, which only the proposal page needs.
+ * Those two were 1.6 of the list's 1.7 MB (2026-11-03: "the platform is slow").
+ * mapProposalRow fills them with empty defaults. */
+const PROPOSAL_SUMMARY_SELECT = [
+  'id', 'proposal_number', 'client_id', 'audit_id', 'template_id', 'title', 'status', 'cover', 'include_contracts',
+  'discount_type', 'discount_value', 'discount_applies_to', 'discount_label', 'recipient_name', 'recipient_email',
+  'public_token', 'valid_until', 'sent_at', 'first_viewed_at', 'client_signed_at', 'countersigned_at', 'won_at',
+  'lost_at', 'lost_reason', 'created_by', 'created_at', 'updated_at', 'recipient2_name', 'recipient2_email',
+  'public_token2', 'xero_invoice_id', 'xero_invoice_number', 'xero_invoiced_at', 'xero_invoice_error', 'sent_by',
+  'xero_invoices', 'invoice_sender_id',
+  'client:clients(*)', 'line_items:proposal_line_items(*)',
+].join(',');
+
 function mapProposalRow(row: Record<string, unknown>): Proposal {
   return {
     ...(row as unknown as Proposal),
@@ -181,20 +195,20 @@ function mapLineItemRow(row: Record<string, unknown>): ProposalLineItem {
 export async function listProposals(): Promise<Proposal[]> {
   const { data, error } = await supabase
     .from('proposals')
-    .select(PROPOSAL_LIST_SELECT)
+    .select(PROPOSAL_SUMMARY_SELECT)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []).map(mapProposalRow);
+  return (data ?? []).map(r => mapProposalRow(r as unknown as Record<string, unknown>));
 }
 
 export async function listProposalsByClient(clientId: string): Promise<Proposal[]> {
   const { data, error } = await supabase
     .from('proposals')
-    .select(PROPOSAL_LIST_SELECT)
+    .select(PROPOSAL_SUMMARY_SELECT)
     .eq('client_id', clientId)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []).map(mapProposalRow);
+  return (data ?? []).map(r => mapProposalRow(r as unknown as Record<string, unknown>));
 }
 
 export async function getProposal(id: string): Promise<Proposal | null> {
