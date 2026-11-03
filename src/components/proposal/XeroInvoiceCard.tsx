@@ -7,7 +7,7 @@ import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
 import { useToast } from '../ui/Toast';
-import type { Proposal, ProposalLineItem } from '../../lib/types';
+import type { InvoicingSettings, Proposal, ProposalLineItem } from '../../lib/types';
 
 const KIND_LABEL = { one_time: 'Implementation', monthly: 'First month of the retainer' } as const;
 
@@ -30,11 +30,13 @@ export default function XeroInvoiceCard({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  // Invoice emails (Proposal settings): off until switched on.
-  const [autoSend, setAutoSend] = useState(false);
+  // Invoice emails (Proposal settings): off until switched on. The card says what
+  // actually happened, so nobody sends an invoice twice or not at all.
+  const [invoicing, setInvoicing] = useState<InvoicingSettings | null>(null);
   useEffect(() => {
-    getProposalSettings().then(s => setAutoSend(s.invoicing.auto_send), () => setAutoSend(false));
+    getProposalSettings().then(s => setInvoicing(s.invoicing), () => setInvoicing(null));
   }, []);
+  const autoSend = Boolean(invoicing?.auto_send);
 
   const create = async () => {
     setBusy(true);
@@ -70,7 +72,8 @@ export default function XeroInvoiceCard({
             <li key={inv.id}>
               <p className="text-sm font-medium text-gray-900">
                 {invoices.length > 1 || inv.kind === 'monthly' ? `${KIND_LABEL[inv.kind]}: ` : ''}
-                {inv.status === 'AUTHORISED' ? 'approved' : 'draft'} {inv.number ? `#${inv.number}` : 'created'}
+                {inv.paid_at ? 'paid' : inv.emailed_at ? 'sent to the client' : inv.status === 'AUTHORISED' ? 'approved' : 'draft'}{' '}
+                {inv.number ? `#${inv.number}` : 'created'}
               </p>
               {inv.date && (
                 <p className="text-[11px] text-gray-400">
@@ -86,19 +89,14 @@ export default function XeroInvoiceCard({
               >
                 Open in Xero <ExternalLink className="h-3.5 w-3.5" />
               </a>
-              {inv.online_url && <PaymentLink url={inv.online_url} />}
+              {inv.online_url && <PaymentLink url={inv.online_url} alreadySent={Boolean(inv.emailed_at)} />}
               {inv.kind === 'one_time' && inv.online_url && (
                 <InvoiceEmailStatus proposalId={proposal.id} invoice={inv} canEmail={autoSend} onChanged={onChanged} />
               )}
             </li>
           ))}
-          <li className="text-[11px] text-gray-400">
-            {invoices.some(i => i.emailed_at)
-              ? 'The implementation invoice was emailed to the client.'
-              : 'Nothing has been emailed to the client.'}
-            {invoices.some(i => i.online_url && !i.emailed_at) ? ' Share the payment link with them; whoever sent the proposal was emailed it too.' : ''}
-            {invoices.some(i => i.status !== 'AUTHORISED') ? ' Drafts are approved and sent from Xero.' : ''}
-            {invoices.some(i => i.kind === 'monthly') ? ' The retainer\'s repeating invoice is set up in Xero from the first month.' : ''}
+          <li>
+            <InvoiceNotes invoices={invoices} invoicing={invoicing} />
           </li>
         </ul>
       )}
@@ -138,6 +136,60 @@ export default function XeroInvoiceCard({
 }
 
 type InvoiceEntry = NonNullable<Proposal['xero_invoices']>[number];
+
+/**
+ * What happened to each invoice and who does what next, in plain words
+ * (2026-11-03: "make sure this is reflected when we turn on the auto sending").
+ * Before invoice emails are switched on, and for invoices made before, it reads
+ * as it always did: share the payment link by hand.
+ */
+function InvoiceNotes({ invoices, invoicing }: { invoices: InvoiceEntry[]; invoicing: InvoicingSettings | null }) {
+  const oneTime = invoices.filter(i => i.kind === 'one_time' && i.online_url);
+  const emailed = oneTime.filter(i => i.emailed_at);
+  const notEmailed = oneTime.filter(i => !i.emailed_at);
+  const drafts = invoices.filter(i => i.status !== 'AUTHORISED' && !i.paid_at);
+  const monthly = invoices.some(i => i.kind === 'monthly');
+  const cc = invoicing?.cc_emails ?? [];
+  const lines: Array<{ text: string; tone?: 'ok' | 'warn' }> = [];
+
+  for (const inv of emailed) {
+    const who = inv.emailed_as_fallback ? `${inv.emailed_from} (with the intro email)` : inv.emailed_from;
+    lines.push({
+      tone: 'ok',
+      text: `Emailed to ${inv.emailed_to} from ${who} on ${day(inv.emailed_at!.slice(0, 10))}${cc.length ? `, ${cc.join(', ')} copied` : ''}. Nothing to send by hand.`,
+    });
+    if (!inv.paid_at && invoicing?.overdue_nudges) {
+      const who2 = invoicing.reminder_emails.length ? invoicing.reminder_emails.map(e => e.split('@')[0]).join(', ') : 'the team';
+      lines.push({
+        text: `If it's still unpaid ${invoicing.nudge_after_days} days after sending, ${who2} get a reminder${invoicing.client_reminders ? ', and the client a short one from the same address' : ''}.`,
+      });
+    }
+  }
+  for (const inv of notEmailed) {
+    if (invoicing?.auto_send && inv.email_error) {
+      lines.push({ tone: 'warn', text: `Not emailed automatically: ${inv.email_error} Use "Email it to the client" above, or share the payment link.` });
+    } else {
+      lines.push({ text: 'Not emailed to the client. Share the payment link with them; whoever sent the proposal was emailed it too.' });
+    }
+  }
+  if (drafts.length) {
+    lines.push({
+      text: monthly
+        ? "The first month of the retainer is a draft: Maria approves and sends it from Xero, and sets up the repeating invoice from it."
+        : 'Drafts are approved and sent from Xero.',
+    });
+  }
+
+  return (
+    <ul className="space-y-1.5 text-[11px] leading-relaxed">
+      {lines.map((l, i) => (
+        <li key={i} className={l.tone === 'ok' ? 'text-emerald-700' : l.tone === 'warn' ? 'text-amber-700' : 'text-gray-400'}>
+          {l.text}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /** Emailed, paid or overdue, from the invoice emails and the daily Xero check. */
 function InvoiceEmailStatus({
@@ -179,14 +231,11 @@ function InvoiceEmailStatus({
       ) : overdue ? (
         <p className="font-medium text-amber-700">Overdue since {day(inv.due_date)}{inv.last_nudge_at ? `, team reminded ${day(inv.last_nudge_at.slice(0, 10))}` : ''}</p>
       ) : null}
+      {/* Who it went to, or why it didn't, is in the notes under the invoices. */}
       {inv.emailed_at ? (
-        <p className="text-gray-500">
-          Emailed to {inv.emailed_to} from {inv.emailed_from}{inv.emailed_as_fallback ? ' (with the intro email)' : ''} on {day(inv.emailed_at.slice(0, 10))}
-          {inv.last_client_reminder_at ? `, client reminded ${day(inv.last_client_reminder_at.slice(0, 10))}` : ''}
-        </p>
+        inv.last_client_reminder_at ? <p className="text-gray-500">Client reminded {day(inv.last_client_reminder_at.slice(0, 10))}</p> : null
       ) : (
         <>
-          {inv.email_error && <p className="text-amber-700">Not emailed: {inv.email_error}</p>}
           {canEmail && (
             <button
               type="button"
@@ -325,7 +374,7 @@ function UncodedLines({
 }
 
 /** The link the client pays from: copy it to share, or open it. */
-function PaymentLink({ url }: { url: string }) {
+function PaymentLink({ url, alreadySent = false }: { url: string; alreadySent?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -338,7 +387,9 @@ function PaymentLink({ url }: { url: string }) {
   };
   return (
     <div className="mt-2 rounded-lg border border-brand-primary/20 bg-brand-primary/5 p-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-primary">Payment link</p>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-primary">
+        Payment link{alreadySent && <span className="ml-1 font-medium normal-case tracking-normal text-gray-500">· already in the client&apos;s email</span>}
+      </p>
       <p className="mt-0.5 truncate text-[11px] text-gray-600">{url.replace(/^https?:\/\//, '')}</p>
       <div className="mt-1.5 flex gap-1.5">
         <button
