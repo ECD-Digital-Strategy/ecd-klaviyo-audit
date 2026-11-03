@@ -9,6 +9,7 @@ import {
   disconnectGmail,
   getGmailStatus,
   sendGmailTest,
+  signatureNote,
   type GmailConnection,
   type GmailStatus,
 } from '../../lib/invoice-sending';
@@ -173,7 +174,7 @@ export default function InvoiceEmailSettings({
                     connection={c}
                     canRemove={c.is_me || status.is_admin}
                     busy={busy}
-                    onTest={() => run('test', () => sendGmailTest(), `Test sent to ${c.email}`)}
+                    onTest={() => run('test', async () => { const r = await sendGmailTest(); toast(`Test sent to ${c.email}, ${signatureNote(r.signature)}`); })}
                     onReconnect={() => run('connect', connectGmail)}
                     onRemove={() => {
                       const msg = c.is_me
@@ -389,7 +390,7 @@ function TemplateEditor({
         ))}
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11px] text-gray-400">The sender&apos;s Gmail signature isn&apos;t added, so sign off in the text.</p>
+        <p className="text-[11px] text-gray-400">The sender&apos;s own Gmail signature is added underneath automatically.</p>
         <button
           type="button"
           disabled={!canTest || testing}
@@ -398,7 +399,7 @@ function TemplateEditor({
             setTesting(true);
             try {
               const r = await sendGmailTest({ template: tab.key as 'usual' | 'intro' | 'reminder', subject: tab.subject, body: tab.body });
-              toast(`Test of the ${tab.label.toLowerCase()} sent to ${r.to}`);
+              toast(`Test of the ${tab.label.toLowerCase()} sent to ${r.to}, ${signatureNote(r.signature)}`);
             } catch (e) {
               toast(e instanceof Error ? e.message : 'Could not send the test');
             } finally {
@@ -470,6 +471,18 @@ function ConnectionRow({
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
             {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send me a test
+          </button>
+        )}
+        {/* Connected before the signature permission existed? One reconnect adds it. */}
+        {c.is_me && !needsReconnect && (
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={onReconnect}
+            title="Sign in with Google again, e.g. so your Gmail signature can be added"
+            className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:bg-gray-50 hover:text-gray-700 disabled:opacity-50"
+          >
+            Reconnect
           </button>
         )}
         {canRemove && (

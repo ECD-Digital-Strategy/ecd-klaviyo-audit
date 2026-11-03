@@ -50,7 +50,18 @@ export const disconnectGmail = (userId?: string) => call<void>('gmail_connect', 
  * (fallback sender) or the client reminder, using the text as it stands in the
  * form (unsaved edits included) when given. */
 export const sendGmailTest = (opts: { template?: 'usual' | 'intro' | 'reminder'; subject?: string; body?: string } = {}) =>
-  call<{ to: string }>('gmail_connect', { action: 'test', template: opts.template, subject: opts.subject, email_body: opts.body });
+  call<{ to: string; signature?: SignatureState }>('gmail_connect', { action: 'test', template: opts.template, subject: opts.subject, email_body: opts.body });
+
+/** Whether the sender's Gmail signature went under the email: added, none set in
+ * Gmail, or their Gmail was connected before the app could read it (reconnect once). */
+export type SignatureState = 'added' | 'none_set' | 'needs_reconnect' | 'off';
+
+export function signatureNote(state: SignatureState | undefined): string {
+  if (state === 'added') return 'with your Gmail signature';
+  if (state === 'needs_reconnect') return 'without your signature: reconnect your Gmail once so it can be added';
+  if (state === 'none_set') return 'without a signature: none is set in your Gmail';
+  return '';
+}
 export const saveGoogleClient = (clientId: string, clientSecret: string) =>
   call<void>('gmail_connect', { action: 'save_client', client_id: clientId, client_secret: clientSecret });
 

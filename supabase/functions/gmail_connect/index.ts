@@ -194,8 +194,8 @@ serve(async (req) => {
         pay_link: "https://in.xero.com/example",
         sender_first_name: name.split(/\s+/)[0] || "ECD Digital Strategy",
       });
-      await sendAsPerson(sb, box, { fromName: name || null, to: [box.email], subject: `[Test${body.template === "intro" ? ", intro" : body.template === "reminder" ? ", client reminder" : ""}] ${email.subject}`, html: email.html, text: email.text });
-      return json({ ok: true, to: box.email });
+      const sent = await sendAsPerson(sb, box, { fromName: name || null, to: [box.email], subject: `[Test${body.template === "intro" ? ", intro" : body.template === "reminder" ? ", client reminder" : ""}] ${email.subject}`, html: email.html, text: email.text });
+      return json({ ok: true, to: box.email, signature: sent.signature });
     }
 
     return json({ ok: false, error: "unknown_action" }, 400);

@@ -239,12 +239,47 @@ export async function gmailSignature(sb: Sb, box: Mailbox): Promise<string | nul
   return sig.replace(/<[^>]+>/g, "").trim() ? sig : null;
 }
 
-/** Sends as the connected person. It lands in their Sent folder like any email they write. */
+export type SignatureState = "added" | "none_set" | "needs_reconnect" | "off";
+
+/** Plain-text version of a Gmail signature, for the text part of the email. */
+const signatureText = (html: string) =>
+  html
+    .replace(/<br\s*\/?>|<\/(p|div|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+/**
+ * Sends as the connected person. It lands in their Sent folder like any email they
+ * write, and (2026-11-03: "show the signatures always") ends with their own Gmail
+ * signature, read live from their Gmail settings. If it cannot be read (connected
+ * before that permission existed) the email still goes, and signature says why.
+ */
 export async function sendAsPerson(
   sb: Sb,
   box: Mailbox,
-  m: { fromName?: string | null; to: string[]; cc?: string[]; subject: string; html: string; text: string; attachments?: Attachment[] },
-): Promise<{ id: string }> {
+  m: { fromName?: string | null; to: string[]; cc?: string[]; subject: string; html: string; text: string; attachments?: Attachment[]; signature?: boolean },
+): Promise<{ id: string; signature: SignatureState }> {
+  let signature: SignatureState = "off";
+  if (m.signature !== false) {
+    try {
+      const sig = await gmailSignature(sb, box);
+      if (sig) {
+        m = {
+          ...m,
+          html: `${m.html}<br><div class="gmail_signature" style="margin-top:12px">${sig}</div>`,
+          text: `${m.text}\n\n-- \n${signatureText(sig)}`,
+        };
+        signature = "added";
+      } else {
+        signature = "none_set";
+      }
+    } catch (e) {
+      signature = e instanceof NeedsReconnect ? "needs_reconnect" : "none_set";
+    }
+  }
   const token = await accessTokenFor(sb, box.userId);
   const from = m.fromName ? `${header(m.fromName)} <${box.email}>` : box.email;
   const raw = b64url(b64(new TextEncoder().encode(buildMime({ ...m, from }))));
@@ -260,5 +295,5 @@ export async function sendAsPerson(
     throw new Error(msg);
   }
   await sb.from("mailbox_connections").update({ last_used_at: new Date().toISOString(), last_error: null }).eq("user_id", box.userId);
-  return { id: (JSON.parse(text) as { id?: string }).id ?? "" };
+  return { id: (JSON.parse(text) as { id?: string }).id ?? "", signature };
 }
