@@ -148,8 +148,8 @@ export default function XeroServiceAccountsEditor({ accounts }: { accounts: Xero
               screen only holds the buckets and their codes. */}
           <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-gray-400">
             Each family has two accounts: one-time work posts to the one-time account (4011/4012/4013), anything on
-            an ongoing invoice to the MRR account (4002/4001/4003). Assign your line items to a family and a Xero Item
-            in the table below, and a proposal line created from that service is coded automatically.
+            an ongoing invoice to the MRR account (4002/4001/4003). Each service in the Line Item Catalog is assigned a
+            family and a Xero Item, and a proposal line created from that service is coded automatically.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -217,10 +217,8 @@ export default function XeroServiceAccountsEditor({ accounts }: { accounts: Xero
           ))}
         </div>
       )}
-
       {/* Which bucket each service belongs to is set once, in the Line Item Catalog
-          (2026-11-03: it was here as well, the same field twice). */}
-      <p className="mt-3 text-[11px] text-gray-400">Each service's bucket and Xero Items are set in the Line Item Catalog.</p>
+          (2026-11-03: a table here edited the same field twice). */}
     </div>
   );
 }
