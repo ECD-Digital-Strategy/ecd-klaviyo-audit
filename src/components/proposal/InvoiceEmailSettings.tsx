@@ -5,6 +5,7 @@ import SettingsCard from '../ui/SettingsCard';
 import ToggleSwitch, { ToggleRow } from '../ui/ToggleSwitch';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import {
+  canReadCalendars,
   connectGmail,
   disconnectGmail,
   getGmailStatus,
@@ -12,6 +13,7 @@ import {
   signatureNote,
   type GmailConnection,
   type GmailStatus,
+  type TestTemplate,
 } from '../../lib/invoice-sending';
 import type { InvoicingSettings } from '../../lib/types';
 
@@ -341,7 +343,7 @@ export default function InvoiceEmailSettings({
 }
 
 type TemplateTab = {
-  key: string;
+  key: TestTemplate;
   label: string;
   hint: string;
   subject: string;
@@ -351,14 +353,19 @@ type TemplateTab = {
 };
 
 /** Subject and body of one or more emails, a tab each. */
-function TemplateEditor({
+export function TemplateEditor({
   tabs,
   inputClass,
   canTest,
   testDisabledReason,
+  placeholders = PLACEHOLDERS,
+  note,
 }: {
   tabs: TemplateTab[];
   inputClass: string;
+  placeholders?: readonly string[];
+  /** A line under the placeholders, e.g. how empty ones behave. */
+  note?: string;
   /** Whether your own Gmail is connected, so a test can go out. */
   canTest: boolean;
   testDisabledReason?: string;
@@ -390,10 +397,11 @@ function TemplateEditor({
       <textarea value={tab.body} onChange={e => tab.onBody(e.target.value)} rows={11} className={`${inputClass} resize-y leading-relaxed`} />
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
         <span className="mr-1 text-[11px] text-gray-400">Fills in:</span>
-        {PLACEHOLDERS.map(p => (
+        {placeholders.map(p => (
           <code key={p} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{`{${p}}`}</code>
         ))}
       </div>
+      {note && <p className="mt-1.5 text-[11px] text-gray-400">{note}</p>}
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] text-gray-400">The sender&apos;s own Gmail signature is added underneath automatically.</p>
         <button
@@ -403,7 +411,7 @@ function TemplateEditor({
           onClick={async () => {
             setTesting(true);
             try {
-              const r = await sendGmailTest({ template: tab.key as 'usual' | 'intro' | 'reminder', subject: tab.subject, body: tab.body });
+              const r = await sendGmailTest({ template: tab.key, subject: tab.subject, body: tab.body });
               toast(`Test of the ${tab.label.toLowerCase()} sent to ${r.to}, ${signatureNote(r.signature)}`);
             } catch (e) {
               toast(e instanceof Error ? e.message : 'Could not send the test');
@@ -460,6 +468,11 @@ function ConnectionRow({
           {c.email} · connected {shortDate(c.connected_at)}{used ? ` · last sent ${used}` : ''}
         </p>
         {c.last_error && !needsReconnect && <p className="mt-0.5 text-[11px] text-amber-700">Last problem: {c.last_error}</p>}
+        {!needsReconnect && !canReadCalendars(c) && (
+          <p className="mt-0.5 text-[11px] text-gray-400">
+            Calendar free/busy not allowed yet: {c.is_me ? 'reconnect' : 'they reconnect'} once so the welcome email can offer launch call times.
+          </p>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {c.is_me && needsReconnect && (

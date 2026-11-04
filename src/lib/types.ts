@@ -455,6 +455,8 @@ export interface Proposal {
   }>;
   /** Whose Gmail the invoice is emailed from; null = whoever sent the proposal. */
   invoice_sender_id?: string | null;
+  /** The welcome email after signing, while that is switched on. */
+  welcome_email?: WelcomeEmailRecord | null;
   sent_by?: string | null;
   created_by: string | null;
   created_at: string;
@@ -671,6 +673,57 @@ export interface InvoicingSettings {
   /** The client's reminder. */
   reminder_subject: string;
   reminder_body: string;
+  /** The welcome email after signing (invoice + next steps). */
+  welcome: WelcomeSettings;
+}
+
+/** Keep in sync with supabase/functions/_shared/welcome-email.ts. */
+export interface WelcomeSettings {
+  /** Replaces the invoice email for proposals signed since `since`. */
+  enabled: boolean;
+  /** Always a draft for the sender to send, instead of sent and the sender told. */
+  review_first: boolean;
+  since: string | null;
+  ecd_onboarding_form_url: string;
+  w9_url: string;
+  new_subject: string;
+  new_body: string;
+  project_subject: string;
+  project_body: string;
+  /** {intro}, when it comes from the fallback sender. */
+  intro_line: string;
+  call_attendee_emails: string[];
+  call_include_rs: boolean;
+  call_timezone: string;
+  call_day_start: string;
+  call_day_end: string;
+  call_minutes: number;
+  call_first_day: number;
+  call_last_day: number;
+  call_count: number;
+  wait_hours: number;
+}
+
+/** Where a proposal's welcome email is (supabase/functions/_shared/welcome-delivery.ts). */
+export interface WelcomeEmailRecord {
+  status: 'waiting' | 'sending' | 'draft' | 'sent' | 'skipped';
+  queued_at: string;
+  updated_at?: string;
+  kind?: 'new' | 'project';
+  missing?: string[];
+  subject?: string;
+  body?: string;
+  links?: Record<string, string>;
+  times?: string[];
+  to?: string | null;
+  cc?: string[];
+  from_email?: string | null;
+  from_user_id?: string | null;
+  fallback?: boolean;
+  invoice_id?: string | null;
+  sent_at?: string | null;
+  sent_by?: string | null;
+  error?: string | null;
 }
 
 // ---------------------------------------------------------------------------

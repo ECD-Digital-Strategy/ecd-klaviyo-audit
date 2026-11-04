@@ -7,6 +7,7 @@ import { uploadReportScreenshot } from '../../lib/db';
 import type { ProposalSettings } from '../../lib/types';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
 import InvoiceEmailSettings from './InvoiceEmailSettings';
+import WelcomeEmailSettings from './WelcomeEmailSettings';
 import SettingsCard from '../ui/SettingsCard';
 import UnsavedChangesBar from '../ui/UnsavedChangesBar';
 
@@ -116,6 +117,11 @@ export default function ProposalSettingsPanel() {
       <UnsavedChangesBar show={dirty} saving={saving} onSave={() => void save()} onDiscard={discard} />
 
       <InvoiceEmailSettings value={settings.invoicing} onChange={v => patch({ invoicing: v })} inputClass={inputClass} />
+      <WelcomeEmailSettings
+        value={settings.invoicing.welcome}
+        onChange={v => patch({ invoicing: { ...settings.invoicing, welcome: v } })}
+        inputClass={inputClass}
+      />
 
       <VoiceProfileSection
         domain="proposal"

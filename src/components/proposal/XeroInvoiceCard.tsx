@@ -7,7 +7,7 @@ import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
 import { useToast } from '../ui/Toast';
-import type { InvoicingSettings, Proposal, ProposalLineItem } from '../../lib/types';
+import type { InvoicingSettings, Proposal, ProposalLineItem, WelcomeEmailRecord } from '../../lib/types';
 
 const KIND_LABEL = { one_time: 'Implementation', monthly: 'First month of the retainer' } as const;
 
@@ -91,12 +91,18 @@ export default function XeroInvoiceCard({
               </a>
               {inv.online_url && <PaymentLink url={inv.online_url} alreadySent={Boolean(inv.emailed_at)} />}
               {inv.kind === 'one_time' && inv.online_url && (
-                <InvoiceEmailStatus proposalId={proposal.id} invoice={inv} canEmail={autoSend} onChanged={onChanged} />
+                <InvoiceEmailStatus
+                  proposalId={proposal.id}
+                  invoice={inv}
+                  // Not while the welcome email is going to carry it: it would go twice.
+                  canEmail={autoSend && !['waiting', 'draft', 'sending'].includes(proposal.welcome_email?.status ?? '')}
+                  onChanged={onChanged}
+                />
               )}
             </li>
           ))}
           <li>
-            <InvoiceNotes invoices={invoices} invoicing={invoicing} />
+            <InvoiceNotes invoices={invoices} invoicing={invoicing} welcome={proposal.welcome_email ?? null} />
           </li>
         </ul>
       )}
@@ -143,7 +149,17 @@ type InvoiceEntry = NonNullable<Proposal['xero_invoices']>[number];
  * Before invoice emails are switched on, and for invoices made before, it reads
  * as it always did: share the payment link by hand.
  */
-function InvoiceNotes({ invoices, invoicing }: { invoices: InvoiceEntry[]; invoicing: InvoicingSettings | null }) {
+function InvoiceNotes({
+  invoices,
+  invoicing,
+  welcome,
+}: {
+  invoices: InvoiceEntry[];
+  invoicing: InvoicingSettings | null;
+  welcome: WelcomeEmailRecord | null;
+}) {
+  // Held for the welcome email (2026-11-04): it carries the invoice.
+  const heldForWelcome = welcome && (welcome.status === 'waiting' || welcome.status === 'draft' || welcome.status === 'sending');
   const oneTime = invoices.filter(i => i.kind === 'one_time' && i.online_url);
   const emailed = oneTime.filter(i => i.emailed_at);
   const notEmailed = oneTime.filter(i => !i.emailed_at);
@@ -166,7 +182,13 @@ function InvoiceNotes({ invoices, invoicing }: { invoices: InvoiceEntry[]; invoi
     }
   }
   for (const inv of notEmailed) {
-    if (invoicing?.auto_send && inv.email_error) {
+    if (heldForWelcome) {
+      lines.push({
+        text: welcome.status === 'draft'
+          ? 'Goes with the welcome email, drafted below for review.'
+          : 'Goes with the welcome email once it is ready (below). Nothing to send by hand.',
+      });
+    } else if (invoicing?.auto_send && inv.email_error) {
       lines.push({ tone: 'warn', text: `Not emailed automatically: ${inv.email_error} Use "Email it to the client" above, or share the payment link.` });
     } else {
       lines.push({ text: 'Not emailed to the client. Share the payment link with them; whoever sent the proposal was emailed it too.' });

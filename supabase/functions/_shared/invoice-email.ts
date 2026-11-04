@@ -12,6 +12,8 @@
 // platform_settings.proposal_settings.invoicing; keep the defaults in sync with
 // src/lib/proposals-db.ts DEFAULT_PROPOSAL_SETTINGS.invoicing.
 
+import { DEFAULT_WELCOME, mergeWelcome, type WelcomeSettings } from "./welcome-email.ts";
+
 export type InvoicingSettings = {
   /** Email the implementation invoice to the client at signing. OFF until turned on. */
   auto_send: boolean;
@@ -37,6 +39,8 @@ export type InvoicingSettings = {
   /** The reminder the client gets, when client_reminders is on. */
   reminder_subject: string;
   reminder_body: string;
+  /** The welcome email (invoice + next steps), see welcome-email.ts. */
+  welcome: WelcomeSettings;
 };
 
 export const DEFAULT_INVOICING: InvoicingSettings = {
@@ -75,6 +79,7 @@ export const DEFAULT_INVOICING: InvoicingSettings = {
     "{sender_first_name}",
   ].join("\n"),
   reminder_subject: "Reminder: invoice {invoice_number} from ECD Digital Strategy",
+  welcome: DEFAULT_WELCOME,
   reminder_body: [
     "Hi {first_name},",
     "",
@@ -109,6 +114,7 @@ export function mergeInvoicing(raw: unknown): InvoicingSettings {
     intro_body: text(v.intro_body, d.intro_body),
     reminder_subject: text(v.reminder_subject, d.reminder_subject),
     reminder_body: text(v.reminder_body, d.reminder_body),
+    welcome: mergeWelcome(v.welcome),
   };
 }
 

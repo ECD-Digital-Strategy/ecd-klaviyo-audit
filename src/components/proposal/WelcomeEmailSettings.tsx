@@ -1,0 +1,249 @@
+import { useEffect, useState } from 'react';
+import { CalendarClock, Info, Link2, PartyPopper } from 'lucide-react';
+import SettingsCard from '../ui/SettingsCard';
+import ToggleSwitch, { ToggleRow } from '../ui/ToggleSwitch';
+import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
+import { TemplateEditor } from './InvoiceEmailSettings';
+import { getGmailStatus } from '../../lib/invoice-sending';
+import type { WelcomeSettings } from '../../lib/types';
+
+// Proposal settings: the welcome email after signing (Xiomara 2026-11-03, Emil
+// 2026-11-04). One email from the sender's Gmail with the invoice, launch call
+// times that fit Isa's and the RS's calendars, the ECD onboarding form, the W-9
+// and the client's intake form. Existing clients get the invoice and their intake
+// form. Off until switched on; saved with the panel's Save settings. Server side:
+// supabase/functions/_shared/welcome-delivery.ts.
+
+const PLACEHOLDERS = [
+  'first_name',
+  'company',
+  'proposal_title',
+  'total',
+  'due_date',
+  'pay_link',
+  'invoice_number',
+  'ecd_onboarding_form',
+  'client_onboarding_form',
+  'w9_link',
+  'launch_call_times',
+  'intro',
+  'sender_first_name',
+] as const;
+
+const ZONES = [
+  { value: 'America/New_York', label: 'Eastern (ET)' },
+  { value: 'America/Chicago', label: 'Central (CT)' },
+  { value: 'America/Denver', label: 'Mountain (MT)' },
+  { value: 'America/Los_Angeles', label: 'Pacific (PT)' },
+  { value: 'Europe/London', label: 'London' },
+];
+
+const parseEmails = (raw: string) =>
+  raw.split(/[,;\s]+/).map(e => e.trim().toLowerCase()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+
+const numberClass =
+  'w-16 rounded-lg border border-gray-200 px-2 py-1 text-center text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20';
+const timeClass =
+  'rounded-lg border border-gray-200 px-2 py-1 text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20';
+
+export default function WelcomeEmailSettings({
+  value,
+  onChange,
+  inputClass,
+}: {
+  value: WelcomeSettings;
+  onChange: (next: WelcomeSettings) => void;
+  inputClass: string;
+}) {
+  const [canTest, setCanTest] = useState(false);
+  const [calRaw, setCalRaw] = useState(value.call_attendee_emails.join(', '));
+  const calJoined = value.call_attendee_emails.join(', ');
+  useEffect(() => { setCalRaw(calJoined); }, [calJoined]);
+  useEffect(() => {
+    getGmailStatus().then(s => setCanTest(Boolean(s.mine)), () => setCanTest(false));
+  }, []);
+
+  const set = (patch: Partial<WelcomeSettings>) => onChange({ ...value, ...patch });
+  const wide = inputClass.replace('max-w-md', 'max-w-3xl');
+  const num = (v: string, fallback: number, min: number, max: number) => Math.max(min, Math.min(max, Math.round(Number(v)) || fallback));
+
+  return (
+    <SettingsCard
+      icon={<PartyPopper className="h-4 w-4" />}
+      title="Welcome email"
+      description="Replaces the invoice email after signing. A new client gets one email with the invoice, launch call times that fit the team's calendars, the onboarding form, the W-9 and their intake form. An existing client gets the invoice and the intake form for what they bought."
+      control={
+        <>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+            {value.enabled ? 'On' : 'Off'}
+          </span>
+          <ToggleSwitch
+            checked={value.enabled}
+            // From the moment it goes on: switching it on never emails clients who signed before.
+            onChange={v => set({ enabled: v, since: v ? new Date().toISOString() : value.since })}
+            aria-label="Send the welcome email after signing"
+          />
+        </>
+      }
+      collapsible
+      defaultOpen={false}
+      storageKey="settings_open_proposal_welcome"
+    >
+      <div className="divide-y divide-gray-100">
+        {/* 1. How it goes out */}
+        <div className="space-y-4 p-5">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-900">How it goes out</h4>
+            <p className="mt-0.5 text-xs text-gray-500">
+              From the same Gmail as the invoice (the proposal&apos;s creator, else the fallback sender), with the invoice PDF and the
+              Always copy list from Invoice emails.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {[
+              { review: false, title: 'Send it, then tell the sender', text: 'Goes to the client as soon as everything is there. The sender gets a copy by email so they know.' },
+              { review: true, title: 'Draft it for the sender to send', text: 'The sender gets an email to check it on the proposal page, edit it and press Send.' },
+            ].map(o => {
+              const active = value.review_first === o.review;
+              return (
+                <button
+                  key={o.title}
+                  type="button"
+                  onClick={() => set({ review_first: o.review })}
+                  className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? 'border-brand-primary bg-brand-primary/5' : 'border-gray-200 hover:bg-gray-50'}`}
+                >
+                  <span className={`block text-sm font-medium ${active ? 'text-brand-primary' : 'text-gray-800'}`}>{o.title}</span>
+                  <span className="mt-0.5 block text-xs text-gray-500">{o.text}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="flex items-start gap-1.5 text-[11px] text-gray-500">
+            <Info className="mt-0.5 h-3 w-3 shrink-0 text-gray-400" />
+            Either way, if anything is missing (no free launch call time, no intake form, a custom deal the tracker has no form
+            for), it becomes a draft for the sender to finish.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+            Wait up to
+            <input type="number" min={0} max={168} value={value.wait_hours} onChange={e => set({ wait_hours: num(e.target.value, 24, 0, 168) })} className={numberClass} />
+            hours after signing for the RS to be confirmed and the intake form to be made.
+          </div>
+        </div>
+
+        {/* 2. Links */}
+        <div className="space-y-4 p-5">
+          <h4 className="flex items-center gap-1.5 text-sm font-semibold text-gray-900">
+            <Link2 className="h-4 w-4 text-gray-400" /> Links for new clients
+          </h4>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">ECD onboarding form</label>
+            <input type="url" value={value.ecd_onboarding_form_url} onChange={e => set({ ecd_onboarding_form_url: e.target.value.trim() })} className={wide} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">W-9</label>
+            <input type="url" value={value.w9_url} onChange={e => set({ w9_url: e.target.value.trim() })} className={wide} />
+          </div>
+          <p className="text-[11px] text-gray-400">
+            The client&apos;s intake form comes from the Client Tracker: it&apos;s made when they sign, with the tabs for what they bought.
+          </p>
+        </div>
+
+        {/* 3. Launch call */}
+        <div className="space-y-4 p-5">
+          <div>
+            <h4 className="flex items-center gap-1.5 text-sm font-semibold text-gray-900">
+              <CalendarClock className="h-4 w-4 text-gray-400" /> Launch call times (new clients)
+            </h4>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Times everyone below is free, read from Google Calendar free/busy (never what the events are). One per day, morning and
+              afternoon in turn.
+            </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">Calendars to check</label>
+            <input
+              type="text"
+              value={calRaw}
+              onChange={e => setCalRaw(e.target.value)}
+              onBlur={() => {
+                const list = parseEmails(calRaw);
+                setCalRaw(list.join(', '));
+                set({ call_attendee_emails: list });
+              }}
+              placeholder="isa@ecdigitalstrategy.com"
+              className={wide}
+            />
+          </div>
+          <ToggleRow
+            title="Also the client's RS"
+            description="The RS from the Client Tracker, once the pod is confirmed."
+            checked={value.call_include_rs}
+            onChange={v => set({ call_include_rs: v })}
+          />
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-sm text-gray-600">
+            Offer
+            <input type="number" min={1} max={6} value={value.call_count} onChange={e => set({ call_count: num(e.target.value, 3, 1, 6) })} className={numberClass} />
+            times of
+            <input type="number" min={15} max={180} step={15} value={value.call_minutes} onChange={e => set({ call_minutes: num(e.target.value, 45, 15, 180) })} className={numberClass} />
+            minutes, between
+            <input type="time" value={value.call_day_start} onChange={e => set({ call_day_start: e.target.value || '10:00' })} className={timeClass} />
+            and
+            <input type="time" value={value.call_day_end} onChange={e => set({ call_day_end: e.target.value || '16:00' })} className={timeClass} />
+            <Select value={value.call_timezone} onValueChange={v => set({ call_timezone: v })}>
+              <SelectTrigger className="h-8 w-40 bg-white text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {ZONES.map(z => (
+                  <SelectItem key={z.value} value={z.value}><SelectItemText>{z.label}</SelectItemText></SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+            From
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={value.call_first_day}
+              onChange={e => {
+                const first = num(e.target.value, 2, 1, 20);
+                set({ call_first_day: first, call_last_day: Math.max(first, value.call_last_day) });
+              }}
+              className={numberClass}
+            />
+            to
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={value.call_last_day}
+              onChange={e => set({ call_last_day: Math.max(value.call_first_day, num(e.target.value, 10, 1, 30)) })}
+              className={numberClass}
+            />
+            business days after the email goes.
+          </div>
+        </div>
+
+        {/* 4. The emails */}
+        <div className="space-y-4 p-5">
+          <TemplateEditor
+            tabs={[
+              { key: 'welcome_new', label: 'New client', hint: 'A client signing with us for the first time.', subject: value.new_subject, body: value.new_body, onSubject: v => set({ new_subject: v }), onBody: v => set({ new_body: v }) },
+              { key: 'welcome_project', label: 'Existing client', hint: 'A client we already work with, signing more work.', subject: value.project_subject, body: value.project_body, onSubject: v => set({ project_subject: v }), onBody: v => set({ project_body: v }) },
+            ]}
+            inputClass={wide}
+            canTest={canTest}
+            testDisabledReason="Connect your Gmail under Invoice emails to send yourself a test"
+            placeholders={PLACEHOLDERS}
+            note="A line whose placeholder has nothing to fill (no invoice, no intake form, no free times) is left out, so the email reads naturally whatever is missing. {launch_call_times} becomes one line per time."
+          />
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">{'{intro}'}: when it comes from the fallback sender</label>
+            <input type="text" value={value.intro_line} onChange={e => set({ intro_line: e.target.value })} className={wide} />
+            <p className="mt-1 text-[11px] text-gray-400">Left out when the email comes from the proposal&apos;s creator, who the client already knows.</p>
+          </div>
+        </div>
+      </div>
+    </SettingsCard>
+  );
+}

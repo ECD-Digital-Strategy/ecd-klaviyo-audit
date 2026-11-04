@@ -13,6 +13,7 @@ import {
 } from "../_shared/invoice-delivery.ts";
 import { sendAsPerson } from "../_shared/gmail.ts";
 import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
+import { rebuildWelcome, saveWelcomeDraft, sendWelcomeNow, skipWelcome, welcomeTick } from "../_shared/welcome-delivery.ts";
 
 // Unpaid invoices (Emil + Isa, 2026-11-02): "if an invoice is not paid within 7
 // days of sending, an email is sent to Xiomara, Maria and Isa". Daily (cron
@@ -26,6 +27,9 @@ import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } fr
 // Invoices dated before reminders were turned on are left alone.
 // Also "email_invoice" (staff, from the Xero card while auto-send is on): email
 // an approved invoice to the client now, e.g. after connecting a Gmail.
+// The welcome email (2026-11-04, _shared/welcome-delivery.ts): "welcome_tick"
+// (cron welcome-email, every 15 minutes) and, from the proposal page,
+// "welcome_save", "welcome_send", "welcome_rebuild" and "welcome_skip".
 
 const corsHeaders: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -162,22 +166,36 @@ async function tick(sb: Sb) {
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
-  const body = (await req.json().catch(() => ({}))) as { action?: string; proposal_id?: string; invoice_id?: string };
+  const body = (await req.json().catch(() => ({}))) as { action?: string; proposal_id?: string; invoice_id?: string; subject?: string; email_body?: string };
   const sb = assertServiceRoleClient();
 
-  if (body.action === "tick") {
+  if (body.action === "tick" || body.action === "welcome_tick") {
     if (!(await hasCronSecret(req, "invoice_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
     try {
-      return json(await tick(sb));
+      return json(body.action === "tick" ? await tick(sb) : await welcomeTick(sb));
     } catch (e) {
       return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
     }
   }
 
+  let userId: string;
   try {
-    await requireStaffUserId(req);
+    userId = await requireStaffUserId(req);
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
+  }
+
+  if (body.action?.startsWith("welcome_")) {
+    const id = body.proposal_id ?? "";
+    const edit = { subject: body.subject, body: body.email_body };
+    try {
+      if (body.action === "welcome_save") return json({ ok: true, welcome: await saveWelcomeDraft(sb, id, edit) });
+      if (body.action === "welcome_send") return json({ ok: true, welcome: await sendWelcomeNow(sb, id, userId, edit) });
+      if (body.action === "welcome_rebuild") return json({ ok: true, welcome: await rebuildWelcome(sb, id) });
+      if (body.action === "welcome_skip") return json({ ok: true, welcome: await skipWelcome(sb, id) });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 409);
+    }
   }
 
   if (body.action === "email_invoice") {

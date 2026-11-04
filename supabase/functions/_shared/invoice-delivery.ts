@@ -2,6 +2,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { xeroApi, xeroInvoicePdf } from "./xero.ts";
 import { mailboxFor, sendAsPerson, type Attachment, type Mailbox } from "./gmail.ts";
 import { longDate, mergeInvoicing, money, renderInvoiceEmail, type InvoicingSettings } from "./invoice-email.ts";
+import { holdsInvoice } from "./welcome-email.ts";
 
 // Emails a signed proposal's implementation invoice to the client, with the PDF
 // and the Xero pay link, Maria copied (Emil + Isa, 2026-11-02). Who it comes from,
@@ -170,6 +171,13 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
  */
 export async function deliverNewInvoices(sb: Sb, proposalId: string, fresh: InvoiceRecord[]): Promise<InvoiceRecord[]> {
   const s = await loadInvoicing(sb);
+  // The welcome email carries the implementation invoice (welcome-delivery.ts):
+  // neither emailed on its own nor sent to the sender as a payment link.
+  if (s.welcome.enabled) {
+    const { data } = await sb.from("proposals").select("client_signed_at, welcome_email").eq("id", proposalId).maybeSingle();
+    const row = data as { client_signed_at: string | null; welcome_email: { status?: "waiting" | "sending" | "draft" | "sent" | "skipped" } | null } | null;
+    if (row && holdsInvoice(s.welcome, row)) return fresh.filter((inv) => inv.kind !== "one_time");
+  }
   if (!s.auto_send) return fresh;
   const left: InvoiceRecord[] = [];
   for (const inv of fresh) {

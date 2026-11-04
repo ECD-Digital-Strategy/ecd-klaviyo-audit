@@ -13,6 +13,7 @@ import {
 } from "../_shared/gmail.ts";
 import { loadInvoicing } from "../_shared/invoice-delivery.ts";
 import { longDate, money, renderInvoiceEmail } from "../_shared/invoice-email.ts";
+import { fillSubject, fillWelcome, LINK_LABELS, welcomeHtml, type WelcomeVars } from "../_shared/welcome-email.ts";
 
 // Connecting a person's Gmail so invoices can go out as them (2026-11-02; see
 // _shared/gmail.ts). POST actions, from Proposal settings:
@@ -94,7 +95,7 @@ serve(async (req) => {
       // sign-in check: this loads every time the settings page opens.
       const [client, { data: rows }, { data: meProfile }] = await Promise.all([
         googleClient(sb),
-        sb.from("mailbox_connections").select("user_id, email, connected_at, last_used_at, last_error").order("connected_at", { ascending: true }),
+        sb.from("mailbox_connections").select("user_id, email, connected_at, last_used_at, last_error, scopes").order("connected_at", { ascending: true }),
         sb.from("profiles").select("role").eq("id", userId).maybeSingle(),
       ]);
       const ids = (rows ?? []).map((r) => r.user_id as string);
@@ -109,6 +110,7 @@ serve(async (req) => {
         connected_at: r.connected_at as string,
         last_used_at: (r.last_used_at as string | null) ?? null,
         last_error: (r.last_error as string | null) ?? null,
+        scopes: (r.scopes as string | null) ?? null,
         is_me: r.user_id === userId,
       }));
       const isAdmin = (meProfile as { role?: string } | null)?.role === "admin";
@@ -173,6 +175,44 @@ serve(async (req) => {
       const box = await mailboxFor(sb, userId);
       if (!box) return json({ ok: false, error: "Connect your Gmail first." }, 409);
       const s = await loadInvoicing(sb);
+      const { data: me } = await sb.from("profiles").select("name").eq("id", userId).maybeSingle();
+      const myName = String((me as { name?: string } | null)?.name ?? "").trim();
+      const myFirst = myName.split(/s+/)[0] || "there";
+
+      // The welcome email, new client or existing client, with example values and example times.
+      if (body.template === "welcome_new" || body.template === "welcome_project") {
+        const w = s.welcome;
+        const isNew = body.template === "welcome_new";
+        const subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.slice(0, 300) : isNew ? w.new_subject : w.project_subject;
+        const tpl = typeof body.email_body === "string" && body.email_body.trim() ? body.email_body.slice(0, 10_000) : isNew ? w.new_body : w.project_body;
+        const vars: WelcomeVars = {
+          first_name: myFirst,
+          company: "Example Brand",
+          proposal_title: "Klaviyo implementation",
+          invoice_number: "INV-0000",
+          total: money(5000),
+          due_date: longDate(new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10)),
+          pay_link: "https://in.xero.com/example",
+          sender_first_name: myFirst,
+          intro: "",
+          ecd_onboarding_form: isNew ? w.ecd_onboarding_form_url : "",
+          w9_link: isNew ? w.w9_url : "",
+          client_onboarding_form: "https://docs.google.com/spreadsheets/d/example-intake-form",
+        };
+        const times = isNew ? ["Tuesday, November 10 at 11:00 AM ET", "Wednesday, November 11 at 3:00 PM ET", "Thursday, November 12 at 10:30 AM ET"] : [];
+        const text = fillWelcome(tpl, vars, times);
+        const links: Record<string, string> = {};
+        for (const [k, label] of Object.entries(LINK_LABELS)) if (vars[k as keyof WelcomeVars]) links[vars[k as keyof WelcomeVars]] = label;
+        const sent = await sendAsPerson(sb, box, {
+          fromName: myName || null,
+          to: [box.email],
+          subject: `[Test, ${isNew ? "new client" : "existing client"} welcome] ${fillSubject(subject, vars)}`,
+          html: welcomeHtml(text, links),
+          text,
+        });
+        return json({ ok: true, to: box.email, signature: sent.signature });
+      }
+
       const saved = body.template === "intro"
         ? { subject: s.intro_subject, body: s.intro_body }
         : body.template === "reminder"

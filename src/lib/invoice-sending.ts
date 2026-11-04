@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import type { WelcomeEmailRecord } from './types';
 
 // Invoices emailed to the client from a person's own Gmail (Emil + Isa,
 // 2026-11-02). People connect their Gmail in Proposal settings (gmail_connect);
@@ -14,6 +15,8 @@ export type GmailConnection = {
   last_used_at: string | null;
   /** The last thing that went wrong sending from it, e.g. it needs reconnecting. */
   last_error: string | null;
+  /** What they allowed when they connected (null: before this was recorded). */
+  scopes?: string | null;
   is_me: boolean;
 };
 
@@ -49,7 +52,8 @@ export const disconnectGmail = (userId?: string) => call<void>('gmail_connect', 
 /** An example email to yourself from your Gmail: the usual email, the intro email
  * (fallback sender) or the client reminder, using the text as it stands in the
  * form (unsaved edits included) when given. */
-export const sendGmailTest = (opts: { template?: 'usual' | 'intro' | 'reminder'; subject?: string; body?: string } = {}) =>
+export type TestTemplate = 'usual' | 'intro' | 'reminder' | 'welcome_new' | 'welcome_project';
+export const sendGmailTest = (opts: { template?: TestTemplate; subject?: string; body?: string } = {}) =>
   call<{ to: string; signature?: SignatureState }>('gmail_connect', { action: 'test', template: opts.template, subject: opts.subject, email_body: opts.body });
 
 /** Whether the sender's Gmail signature went under the email: added, none set in
@@ -77,6 +81,17 @@ export async function listInvoiceSenders(): Promise<InvoiceSender[]> {
   if (error) throw error;
   return (data ?? []) as InvoiceSender[];
 }
+
+/** Whether a connection allows reading calendar free/busy (for welcome email launch times). */
+export const canReadCalendars = (c: Pick<GmailConnection, 'scopes'>) => Boolean(c.scopes?.includes('calendar.freebusy'));
+
+/** The welcome email on a proposal page: save edits, send, build again from what's there now, or don't send it. */
+export const welcomeAction = (
+  action: 'welcome_save' | 'welcome_send' | 'welcome_rebuild' | 'welcome_skip',
+  proposalId: string,
+  edit: { subject?: string; body?: string } = {},
+) =>
+  call<{ welcome: WelcomeEmailRecord }>('invoice_followup', { action, proposal_id: proposalId, subject: edit.subject, email_body: edit.body }).then(r => r.welcome);
 
 /** Emails an approved invoice to the client now (only while invoice emails are on). */
 export const emailInvoiceNow = (proposalId: string, invoiceId: string) =>

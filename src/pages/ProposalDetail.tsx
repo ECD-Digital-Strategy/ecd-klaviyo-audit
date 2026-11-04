@@ -51,6 +51,7 @@ import { deriveProposalStatus } from '../lib/proposal-status';
 import { publicProposalOrigin } from '../lib/public-origin';
 import AgencySignatureCard from '../components/proposal/AgencySignatureCard';
 import XeroInvoiceCard from '../components/proposal/XeroInvoiceCard';
+import WelcomeEmailCard from '../components/proposal/WelcomeEmailCard';
 import InvoiceSenderPicker from '../components/proposal/InvoiceSenderPicker';
 import ProposalExpiryRow from '../components/proposal/ProposalExpiryRow';
 
@@ -802,6 +803,8 @@ export default function ProposalDetail() {
               />
               {/* Only meaningful once signed: that is when the draft is created. */}
               {isSigned && <XeroInvoiceCard proposal={proposal} lineItems={lineItems} onChanged={reload} />}
+              {/* Only once the welcome email is on and this proposal was signed after that. */}
+              {isSigned && proposal.welcome_email && <WelcomeEmailCard proposal={proposal} onChanged={reload} />}
               {/* Hidden until invoice emails are switched on in Proposal settings. */}
               <InvoiceSenderPicker proposal={proposal} onChanged={reload} />
               <button

@@ -15,6 +15,7 @@ import type {
   ContractDocument,
   InvoicingSettings,
   Proposal,
+  WelcomeSettings,
   ProposalEvent,
   ProposalEventType,
   ProposalLineItem,
@@ -22,6 +23,63 @@ import type {
   ProposalSignature,
   ProposalTemplate,
 } from './types';
+
+/** Off until turned on. Keep in sync with supabase/functions/_shared/welcome-email.ts. */
+export const DEFAULT_WELCOME: WelcomeSettings = {
+  enabled: false,
+  review_first: false,
+  since: null,
+  ecd_onboarding_form_url: 'https://form.asana.com/?k=WHe6uZM6puiAQKgX-0kZMg&d=1201007545370748',
+  w9_url: 'https://drive.google.com/file/d/1QKPw9aTEIyR530TmvxiDiT-o8q7EbUVS/view?usp=sharing',
+  new_subject: 'Welcome to ECD Digital Strategy, {first_name}: next steps',
+  new_body: [
+    'Hi {first_name},',
+    '',
+    '{intro}',
+    '',
+    "Thanks so much for signing! We're excited to get started on {proposal_title}.",
+    '',
+    "Here's the invoice ({total}, due {due_date}): {pay_link}",
+    '',
+    'A few things to get us going:',
+    '- Our onboarding form: {ecd_onboarding_form}',
+    '- Your intake form, for access and brand assets: {client_onboarding_form}',
+    '- Our W-9, for your records: {w9_link}',
+    '',
+    'For the launch call, would any of these work for you?',
+    '{launch_call_times}',
+    "If none of them suit, reply with a couple of times that do and we'll make it work.",
+    '',
+    'Talk soon,',
+    '{sender_first_name}',
+  ].join('\n'),
+  project_subject: 'Next steps for {proposal_title}',
+  project_body: [
+    'Hi {first_name},',
+    '',
+    '{intro}',
+    '',
+    "Thanks so much for signing {proposal_title}! We're excited to get going.",
+    '',
+    "Here's the invoice ({total}, due {due_date}): {pay_link}",
+    '',
+    'To get started, please fill in this short intake form: {client_onboarding_form}',
+    '',
+    'Talk soon,',
+    '{sender_first_name}',
+  ].join('\n'),
+  intro_line: "I'm {sender_first_name} from ECD Digital Strategy. I look after getting new work started with the team, so you'll hear from me about invoices and kickoff.",
+  call_attendee_emails: ['isa@ecdigitalstrategy.com'],
+  call_include_rs: true,
+  call_timezone: 'America/New_York',
+  call_day_start: '10:00',
+  call_day_end: '16:00',
+  call_minutes: 45,
+  call_first_day: 2,
+  call_last_day: 10,
+  call_count: 3,
+  wait_hours: 24,
+};
 
 /** Off until turned on. Keep in sync with supabase/functions/_shared/invoice-email.ts. */
 export const DEFAULT_INVOICING: InvoicingSettings = {
@@ -69,6 +127,7 @@ export const DEFAULT_INVOICING: InvoicingSettings = {
     '',
     '{sender_first_name}',
   ].join('\n'),
+  welcome: DEFAULT_WELCOME,
 };
 
 export const DEFAULT_PROPOSAL_SETTINGS: ProposalSettings = {
@@ -102,6 +161,13 @@ export function mergeProposalSettings(raw: unknown): ProposalSettings {
       ...(value.invoicing ?? {}),
       cc_emails: Array.isArray(value.invoicing?.cc_emails) ? value.invoicing!.cc_emails : DEFAULT_INVOICING.cc_emails,
       reminder_emails: Array.isArray(value.invoicing?.reminder_emails) ? value.invoicing!.reminder_emails : DEFAULT_INVOICING.reminder_emails,
+      welcome: {
+        ...DEFAULT_WELCOME,
+        ...(value.invoicing?.welcome ?? {}),
+        call_attendee_emails: Array.isArray(value.invoicing?.welcome?.call_attendee_emails)
+          ? value.invoicing!.welcome!.call_attendee_emails
+          : DEFAULT_WELCOME.call_attendee_emails,
+      },
     },
   };
 }
@@ -170,7 +236,7 @@ const PROPOSAL_SUMMARY_SELECT = [
   'public_token', 'valid_until', 'sent_at', 'first_viewed_at', 'client_signed_at', 'countersigned_at', 'won_at',
   'lost_at', 'lost_reason', 'created_by', 'created_at', 'updated_at', 'recipient2_name', 'recipient2_email',
   'public_token2', 'xero_invoice_id', 'xero_invoice_number', 'xero_invoiced_at', 'xero_invoice_error', 'sent_by',
-  'xero_invoices', 'invoice_sender_id',
+  'xero_invoices', 'invoice_sender_id', 'welcome_email',
   'client:clients(*)', 'line_items:proposal_line_items(*)',
 ].join(',');
 

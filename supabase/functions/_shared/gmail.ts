@@ -13,8 +13,11 @@ export const GOOGLE_CLIENT_ID_KEY = "google_oauth_client_id";
 export const GOOGLE_CLIENT_SECRET_KEY = "google_oauth_client_secret";
 // gmail.settings.basic (2026-11-02): read their Gmail signature, so outreach (and
 // any email sent as them) signs off exactly as Gmail does. Still no reading mail.
+// calendar.freebusy (2026-11-04): only when people are busy, never what the
+// events are, so the welcome email can offer launch call times that fit the team.
+export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
 export const GMAIL_SCOPES =
-  "openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic";
+  `openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic ${CALENDAR_SCOPE}`;
 /** Only ECD accounts may send ECD invoices. */
 export const ALLOWED_DOMAIN = "ecdigitalstrategy.com";
 
@@ -67,7 +70,7 @@ export function authorizeUrl(clientId: string, state: string, loginHint?: string
   return `https://accounts.google.com/o/oauth2/v2/auth?${qs.toString()}`;
 }
 
-type Tokens = { access_token: string; refresh_token?: string; id_token?: string; expires_in?: number };
+type Tokens = { access_token: string; refresh_token?: string; id_token?: string; expires_in?: number; scope?: string };
 
 async function tokenCall(body: URLSearchParams): Promise<Tokens> {
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -122,6 +125,8 @@ export async function completeConnection(sb: Sb, userId: string, code: string): 
     email,
     refresh_token_ciphertext: enc.ciphertext,
     refresh_token_iv: enc.iv,
+    // What they allowed, so the settings page can say when a reconnect adds something.
+    scopes: tokens.scope ?? null,
     connected_at: new Date().toISOString(),
     last_error: null,
   });
@@ -296,4 +301,44 @@ export async function sendAsPerson(
   }
   await sb.from("mailbox_connections").update({ last_used_at: new Date().toISOString(), last_error: null }).eq("user_id", box.userId);
   return { id: (JSON.parse(text) as { id?: string }).id ?? "", signature };
+}
+
+/**
+ * When people are busy (Google Calendar free/busy), read with the connected
+ * person's access. In the ECD Workspace everyone can see colleagues' free/busy,
+ * so one connected sender is enough to check Isa's and the RS's calendars.
+ * Calendars it could not read come back in `unreadable`. Throws NeedsReconnect when
+ * the person connected before the calendar permission was asked for.
+ */
+export async function freeBusy(
+  sb: Sb,
+  box: Mailbox,
+  calendars: string[],
+  from: Date,
+  to: Date,
+): Promise<{ busy: Array<{ start: string; end: string }>; unreadable: string[] }> {
+  const token = await accessTokenFor(sb, box.userId);
+  const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ timeMin: from.toISOString(), timeMax: to.toISOString(), items: calendars.map((id) => ({ id })) }),
+  });
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) {
+    // Not granted (connected before 2026-11-04), or the Calendar API is off in the Google project.
+    if (/insufficient|scope|PERMISSION_DENIED/i.test(text) && !/has not been used|disabled/i.test(text)) {
+      throw new NeedsReconnect(`${box.email} needs to reconnect their Gmail once so the app can check calendars.`);
+    }
+    throw new Error(`Google Calendar refused (${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) throw new Error(`calendar_freebusy_${res.status}: ${text.slice(0, 200)}`);
+  const body = JSON.parse(text) as { calendars?: Record<string, { busy?: Array<{ start: string; end: string }>; errors?: unknown[] }> };
+  const busy: Array<{ start: string; end: string }> = [];
+  const unreadable: string[] = [];
+  for (const id of calendars) {
+    const c = body.calendars?.[id];
+    if (!c || (c.errors && c.errors.length)) unreadable.push(id);
+    else busy.push(...(c.busy ?? []));
+  }
+  return { busy, unreadable };
 }
