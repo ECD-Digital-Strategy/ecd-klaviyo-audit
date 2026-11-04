@@ -71,6 +71,7 @@ export const DEFAULT_WELCOME: WelcomeSettings = {
   intro_line: "I'm {sender_first_name} from ECD Digital Strategy. I look after getting new work started with the team, so you'll hear from me about invoices and kickoff.",
   call_attendee_emails: ['isa@ecdigitalstrategy.com'],
   call_include_rs: true,
+  call_include_sender: true,
   call_timezone: 'America/New_York',
   call_day_start: '10:00',
   call_day_end: '16:00',

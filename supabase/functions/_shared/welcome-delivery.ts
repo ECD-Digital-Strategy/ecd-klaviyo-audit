@@ -142,7 +142,13 @@ async function launchTimes(
   w: WelcomeSettings,
   rs: Array<{ name: string; email: string }>,
 ): Promise<{ times: string[]; problems: string[] }> {
-  const calendars = [...new Set([...w.call_attendee_emails, ...(w.call_include_rs ? rs.map((r) => r.email) : [])])];
+  const calendars = [
+    ...new Set([
+      ...w.call_attendee_emails,
+      ...(w.call_include_rs ? rs.map((r) => r.email) : []),
+      ...(w.call_include_sender ? [box.email.toLowerCase()] : []),
+    ]),
+  ];
   if (!calendars.length) return { times: [], problems: ["No calendars are set for the launch call."] };
   const now = new Date();
   const rules = {

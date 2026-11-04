@@ -180,6 +180,12 @@ export default function WelcomeEmailSettings({
             checked={value.call_include_rs}
             onChange={v => set({ call_include_rs: v })}
           />
+          <ToggleRow
+            title="Also whoever sends it"
+            description="The sender's own calendar (Xiomara, or the proposal's creator), so they can join the call too."
+            checked={value.call_include_sender}
+            onChange={v => set({ call_include_sender: v })}
+          />
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-sm text-gray-600">
             Offer
             <input type="number" min={1} max={6} value={value.call_count} onChange={e => set({ call_count: num(e.target.value, 3, 1, 6) })} className={numberClass} />

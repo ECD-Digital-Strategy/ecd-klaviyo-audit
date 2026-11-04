@@ -694,6 +694,7 @@ export interface WelcomeSettings {
   intro_line: string;
   call_attendee_emails: string[];
   call_include_rs: boolean;
+  call_include_sender: boolean;
   call_timezone: string;
   call_day_start: string;
   call_day_end: string;
