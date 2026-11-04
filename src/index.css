@@ -120,6 +120,23 @@
   to { opacity: 1; transform: scale(1); }
 }
 
+/* Where an email link sent someone to act (src/lib/use-focus-target.ts): a brand
+   ring that pulses for a few seconds. */
+@keyframes focusGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(75, 58, 254, 0.55); }
+  50% { box-shadow: 0 0 0 10px rgba(75, 58, 254, 0); }
+}
+
+.focus-glow {
+  outline: 2px solid rgba(75, 58, 254, 0.75);
+  outline-offset: 3px;
+  animation: focusGlow 1.5s ease-out 6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-glow { animation: none; }
+}
+
 /* Proposal print-to-PDF ("Download PDF" = window.print) */
 @media print {
   @page {

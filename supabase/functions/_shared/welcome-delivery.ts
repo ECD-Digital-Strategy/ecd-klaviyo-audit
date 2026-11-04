@@ -6,6 +6,7 @@ import { longDate, money, type InvoicingSettings } from "./invoice-email.ts";
 import { fillSubject, fillWelcome, LINK_LABELS, welcomeHtml, type WelcomeSettings, type WelcomeVars } from "./welcome-email.ts";
 import { candidateDays, findSlots, formatSlot, zonedTime } from "./launch-slots.ts";
 import { proposalEmailHtml, sendEmail } from "./mailer.ts";
+import { gmailSettingsLink, inlineLink, proposalLink } from "./app-links.ts";
 
 // The welcome email after signing (see welcome-email.ts for what it says). Runs
 // from the invoice_followup function every 15 minutes (cron welcome-email):
@@ -68,7 +69,6 @@ type ProposalRow = {
 
 const SELECT =
   "id, title, client_id, recipient_name, recipient_email, invoice_sender_id, sent_by, created_by, client_signed_at, xero_invoices, welcome_email, client:clients(company_name)";
-const APP = "https://proposal.ecdigitalstrategy.com";
 
 type TrackerInfo = {
   found: boolean;
@@ -305,7 +305,9 @@ async function notifySender(sb: Sb, p: ProposalRow, rec: WelcomeRecord, what: "s
     to = [...new Set([(data as { email?: string } | null)?.email, s.fallback_sender_email].filter((e): e is string => Boolean(e)))];
   }
   if (!to.length) return;
-  const url = `${APP}/proposals/${p.id}`;
+  const url = proposalLink(p.id, "welcome");
+  // A Gmail that has to be reconnected (expired, or calendar not allowed yet) is fixed in settings, not on the proposal.
+  const reconnect = [...(rec.missing ?? []), rec.error ?? ""].some((m) => /reconnect|expired|connected their Gmail/i.test(m));
   const lines =
     what === "sent"
       ? [
@@ -316,6 +318,9 @@ async function notifySender(sb: Sb, p: ProposalRow, rec: WelcomeRecord, what: "s
       : [
         "Nothing has gone to the client yet. It's drafted on the proposal page for you to check, edit and send.",
         ...(rec.missing?.length ? [`It needs a look because:<br>${rec.missing.map((m) => `&bull; ${esc(m)}`).join("<br>")}`] : []),
+        ...(reconnect
+          ? [`Fix the Gmail connection once so the next one goes by itself: ${inlineLink(gmailSettingsLink(), "Connected Gmail accounts")} (click Reconnect next to your name).`]
+          : []),
       ];
   await sendEmail({
     to,

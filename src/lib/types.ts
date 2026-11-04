@@ -653,6 +653,8 @@ export interface InvoicingSettings {
   auto_send: boolean;
   /** Always copied on invoice emails and client reminders (Maria). */
   cc_emails: string[];
+  /** Told about monthly drafts to approve and invoices Xero refused (Maria). */
+  finance_emails: string[];
   /** Whose Gmail sends when the proposal's creator hasn't connected theirs (Xiomara). */
   fallback_sender_email: string;
   /** Tell the reminder list about unpaid invoices. */

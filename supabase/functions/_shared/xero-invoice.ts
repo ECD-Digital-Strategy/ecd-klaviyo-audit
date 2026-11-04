@@ -10,7 +10,8 @@ import {
 import { type FeeKind, newYorkDate, type PlanLine, planInvoices } from "./xero-plan.ts";
 import { autoCodeLines } from "./xero-autocode.ts";
 import { notificationRecipients, proposalEmailHtml, sendEmail } from "./mailer.ts";
-import { deliverNewInvoices } from "./invoice-delivery.ts";
+import { deliverNewInvoices, loadInvoicing } from "./invoice-delivery.ts";
+import { inlineLink, proposalLink } from "./app-links.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -133,12 +134,65 @@ async function emailPaymentLinks(sb: SupabaseClient, proposalId: string, clientN
           `The implementation invoice for ${clientName} (${money(inv.total)}, due ${inv.due_date}) is approved in Xero. It has not been sent to the client.`,
           ...(inv.email_error ? [`It could not be emailed to them automatically: ${inv.email_error}`] : []),
           "Share the link below with them. They can view and pay it there.",
+          `Everything about this invoice is on the proposal's Xero card: ${inlineLink(proposalLink(proposalId, "xero"), "open the proposal")}.`,
         ],
         ctaLabel: "Open the invoice",
         ctaUrl: inv.online_url!,
       }),
     });
   }
+}
+
+/** Maria: the first month of a retainer is a draft in Xero, waiting for her to approve and send it. */
+async function emailMonthlyDrafts(sb: SupabaseClient, proposalId: string, clientName: string, invoices: CreatedInvoice[]) {
+  const to = (await loadInvoicing(sb)).finance_emails;
+  if (!to.length) return;
+  const money = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  for (const inv of invoices) {
+    await sendEmail({
+      to,
+      subject: `To approve: ${clientName} first month ${inv.number}`,
+      html: proposalEmailHtml({
+        heading: `${clientName}: the first month is a draft in Xero`,
+        bodyLines: [
+          `${clientName} signed, and the first month of their retainer (${money(inv.total)}, dated ${inv.date}) is waiting in Xero as a draft. Nothing has gone to the client.`,
+          "Check it, approve and send it from Xero, and set up the repeating invoice for the months after it.",
+          `The proposal: ${inlineLink(proposalLink(proposalId, "xero"), "open it")}.`,
+        ],
+        ctaLabel: "Open the draft in Xero",
+        ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,
+      }),
+    }).catch((e) => console.warn("xero: monthly draft notice failed", e));
+  }
+}
+
+/**
+ * Signing could not make the invoice (Xero refused, a line has no family, Xero is
+ * not connected): the proposal's sender and Maria are told, with a link straight
+ * to the Xero card and its Try again button. Only for the automatic run at signing;
+ * someone pressing Try again sees the reason on the page.
+ */
+export async function emailInvoiceFailure(sb: SupabaseClient, proposalId: string, reason: string) {
+  const s = await loadInvoicing(sb);
+  const to = await notificationRecipients(sb, s.finance_emails, "proposals", proposalId);
+  if (!to.length) return;
+  const { data } = await sb.from("proposals").select("title, client:clients(company_name)").eq("id", proposalId).maybeSingle();
+  const row = data as { title?: string; client?: { company_name?: string | null } | null } | null;
+  const company = row?.client?.company_name ?? row?.title ?? "A client";
+  const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  await sendEmail({
+    to,
+    subject: `Needs a fix: no Xero invoice for ${company}`,
+    html: proposalEmailHtml({
+      heading: `${esc(company)} signed, but the Xero invoice wasn't made`,
+      bodyLines: [
+        `Xero said: ${esc(reason.slice(0, 400))}`,
+        "Nothing has gone to the client. Fix what it names (often a line without a service in the Line Item Catalog), then press Try again on the proposal's Xero card.",
+      ],
+      ctaLabel: "Open the Xero card",
+      ctaUrl: proposalLink(proposalId, "xero"),
+    }),
+  }).catch((e) => console.warn("xero: failure notice failed", e));
 }
 
 async function recordError(sb: SupabaseClient, proposalId: string, error: string) {
@@ -377,6 +431,8 @@ export async function createDraftInvoiceForProposal(
       })
       : [];
     if (notEmailed.length) await emailPaymentLinks(sb, proposalId, contactName, notEmailed).catch((e) => console.warn("xero: payment link email failed", e));
+    const freshMonthly = created.filter((c) => c.kind === "monthly" && !already.some((a) => a.id === c.id));
+    if (freshMonthly.length) await emailMonthlyDrafts(sb, proposalId, contactName, freshMonthly);
     return { ok: true, invoices: created };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

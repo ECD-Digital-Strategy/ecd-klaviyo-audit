@@ -12,6 +12,7 @@ import {
   type InvoiceRecord,
 } from "../_shared/invoice-delivery.ts";
 import { sendAsPerson } from "../_shared/gmail.ts";
+import { inlineLink, proposalLink } from "../_shared/app-links.ts";
 import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
 import { rebuildWelcome, saveWelcomeDraft, sendWelcomeNow, skipWelcome, welcomeTick } from "../_shared/welcome-delivery.ts";
 
@@ -125,6 +126,7 @@ async function tick(sb: Sb) {
             ? "The client is getting a short reminder from the same address today."
             : "Worth a follow-up with the client.",
           "This comes again in a week until it is paid.",
+          `The proposal: ${inlineLink(proposalLink(p.id, "xero"), "open its Xero card")}.`,
         ],
         ctaLabel: "Open it in Xero",
         ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,

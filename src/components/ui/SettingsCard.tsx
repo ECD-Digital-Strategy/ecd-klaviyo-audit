@@ -17,6 +17,7 @@ export default function SettingsCard({
   collapsible = false,
   defaultOpen = true,
   storageKey,
+  forceOpen = false,
   children,
 }: {
   icon: ReactNode;
@@ -31,10 +32,12 @@ export default function SettingsCard({
   collapsible?: boolean;
   defaultOpen?: boolean;
   storageKey?: string;
+  /** Open whatever was remembered, e.g. when an email link points inside it. */
+  forceOpen?: boolean;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(() => {
-    if (!collapsible) return true;
+    if (!collapsible || forceOpen) return true;
     try {
       const saved = storageKey ? localStorage.getItem(storageKey) : null;
       return saved === null ? defaultOpen : saved === '1';

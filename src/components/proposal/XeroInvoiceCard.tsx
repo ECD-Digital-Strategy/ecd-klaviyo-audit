@@ -3,6 +3,7 @@ import { Check, Copy, ExternalLink, FileText, Loader2, RefreshCw, Sparkles } fro
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { getProposalSettings, updateProposalLineItem } from '../../lib/proposals-db';
 import { emailInvoiceNow } from '../../lib/invoice-sending';
+import { useFocusTarget } from '../../lib/use-focus-target';
 import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
@@ -30,6 +31,8 @@ export default function XeroInvoiceCard({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // From a Xero email (couldn't create it, payment link, unpaid, monthly draft): land here, glowing.
+  const { ref: focusRef, glowClass } = useFocusTarget('xero');
   // Invoice emails (Proposal settings): off until switched on. The card says what
   // actually happened, so nobody sends an invoice twice or not at all.
   const [invoicing, setInvoicing] = useState<InvoicingSettings | null>(null);
@@ -60,7 +63,7 @@ export default function XeroInvoiceCard({
   const failure = proposal.xero_invoice_error ? xeroErrorMessage(proposal.xero_invoice_error) : null;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
+    <div ref={focusRef} className={`rounded-xl border border-gray-200 bg-white p-4 ${glowClass}`}>
       <div className="flex items-center gap-2">
         <FileText className="h-3.5 w-3.5 text-gray-400" />
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Xero</h3>

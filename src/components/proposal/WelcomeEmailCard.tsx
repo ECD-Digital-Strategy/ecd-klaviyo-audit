@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Loader2, Mail, RefreshCw, Send } from 'lucide-react';
 import { welcomeAction } from '../../lib/invoice-sending';
+import { useFocusTarget } from '../../lib/use-focus-target';
 import { useToast } from '../ui/Toast';
 import type { Proposal, WelcomeEmailRecord } from '../../lib/types';
 
@@ -28,7 +29,9 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
   const [subject, setSubject] = useState(rec?.subject ?? '');
   const [body, setBody] = useState(rec?.body ?? '');
   const [busy, setBusy] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
+  // From the "Review and send" email: land here, glowing, with the draft open.
+  const { ref, focused, glowClass } = useFocusTarget('welcome');
+  const [open, setOpen] = useState(focused);
 
   useEffect(() => {
     setRec(proposal.welcome_email ?? null);
@@ -64,7 +67,7 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
+    <div ref={ref} className={`rounded-xl border border-gray-200 bg-white p-4 ${glowClass}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Mail className="h-3.5 w-3.5 text-gray-400" />

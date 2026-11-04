@@ -16,6 +16,7 @@ import {
   type TestTemplate,
 } from '../../lib/invoice-sending';
 import type { InvoicingSettings } from '../../lib/types';
+import { useFocusTarget } from '../../lib/use-focus-target';
 
 // Proposal settings: invoices emailed to the client from a person's own Gmail
 // (Emil + Isa, 2026-11-02; see src/lib/invoice-sending.ts). Everyone who may send
@@ -50,6 +51,11 @@ export default function InvoiceEmailSettings({
   const [busy, setBusy] = useState<string | null>(null);
   const [ccRaw, setCcRaw] = useState(value.cc_emails.join(', '));
   const [remindRaw, setRemindRaw] = useState(value.reminder_emails.join(', '));
+  const [financeRaw, setFinanceRaw] = useState(value.finance_emails.join(', '));
+  const financeJoined = value.finance_emails.join(', ');
+  useEffect(() => { setFinanceRaw(financeJoined); }, [financeJoined]);
+  // From a "reconnect your Gmail" email: open this section and make the list glow.
+  const { ref: gmailRef, focused: gmailFocused, glowClass } = useFocusTarget('gmail');
   // When the lists change from outside (Discard on the unsaved-changes bar), show them again.
   const ccJoined = value.cc_emails.join(', ');
   const remindJoined = value.reminder_emails.join(', ');
@@ -123,12 +129,13 @@ export default function InvoiceEmailSettings({
       }
       collapsible
       defaultOpen
+      forceOpen={gmailFocused}
       storageKey="settings_open_proposal_invoices"
     >
 
       <div className="divide-y divide-gray-100">
         {/* 1. Who can send */}
-        <div className="p-5">
+        <div ref={gmailRef} className={`rounded-lg p-5 ${glowClass}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h4 className="text-sm font-semibold text-gray-900">Connected Gmail accounts</h4>
@@ -252,6 +259,26 @@ export default function InvoiceEmailSettings({
               className={wide}
             />
             <p className="mt-1 text-[11px] text-gray-400">On every invoice email and every client reminder. Separate with commas.</p>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">Who looks after Xero</label>
+            <input
+              type="text"
+              value={financeRaw}
+              onChange={e => setFinanceRaw(e.target.value)}
+              onBlur={() => {
+                const list = parseEmails(financeRaw);
+                setFinanceRaw(list.join(', '));
+                set({ finance_emails: list });
+              }}
+              placeholder="maria@ecdigitalstrategy.com"
+              className={wide}
+            />
+            <p className="mt-1 text-[11px] text-gray-400">
+              Emailed when a retainer&apos;s first month is waiting in Xero to be approved, and (with whoever sent the proposal) when
+              Xero couldn&apos;t make an invoice at signing. Always on, whatever the switches here say.
+            </p>
           </div>
 
           <TemplateEditor

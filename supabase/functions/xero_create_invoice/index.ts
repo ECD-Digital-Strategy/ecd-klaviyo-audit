@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
-import { createDraftInvoiceForProposal } from "../_shared/xero-invoice.ts";
+import { createDraftInvoiceForProposal, emailInvoiceFailure } from "../_shared/xero-invoice.ts";
 import { loadConnection, serviceClient } from "../_shared/xero.ts";
 
 // Posts the DRAFT invoice for one proposal. Called two ways:
@@ -27,9 +27,13 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: { code: "method_not_allowed" } }, { status: 405 });
 
+  // The automatic run at signing (service role): failures email the sender and Maria,
+  // since nobody is looking at the page then.
+  let atSigning = false;
   try {
     const token = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-    if (!token || !isServiceRoleAuthorization(token)) await requireStaffUserId(req);
+    atSigning = Boolean(token) && isServiceRoleAuthorization(token);
+    if (!atSigning) await requireStaffUserId(req);
   } catch (e) {
     return json(
       { ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } },
@@ -46,11 +50,13 @@ serve(async (req) => {
     // Not connected yet is a normal state, not an error worth alarming about.
     const conn = await loadConnection(sb);
     if (!conn?.refresh_token_ciphertext || !conn.tenant_id) {
+      if (atSigning) await emailInvoiceFailure(sb, proposalId, "Xero is not connected. Reconnect it in Settings, Xero.");
       return json({ ok: false, error: { code: "not_connected", message: "Xero is not connected" } });
     }
 
     const result = await createDraftInvoiceForProposal(sb, proposalId);
     if (!result.ok) {
+      if (atSigning && result.error !== "already_invoiced") await emailInvoiceFailure(sb, proposalId, result.error);
       return json({ ok: false, error: { code: "invoice_failed", message: result.error } });
     }
     return json({

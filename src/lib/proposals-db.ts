@@ -86,6 +86,7 @@ export const DEFAULT_WELCOME: WelcomeSettings = {
 export const DEFAULT_INVOICING: InvoicingSettings = {
   auto_send: false,
   cc_emails: ['maria@ecdigitalstrategy.com'],
+  finance_emails: ['maria@ecdigitalstrategy.com'],
   fallback_sender_email: 'xiomara@ecdigitalstrategy.com',
   overdue_nudges: false,
   reminder_emails: ['xiomara@ecdigitalstrategy.com', 'maria@ecdigitalstrategy.com', 'isa@ecdigitalstrategy.com'],
@@ -161,6 +162,7 @@ export function mergeProposalSettings(raw: unknown): ProposalSettings {
       ...DEFAULT_INVOICING,
       ...(value.invoicing ?? {}),
       cc_emails: Array.isArray(value.invoicing?.cc_emails) ? value.invoicing!.cc_emails : DEFAULT_INVOICING.cc_emails,
+      finance_emails: Array.isArray(value.invoicing?.finance_emails) ? value.invoicing!.finance_emails : DEFAULT_INVOICING.finance_emails,
       reminder_emails: Array.isArray(value.invoicing?.reminder_emails) ? value.invoicing!.reminder_emails : DEFAULT_INVOICING.reminder_emails,
       welcome: {
         ...DEFAULT_WELCOME,

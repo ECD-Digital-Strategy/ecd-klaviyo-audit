@@ -19,6 +19,8 @@ export type InvoicingSettings = {
   auto_send: boolean;
   /** Always copied on invoice emails and client reminders (Maria). */
   cc_emails: string[];
+  /** Told when a monthly draft needs approving in Xero, and when Xero refuses an invoice at signing (Maria). */
+  finance_emails: string[];
   /** Whose Gmail sends when the proposal's creator hasn't connected theirs (Xiomara). */
   fallback_sender_email: string;
   /** Tell the reminder list about unpaid invoices. OFF until turned on. */
@@ -46,6 +48,7 @@ export type InvoicingSettings = {
 export const DEFAULT_INVOICING: InvoicingSettings = {
   auto_send: false,
   cc_emails: ["maria@ecdigitalstrategy.com"],
+  finance_emails: ["maria@ecdigitalstrategy.com"],
   fallback_sender_email: "xiomara@ecdigitalstrategy.com",
   overdue_nudges: false,
   reminder_emails: ["xiomara@ecdigitalstrategy.com", "maria@ecdigitalstrategy.com", "isa@ecdigitalstrategy.com"],
@@ -105,6 +108,7 @@ export function mergeInvoicing(raw: unknown): InvoicingSettings {
     overdue_nudges: v.overdue_nudges === true,
     client_reminders: v.client_reminders === true,
     cc_emails: emails(v.cc_emails, d.cc_emails),
+    finance_emails: emails(v.finance_emails, d.finance_emails),
     reminder_emails: emails(v.reminder_emails, d.reminder_emails),
     fallback_sender_email: text(v.fallback_sender_email, d.fallback_sender_email).trim().toLowerCase(),
     nudge_after_days: Math.max(1, Math.min(60, Math.round(Number(v.nudge_after_days ?? d.nudge_after_days)) || 7)),
