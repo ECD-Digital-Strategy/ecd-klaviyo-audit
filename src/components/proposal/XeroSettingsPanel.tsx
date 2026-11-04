@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Check, ExternalLink, Link2, Loader2, RefreshCw, Unlink } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import { useToast } from '../ui/Toast';
 import XeroServiceAccountsEditor from './XeroServiceAccountsEditor';
+import { getProposalSettings } from '../../lib/proposals-db';
+import type { InvoicingSettings } from '../../lib/types';
 import {
   disconnectXero,
   getXeroStatus,
@@ -13,6 +15,91 @@ import {
   type XeroAccount,
   type XeroStatus,
 } from '../../lib/xero';
+
+/**
+ * What happens in Xero when a client signs, in plain words, with what is switched
+ * on right now (2026-11-04: "clear explanations on the xero what does what, so
+ * everyone is clear on it"). Keep it true to supabase/functions/_shared/xero-plan.ts,
+ * xero-invoice.ts, invoice-delivery.ts, welcome-delivery.ts and invoice_followup.
+ */
+function XeroHowItWorks() {
+  const [inv, setInv] = useState<InvoicingSettings | null>(null);
+  useEffect(() => {
+    getProposalSettings().then(s => setInv(s.invoicing), () => setInv(null));
+  }, []);
+
+  const welcomeOn = Boolean(inv?.welcome.enabled);
+  const autoOn = Boolean(inv?.auto_send);
+  const sending = !inv
+    ? 'Loading what is switched on…'
+    : welcomeOn
+      ? `On: the Welcome email sends it from the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), with the next steps, ${inv.cc_emails.join(', ') || 'nobody'} copied.${inv.welcome.review_first ? ' It is drafted for the sender to check and send first.' : ' The sender is told when it goes.'}`
+      : autoOn
+        ? `On: emailed to the client from the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), with the PDF and pay link, ${inv.cc_emails.join(', ') || 'nobody'} copied.`
+        : 'Off: nothing goes to the client automatically. Whoever sent the proposal gets the pay link by email to forward.';
+  const reminders = !inv
+    ? ''
+    : inv.overdue_nudges
+      ? `On: Xero is checked every morning. If it is still unpaid ${inv.nudge_after_days} days after it was sent, ${inv.reminder_emails.join(', ')} get an email, then weekly until paid${inv.client_reminders ? ', and the client gets a short reminder too' : ''}.`
+      : 'Off: nobody is reminded, and the Xero card only shows paid once this is on (check Xero itself until then).';
+
+  const steps: Array<{ title: string; body: ReactNode; status?: string; on?: boolean }> = [
+    {
+      title: 'Client signs: up to two invoices are made',
+      body: (
+        <>
+          <strong>Implementation</strong> (everything one-time) is created <strong>approved</strong>, dated the day they sign,
+          due on receipt, with an online pay link. <strong>First month of the retainer</strong> (everything monthly) is
+          created as a <strong>draft</strong>, dated the 1st of next month when there is also an implementation, otherwise
+          the day they sign. A proposal with only one kind gets only that one. Optional lines count only if the client
+          ticked them, and a discount is spread across the lines it applies to.
+        </>
+      ),
+    },
+    {
+      title: 'Each line is coded for you',
+      body: (
+        <>
+          Every proposal line comes from a service in the <strong>Line Item Catalog</strong>, which says its{' '}
+          <strong>family</strong> and its <strong>Xero Item</strong>. The family decides the account: one-time work goes to the
+          family&apos;s one-time account, monthly work to its MRR account (the table below). The Item is what shows on the
+          invoice line in Xero.
+        </>
+      ),
+    },
+    { title: 'Implementation invoice: who sends it to the client', body: 'Set in Proposal settings, under Invoice emails and Welcome email.', status: sending, on: welcomeOn || autoOn },
+    {
+      title: 'Monthly invoice: Maria',
+      body: 'The first month stays a draft. Maria checks it, approves and sends it from Xero, and sets up the repeating invoice for the months after it. Nothing in this app sends monthly invoices.',
+    },
+    { title: 'Paid or unpaid', body: 'Set in Proposal settings, under Invoice emails.', status: reminders, on: Boolean(inv?.overdue_nudges) },
+    {
+      title: 'Where to see it',
+      body: 'Each signed proposal has a Xero card: the invoices, whether each was approved, sent, paid or is overdue, the pay link, and a retry if Xero refused something.',
+    },
+  ];
+
+  return (
+    <ol className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50/60 p-4">
+      {steps.map((s, i) => (
+        <li key={s.title} className="flex gap-3">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[11px] font-semibold text-brand-primary">
+            {i + 1}
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-gray-800">{s.title}</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-gray-500">{s.body}</p>
+            {s.status && (
+              <p className={`mt-1 rounded-md px-2 py-1 text-[11px] leading-relaxed ${s.on ? 'bg-emerald-50 text-emerald-800' : 'bg-white text-gray-500 ring-1 ring-gray-200'}`}>
+                {s.status}
+              </p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 /** Connect the agency's Xero org and choose where signed proposals post to. */
 export default function XeroSettingsPanel() {
@@ -110,9 +197,7 @@ export default function XeroSettingsPanel() {
         <div>
           <h3 className="text-sm font-semibold text-gray-900">Xero</h3>
           <p className="mt-0.5 text-sm text-gray-500">
-            When a client signs, a <strong>draft</strong> invoice is created in Xero covering the one-time fees plus the
-            first month of any retainer, with each line coded to its own revenue account. Draft means Xero never emails
-            the client: you approve and send it yourself.
+            Invoices are made in Xero automatically when a client signs a proposal. Here is exactly what happens.
           </p>
         </div>
         {status?.connected ? (
@@ -123,6 +208,8 @@ export default function XeroSettingsPanel() {
           <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-500">Not connected</span>
         )}
       </div>
+
+      <XeroHowItWorks />
 
       {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</p>}
 
@@ -170,7 +257,8 @@ export default function XeroSettingsPanel() {
                 </Select>
               </div>
               <p className="mt-1 text-[11px] text-gray-400">
-                Used only when a service has no one-time account of its own.
+                A safety net: only used if a one-time line somehow has no service family. Normally every line is coded by
+                its family below, so this is rarely touched.
               </p>
             </div>
           </div>
