@@ -16,8 +16,12 @@ export const GOOGLE_CLIENT_SECRET_KEY = "google_oauth_client_secret";
 // calendar.freebusy (2026-11-04): only when people are busy, never what the
 // events are, so the welcome email can offer launch call times that fit the team.
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
+// gmail.compose (2026-11-05, Zak + Xiomara: "a draft rather than send it
+// automatically"): emails to clients are written as drafts in the sender's own
+// Gmail for them to check and send. Still no reading of their mail.
+export const COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
 export const GMAIL_SCOPES =
-  `openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic ${CALENDAR_SCOPE}`;
+  `openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic ${COMPOSE_SCOPE} ${CALENDAR_SCOPE}`;
 /** Only ECD accounts may send ECD invoices. */
 export const ALLOWED_DOMAIN = "ecdigitalstrategy.com";
 
@@ -262,10 +266,83 @@ const signatureText = (html: string) =>
  * signature, read live from their Gmail settings. If it cannot be read (connected
  * before that permission existed) the email still goes, and signature says why.
  */
+type OutgoingMail = { fromName?: string | null; to: string[]; cc?: string[]; subject: string; html: string; text: string; attachments?: Attachment[]; signature?: boolean };
+
+/** The message as Gmail's API takes it (base64url MIME), with their signature added when it can be read. */
+async function rawWithSignature(sb: Sb, box: Mailbox, m: OutgoingMail): Promise<{ raw: string; signature: SignatureState }> {
+  let signature: SignatureState = "off";
+  if (m.signature !== false) {
+    try {
+      const sig = await gmailSignature(sb, box);
+      if (sig) {
+        m = {
+          ...m,
+          html: `${m.html}<br><div class="gmail_signature" style="margin-top:12px">${sig}</div>`,
+          text: `${m.text}\n\n-- \n${signatureText(sig)}`,
+        };
+        signature = "added";
+      } else {
+        signature = "none_set";
+      }
+    } catch (e) {
+      signature = e instanceof NeedsReconnect ? "needs_reconnect" : "none_set";
+    }
+  }
+  const from = m.fromName ? `${header(m.fromName)} <${box.email}>` : box.email;
+  return { raw: b64url(b64(new TextEncoder().encode(buildMime({ ...m, from })))), signature };
+}
+
+/**
+ * Writes the email as a DRAFT in the person's own Gmail, signature and attachments
+ * included, for them to check and send themselves (2026-11-05). Returns a link that
+ * opens the draft. Throws NeedsReconnect when they connected before drafts were
+ * allowed.
+ */
+export async function createDraftAsPerson(
+  sb: Sb,
+  box: Mailbox,
+  m: OutgoingMail,
+): Promise<{ draftId: string; messageId: string; url: string; signature: SignatureState }> {
+  const { raw, signature } = await rawWithSignature(sb, box, m);
+  const token = await accessTokenFor(sb, box.userId);
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ message: { raw } }),
+  });
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) {
+    throw new NeedsReconnect(`${box.email} needs to reconnect their Gmail once so the app can write drafts.`);
+  }
+  if (!res.ok) {
+    const msg = `gmail_draft_${res.status}: ${text.slice(0, 300)}`;
+    await sb.from("mailbox_connections").update({ last_error: msg.slice(0, 300) }).eq("user_id", box.userId);
+    throw new Error(msg);
+  }
+  const body = JSON.parse(text) as { id?: string; message?: { id?: string } };
+  const messageId = body.message?.id ?? "";
+  await sb.from("mailbox_connections").update({ last_used_at: new Date().toISOString(), last_error: null }).eq("user_id", box.userId);
+  return { draftId: body.id ?? "", messageId, url: gmailDraftUrl(box.email, messageId), signature };
+}
+
+/** Removes a draft the app wrote (e.g. replaced by a rebuilt one). Best effort: they may have sent or deleted it. */
+export async function deleteDraft(sb: Sb, box: Mailbox, draftId: string): Promise<void> {
+  if (!draftId) return;
+  const token = await accessTokenFor(sb, box.userId);
+  await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  }).catch(() => {});
+}
+
+/** Opens one draft in Gmail, signed in as that address. */
+export const gmailDraftUrl = (email: string, messageId: string) =>
+  `https://mail.google.com/mail/u/${encodeURIComponent(email)}/#drafts?compose=${encodeURIComponent(messageId)}`;
+
 export async function sendAsPerson(
   sb: Sb,
   box: Mailbox,
-  m: { fromName?: string | null; to: string[]; cc?: string[]; subject: string; html: string; text: string; attachments?: Attachment[]; signature?: boolean },
+  m: OutgoingMail,
 ): Promise<{ id: string; signature: SignatureState }> {
   let signature: SignatureState = "off";
   if (m.signature !== false) {

@@ -33,14 +33,14 @@ function XeroHowItWorks() {
   const sending = !inv
     ? 'Loading what is switched on…'
     : welcomeOn
-      ? `On: the Welcome email sends it from the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), with the next steps, ${inv.cc_emails.join(', ') || 'nobody'} copied.${inv.welcome.review_first ? ' It is drafted for the sender to check and send first.' : ' The sender is told when it goes.'}`
+      ? `On: the Welcome email (invoice plus next steps) is drafted in the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), ${inv.cc_emails.join(', ') || 'nobody'} copied. They get the link on Slack and press Send themselves. Nothing is sent automatically.`
       : autoOn
-        ? `On: emailed to the client from the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), with the PDF and pay link, ${inv.cc_emails.join(', ') || 'nobody'} copied.`
+        ? `On: the invoice email (PDF and pay link) is drafted in the Gmail of whoever created the proposal (else ${inv.fallback_sender_email}), ${inv.cc_emails.join(', ') || 'nobody'} copied. They get the link on Slack and press Send themselves. Nothing is sent automatically.`
         : 'Off: nothing goes to the client automatically. Whoever sent the proposal gets the pay link by email to forward.';
   const reminders = !inv
     ? ''
     : inv.overdue_nudges
-      ? `On: Xero is checked every morning. If it is still unpaid ${inv.nudge_after_days} days after it was sent, ${inv.reminder_emails.join(', ')} get an email, then weekly until paid${inv.client_reminders ? ', and the client gets a short reminder too' : ''}.`
+      ? `On: Xero is checked every morning. If it is still unpaid ${inv.nudge_after_days} days after it was sent, ${inv.reminder_emails.join(', ')} get an email, then weekly until paid${inv.client_reminders ? ", and a short client reminder is drafted in the sender's Gmail for them to send" : ''}.`
       : 'Off: nobody is reminded, and the Xero card only shows paid once this is on (check Xero itself until then).';
 
   const steps: Array<{ title: string; body: ReactNode; status?: string; on?: boolean }> = [

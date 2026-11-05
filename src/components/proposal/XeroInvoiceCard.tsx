@@ -75,7 +75,7 @@ export default function XeroInvoiceCard({
             <li key={inv.id}>
               <p className="text-sm font-medium text-gray-900">
                 {invoices.length > 1 || inv.kind === 'monthly' ? `${KIND_LABEL[inv.kind]}: ` : ''}
-                {inv.paid_at ? 'paid' : inv.emailed_at ? 'sent to the client' : inv.status === 'AUTHORISED' ? 'approved' : inv.held_reason ? 'held as a draft' : 'draft'}{' '}
+                {inv.paid_at ? 'paid' : inv.emailed_at ? 'sent to the client' : inv.drafted_at ? 'approved, email drafted in Gmail' : inv.status === 'AUTHORISED' ? 'approved' : inv.held_reason ? 'held as a draft' : 'draft'}{' '}
                 {inv.number ? `#${inv.number}` : 'created'}
               </p>
               {inv.date && (
@@ -92,13 +92,13 @@ export default function XeroInvoiceCard({
               >
                 Open in Xero <ExternalLink className="h-3.5 w-3.5" />
               </a>
-              {inv.online_url && <PaymentLink url={inv.online_url} alreadySent={Boolean(inv.emailed_at)} />}
+              {inv.online_url && <PaymentLink url={inv.online_url} alreadySent={Boolean(inv.emailed_at)} drafted={Boolean(inv.drafted_at && !inv.emailed_at)} />}
               {inv.kind === 'one_time' && inv.online_url && (
                 <InvoiceEmailStatus
                   proposalId={proposal.id}
                   invoice={inv}
                   // Not while the welcome email is going to carry it: it would go twice.
-                  canEmail={autoSend && !['waiting', 'draft', 'sending'].includes(proposal.welcome_email?.status ?? '')}
+                  canEmail={autoSend && !['waiting', 'draft', 'drafted', 'sending'].includes(proposal.welcome_email?.status ?? '')}
                   onChanged={onChanged}
                 />
               )}
@@ -165,7 +165,9 @@ function InvoiceNotes({
   const heldForWelcome = welcome && (welcome.status === 'waiting' || welcome.status === 'draft' || welcome.status === 'sending');
   const oneTime = invoices.filter(i => i.kind === 'one_time' && i.online_url);
   const emailed = oneTime.filter(i => i.emailed_at);
-  const notEmailed = oneTime.filter(i => !i.emailed_at);
+  // Since 2026-11-05 the app writes a draft in the sender's Gmail and never sends.
+  const drafted = oneTime.filter(i => !i.emailed_at && i.drafted_at);
+  const notEmailed = oneTime.filter(i => !i.emailed_at && !i.drafted_at);
   const drafts = invoices.filter(i => i.status !== 'AUTHORISED' && !i.paid_at && !i.held_reason);
   const held = invoices.filter(i => i.held_reason && i.status !== 'AUTHORISED' && !i.paid_at);
   const monthly = invoices.some(i => i.kind === 'monthly');
@@ -185,15 +187,27 @@ function InvoiceNotes({
       });
     }
   }
+  for (const inv of drafted) {
+    lines.push({
+      tone: 'ok',
+      text: `The email to ${inv.drafted_to} is drafted in ${inv.drafted_from}'s Gmail (${day(inv.drafted_at!.slice(0, 10))})${inv.emailed_as_fallback ? ', with the intro' : ''}${cc.length ? `, ${cc.join(', ')} copied` : ''}. It goes when they press Send there; they were sent the link (on Slack, or by email if Slack couldn't reach them).`,
+    });
+    if (!inv.paid_at && invoicing?.overdue_nudges) {
+      const who2 = invoicing.reminder_emails.length ? invoicing.reminder_emails.map(e => e.split('@')[0]).join(', ') : 'the team';
+      lines.push({
+        text: `If it's still unpaid ${invoicing.nudge_after_days} days after that, ${who2} get a reminder${invoicing.client_reminders ? ', and a short client reminder is drafted in the same Gmail' : ''}.`,
+      });
+    }
+  }
   for (const inv of notEmailed) {
     if (heldForWelcome) {
       lines.push({
         text: welcome.status === 'draft'
-          ? 'Goes with the welcome email, drafted below for review.'
+          ? 'Goes with the welcome email, waiting below.'
           : 'Goes with the welcome email once it is ready (below). Nothing to send by hand.',
       });
     } else if (invoicing?.auto_send && inv.email_error) {
-      lines.push({ tone: 'warn', text: `Not emailed automatically: ${inv.email_error} Use "Email it to the client" above, or share the payment link.` });
+      lines.push({ tone: 'warn', text: `Not drafted in Gmail: ${inv.email_error} Use "Draft it in Gmail" above, or share the payment link.` });
     } else {
       lines.push({ text: 'Not emailed to the client. Share the payment link with them; whoever sent the proposal was emailed it too.' });
     }
@@ -246,7 +260,7 @@ function InvoiceEmailStatus({
     setBusy(true);
     try {
       const r = await emailInvoiceNow(proposalId, inv.id);
-      toast(`Invoice emailed to ${r.to}`);
+      toast(`Drafted in ${r.from}'s Gmail, to ${r.to}. They were sent the link to send it.`);
       onChanged();
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not email it');
@@ -264,8 +278,13 @@ function InvoiceEmailStatus({
         <p className="font-medium text-amber-700">Overdue since {day(inv.due_date)}{inv.last_nudge_at ? `, team reminded ${day(inv.last_nudge_at.slice(0, 10))}` : ''}</p>
       ) : null}
       {/* Who it went to, or why it didn't, is in the notes under the invoices. */}
-      {inv.emailed_at ? (
-        inv.last_client_reminder_at ? <p className="text-gray-500">Client reminded {day(inv.last_client_reminder_at.slice(0, 10))}</p> : null
+      {inv.drafted_at && !inv.emailed_at && inv.draft_url && (
+        <a href={inv.draft_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium text-brand-primary hover:underline">
+          Open the draft in {inv.drafted_from?.split('@')[0]}&apos;s Gmail <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+      {inv.emailed_at || inv.drafted_at ? (
+        inv.last_client_reminder_at ? <p className="text-gray-500">Client reminder drafted {day(inv.last_client_reminder_at.slice(0, 10))}</p> : null
       ) : (
         <>
           {canEmail && (
@@ -275,7 +294,7 @@ function InvoiceEmailStatus({
               onClick={send}
               className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Email it to the client
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Draft it in Gmail
             </button>
           )}
         </>
@@ -406,7 +425,7 @@ function UncodedLines({
 }
 
 /** The link the client pays from: copy it to share, or open it. */
-function PaymentLink({ url, alreadySent = false }: { url: string; alreadySent?: boolean }) {
+function PaymentLink({ url, alreadySent = false, drafted = false }: { url: string; alreadySent?: boolean; drafted?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -421,6 +440,7 @@ function PaymentLink({ url, alreadySent = false }: { url: string; alreadySent?: 
     <div className="mt-2 rounded-lg border border-brand-primary/20 bg-brand-primary/5 p-2">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-primary">
         Payment link{alreadySent && <span className="ml-1 font-medium normal-case tracking-normal text-gray-500">· already in the client&apos;s email</span>}
+        {drafted && <span className="ml-1 font-medium normal-case tracking-normal text-gray-500">· in the Gmail draft</span>}
       </p>
       <p className="mt-0.5 truncate text-[11px] text-gray-600">{url.replace(/^https?:\/\//, '')}</p>
       <div className="mt-1.5 flex gap-1.5">

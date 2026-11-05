@@ -6,6 +6,7 @@ import ToggleSwitch, { ToggleRow } from '../ui/ToggleSwitch';
 import { Select, SelectContent, SelectItem, SelectItemText, SelectTrigger, SelectValue } from '../ui/select';
 import {
   canReadCalendars,
+  canWriteDrafts,
   connectGmail,
   disconnectGmail,
   getGmailStatus,
@@ -114,16 +115,16 @@ export default function InvoiceEmailSettings({
     <SettingsCard
       icon={<Receipt className="h-4 w-4" />}
       title="Invoice emails"
-      description="When a client signs, their implementation invoice is emailed to them from the Gmail of whoever is picked on the proposal, with the PDF and the pay link. Monthly invoices stay drafts in Xero."
+description="When a client signs, the email with their implementation invoice (PDF and pay link) is written as a draft in the Gmail of whoever is picked on the proposal, and they get the link on Slack to check it and press Send. Nothing is sent automatically. Monthly invoices stay drafts in Xero for Maria."
       control={
         <>
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.auto_send ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-            {value.auto_send ? 'Sending on' : 'Sending off'}
+            {value.auto_send ? 'Drafting on' : 'Drafting off'}
           </span>
           <ToggleSwitch
             checked={value.auto_send}
             onChange={v => set({ auto_send: v })}
-            aria-label="Email the invoice to the client when they sign"
+            aria-label="Draft the invoice email in the sender's Gmail when the client signs"
           />
         </>
       }
@@ -140,8 +141,8 @@ export default function InvoiceEmailSettings({
             <div>
               <h4 className="text-sm font-semibold text-gray-900">Connected Gmail accounts</h4>
               <p className="mt-0.5 text-xs text-gray-500">
-                Invoices can come from anyone here. Each proposal picks one under &quot;Invoice sent by&quot;. Connecting only allows
-                sending, never reading mail.
+                Invoice emails can be drafted in anyone&apos;s Gmail here. Each proposal picks one under &quot;Invoice sent by&quot;.
+                Connecting lets the app write drafts (and read calendar free/busy), never read mail.
               </p>
             </div>
             {status?.configured && !status.mine && (
@@ -211,7 +212,7 @@ export default function InvoiceEmailSettings({
             <ol className="mt-2 space-y-1.5 text-xs text-gray-600">
               <li className="flex gap-2">
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">1</span>
-                Whoever created the proposal, from their own Gmail (a proposal can pick someone else under &quot;Invoice sent by&quot;).
+                Whoever created the proposal, drafted in their own Gmail (a proposal can pick someone else under &quot;Invoice sent by&quot;).
               </li>
               <li className="flex gap-2">
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">2</span>
@@ -219,7 +220,7 @@ export default function InvoiceEmailSettings({
               </li>
               <li className="flex gap-2">
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-[10px] font-semibold text-brand-primary">3</span>
-                If neither is connected, nothing goes to the client: the payment link goes to the proposal&apos;s sender to forward.
+                If neither is connected, there&apos;s no draft: the payment link is emailed to the proposal&apos;s sender to forward.
               </li>
             </ol>
             <div className="mt-4">
@@ -344,7 +345,7 @@ export default function InvoiceEmailSettings({
           <div className="border-t border-gray-100 pt-5">
             <ToggleRow
               title="Also remind the client"
-              description="On the same days, a short, polite reminder to the client from the Gmail the invoice came from, with the people in Always copy copied."
+description="On the same days, a short, polite reminder to the client is drafted in the Gmail the invoice came from (Always copy copied), and the sender gets the link on Slack to send it."
               checked={value.client_reminders}
               onChange={v => set({ client_reminders: v })}
               disabled={!value.overdue_nudges}
@@ -495,9 +496,10 @@ function ConnectionRow({
           {c.email} · connected {shortDate(c.connected_at)}{used ? ` · last sent ${used}` : ''}
         </p>
         {c.last_error && !needsReconnect && <p className="mt-0.5 text-[11px] text-amber-700">Last problem: {c.last_error}</p>}
-        {!needsReconnect && !canReadCalendars(c) && (
-          <p className="mt-0.5 text-[11px] text-gray-400">
-            Calendar free/busy not allowed yet: {c.is_me ? 'reconnect' : 'they reconnect'} once so the welcome email can offer launch call times.
+        {!needsReconnect && (!canWriteDrafts(c) || !canReadCalendars(c)) && (
+          <p className="mt-0.5 text-[11px] text-amber-700">
+            {c.is_me ? 'Reconnect' : 'They need to reconnect'} once so the app can {!canWriteDrafts(c) ? 'write drafts in this Gmail' : ''}
+            {!canWriteDrafts(c) && !canReadCalendars(c) ? ' and ' : ''}{!canReadCalendars(c) ? 'check calendars for launch call times' : ''}.
           </p>
         )}
       </div>

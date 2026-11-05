@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { xeroApi, xeroInvoicePdf } from "./xero.ts";
-import { mailboxFor, sendAsPerson, type Attachment, type Mailbox } from "./gmail.ts";
+import { mailboxFor, type Attachment, type Mailbox } from "./gmail.ts";
+import { draftForClient } from "./client-draft.ts";
 import { longDate, mergeInvoicing, money, renderInvoiceEmail, type InvoicingSettings } from "./invoice-email.ts";
-import { holdsInvoice } from "./welcome-email.ts";
+import { holdsInvoice, type WelcomeStatus } from "./welcome-email.ts";
 
 // Emails a signed proposal's implementation invoice to the client, with the PDF
 // and the Xero pay link, Maria copied (Emil + Isa, 2026-11-02). Who it comes from,
@@ -27,14 +28,19 @@ export type InvoiceRecord = {
   total: number;
   status?: string;
   online_url?: string | null;
-  /** Set once it is emailed to the client. */
+  /** Set once it is emailed to the client (before 2026-11-05, when the app still sent). */
   emailed_at?: string | null;
   emailed_from?: string | null;
   emailed_to?: string | null;
   /** True when it went from the fallback sender with the intro email. */
   emailed_as_fallback?: boolean | null;
   email_error?: string | null;
-  /** Client reminders sent (client_reminders on). */
+  /** Since 2026-11-05: written as a draft in the sender's Gmail for them to send. */
+  drafted_at?: string | null;
+  drafted_from?: string | null;
+  drafted_to?: string | null;
+  draft_url?: string | null;
+  /** Client reminders drafted (client_reminders on). */
   last_client_reminder_at?: string | null;
   /** From Xero, by the daily follow-up. */
   paid_at?: string | null;
@@ -108,7 +114,12 @@ async function loadProposal(sb: Sb, proposalId: string): Promise<ProposalForEmai
   return (data as ProposalForEmail | null) ?? null;
 }
 
-/** Emails one approved invoice to the client. Throws with a plain reason when it cannot. */
+/**
+ * Writes the invoice email for one approved invoice as a DRAFT in the sender's
+ * Gmail (PDF attached, Maria copied) and Slacks them the link to check and send it
+ * (2026-11-05: nothing goes to a client automatically). Throws with a plain reason
+ * when it cannot.
+ */
 export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId: string, settings?: InvoicingSettings) {
   const s = settings ?? (await loadInvoicing(sb));
   const p = await loadProposal(sb, proposalId);
@@ -146,28 +157,34 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
   }
 
   const cc = s.cc_emails.filter((e) => e.toLowerCase() !== box.email.toLowerCase() && e.toLowerCase() !== to.toLowerCase());
-  await sendAsPerson(sb, box, { fromName: senderName || null, to: [to], cc, subject: email.subject, html: email.html, text: email.text, attachments });
+  const draft = await draftForClient(
+    sb,
+    box,
+    { fromName: senderName || null, to: [to], cc, subject: email.subject, html: email.html, text: email.text, attachments },
+    { what: `Invoice ${inv.number || ""} for ${company || p.title}`.replace(/\s+/g, " "), to, proposalId, focus: "xero" },
+  );
 
-  // Xero shows it as sent, with a note of how and by whom. Best effort.
-  await xeroApi(sb, "/Invoices", { method: "POST", body: { Invoices: [{ InvoiceID: inv.id, SentToContact: true }] } }).catch(() => {});
+  // A note in Xero of where it is. Not marked sent: the person sends it.
   await xeroApi(sb, `/Invoices/${inv.id}/History`, {
     method: "PUT",
-    body: { HistoryRecords: [{ Details: `Emailed to ${to} from ${box.email} by the proposals app${cc.length ? `, copying ${cc.join(", ")}` : ""}.` }] },
+    body: { HistoryRecords: [{ Details: `Drafted to ${to} in ${box.email}'s Gmail by the proposals app${cc.length ? `, copying ${cc.join(", ")}` : ""}, for them to send.` }] },
   }).catch(() => {});
 
   await patchInvoiceRecord(sb, proposalId, inv.id, {
-    emailed_at: new Date().toISOString(),
-    emailed_from: box.email,
-    emailed_to: to,
+    drafted_at: new Date().toISOString(),
+    drafted_from: box.email,
+    drafted_to: to,
+    draft_url: draft.url,
     emailed_as_fallback: fallback,
     email_error: null,
   });
-  return { to, from: box.email, cc, fallback };
+  return { to, from: box.email, cc, fallback, draft_url: draft.url, notified: draft.notified };
 }
 
 /**
- * After signing: emails the new implementation invoices when auto-send is on.
- * Returns the ones NOT emailed, for the usual payment-link email to the sender.
+ * After signing: drafts the invoice email for the new implementation invoices in
+ * the sender's Gmail when invoice emails are on. Returns the ones NOT drafted, for
+ * the usual payment-link email to the sender.
  */
 export async function deliverNewInvoices(sb: Sb, proposalId: string, fresh: InvoiceRecord[]): Promise<InvoiceRecord[]> {
   const s = await loadInvoicing(sb);
@@ -175,7 +192,7 @@ export async function deliverNewInvoices(sb: Sb, proposalId: string, fresh: Invo
   // neither emailed on its own nor sent to the sender as a payment link.
   if (s.welcome.enabled) {
     const { data } = await sb.from("proposals").select("client_signed_at, welcome_email").eq("id", proposalId).maybeSingle();
-    const row = data as { client_signed_at: string | null; welcome_email: { status?: "waiting" | "sending" | "draft" | "sent" | "skipped" } | null } | null;
+    const row = data as { client_signed_at: string | null; welcome_email: { status?: WelcomeStatus } | null } | null;
     if (row && holdsInvoice(s.welcome, row)) return fresh.filter((inv) => inv.kind !== "one_time");
   }
   if (!s.auto_send) return fresh;

@@ -167,14 +167,15 @@ export function daysOverdue(dueDate: string, today: string): number {
   return Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${dueDate}T12:00:00Z`)) / 86_400_000);
 }
 
-/** When the invoice went to the client: the day it was emailed, else its date. */
-export const sentOn = (inv: { date: string; emailed_at?: string | null }) => (inv.emailed_at ? inv.emailed_at.slice(0, 10) : inv.date);
+/** When the invoice went to the client: the day it was emailed (or drafted for the sender to send), else its date. */
+export const sentOn = (inv: { date: string; emailed_at?: string | null; drafted_at?: string | null }) =>
+  (inv.emailed_at ?? inv.drafted_at)?.slice(0, 10) || inv.date;
 
 /** Whether an unpaid invoice gets a reminder today: first nudge_after_days after
  * it was sent (Isa: "not paid within 7 days of sending"), then every 7 days after
  * the last one. */
 export function nudgeDue(
-  inv: { date: string; emailed_at?: string | null; last_nudge_at?: string | null },
+  inv: { date: string; emailed_at?: string | null; drafted_at?: string | null; last_nudge_at?: string | null },
   s: Pick<InvoicingSettings, "nudge_after_days" | "nudges_since">,
   today: string,
 ): boolean {

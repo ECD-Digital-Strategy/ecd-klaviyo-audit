@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { xeroApi, xeroInvoicePdf } from "./xero.ts";
-import { freeBusy, NeedsReconnect, sendAsPerson, type Attachment } from "./gmail.ts";
+import { deleteDraft, freeBusy, NeedsReconnect, type Attachment } from "./gmail.ts";
+import { draftForClient, slackDm } from "./client-draft.ts";
 import { loadInvoicing, patchInvoiceRecord, resolveSender, senderFirstName, type InvoiceRecord } from "./invoice-delivery.ts";
 import { longDate, money, type InvoicingSettings } from "./invoice-email.ts";
 import { fillSubject, fillWelcome, LINK_LABELS, welcomeHtml, type WelcomeSettings, type WelcomeVars } from "./welcome-email.ts";
@@ -16,9 +17,11 @@ import { gmailSettingsLink, inlineLink, proposalLink } from "./app-links.ts";
 //     is confirmed in the Client Tracker;
 //  3. it reads Isa's and the RS's free/busy through the sender's Google
 //     connection and picks launch call times;
-//  4. everything there and review_first off: sent from the sender's Gmail, Maria
-//     copied, and the sender told. Otherwise a draft on the proposal page, and the
-//     sender told why it needs a look.
+//  4. then (2026-11-05: nothing is sent to clients automatically) it is written as
+//     a DRAFT in the sender's own Gmail, Maria copied, invoice PDF attached, and
+//     the sender gets a Slack DM with the link to check and send it, with anything
+//     missing listed. If it can't go into Gmail it waits on the proposal page and
+//     the sender is told why.
 // While a proposal is covered, its implementation invoice is not emailed on its own
 // (invoice-delivery.ts holds it): the welcome email carries it.
 
@@ -46,8 +49,13 @@ export type WelcomeRecord = {
   fallback?: boolean;
   invoice_id?: string | null;
   sent_at?: string | null;
-  /** Who pressed Send (null: sent automatically). */
   sent_by?: string | null;
+  /** The draft in the sender's Gmail (2026-11-05). */
+  drafted_at?: string | null;
+  draft_url?: string | null;
+  draft_id?: string | null;
+  /** How the sender was told about it. */
+  notified?: "slack" | "email" | "none";
   notified_at?: string | null;
   error?: string | null;
 };
@@ -252,8 +260,12 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
   };
 }
 
-/** Sends a composed record from its sender's Gmail. Returns the record as sent. */
-async function deliver(sb: Sb, p: ProposalRow, rec: WelcomeRecord, sentBy: string | null): Promise<WelcomeRecord> {
+/**
+ * Writes a composed record into its sender's Gmail as a DRAFT (2026-11-05: the app
+ * never sends to clients) and Slacks them the link. A draft it wrote before for
+ * this proposal is replaced, so a rebuild never leaves two in their Drafts.
+ */
+async function toGmail(sb: Sb, p: ProposalRow, rec: WelcomeRecord): Promise<WelcomeRecord> {
   if (!rec.from_user_id || !rec.from_email) throw new Error("No sender: connect a Gmail first.");
   if (!rec.to?.includes("@")) throw new Error("The proposal has no client email.");
   if (!rec.subject?.trim() || !rec.body?.trim()) throw new Error("The email is empty.");
@@ -268,70 +280,87 @@ async function deliver(sb: Sb, p: ProposalRow, rec: WelcomeRecord, sentBy: strin
       console.warn("welcome: invoice PDF not attached", e);
     }
   }
-  await sendAsPerson(sb, box, {
-    fromName: full || null,
-    to: [rec.to],
-    cc: rec.cc ?? [],
-    subject: rec.subject,
-    html: welcomeHtml(rec.body, rec.links ?? {}),
-    text: rec.body,
-    attachments,
-  });
+  const prev = p.welcome_email;
+  if (prev?.draft_id && prev.from_user_id === box.userId) await deleteDraft(sb, box, prev.draft_id).catch(() => {});
+  const company = p.client?.company_name ?? p.title;
+  const draft = await draftForClient(
+    sb,
+    box,
+    { fromName: full || null, to: [rec.to], cc: rec.cc ?? [], subject: rec.subject, html: welcomeHtml(rec.body, rec.links ?? {}), text: rec.body, attachments },
+    { what: `Welcome email for ${company}`, to: rec.to, proposalId: p.id, focus: "welcome", checks: rec.missing },
+  );
+  const now = new Date().toISOString();
   if (inv) {
-    await xeroApi(sb, "/Invoices", { method: "POST", body: { Invoices: [{ InvoiceID: inv.id, SentToContact: true }] } }).catch(() => {});
     await xeroApi(sb, `/Invoices/${inv.id}/History`, {
       method: "PUT",
-      body: { HistoryRecords: [{ Details: `Emailed to ${rec.to} from ${box.email} with the welcome email, by the proposals app.` }] },
+      body: { HistoryRecords: [{ Details: `Drafted to ${rec.to} with the welcome email in ${box.email}'s Gmail by the proposals app, for them to send.` }] },
     }).catch(() => {});
     await patchInvoiceRecord(sb, p.id, inv.id, {
-      emailed_at: new Date().toISOString(),
-      emailed_from: box.email,
-      emailed_to: rec.to,
+      drafted_at: now,
+      drafted_from: box.email,
+      drafted_to: rec.to,
+      draft_url: draft.url,
       emailed_as_fallback: rec.fallback ?? false,
       email_error: null,
     });
   }
-  return { ...rec, status: "sent", sent_at: new Date().toISOString(), sent_by: sentBy, error: null };
+  return { ...rec, status: "drafted", drafted_at: now, draft_url: draft.url, draft_id: draft.draftId, notified: draft.notified, notified_at: now, error: null };
 }
 
-/** Tells the sender (Xiomara, or whoever it comes from) what happened. */
-async function notifySender(sb: Sb, p: ProposalRow, rec: WelcomeRecord, what: "sent" | "draft") {
+/** When it couldn't be written into Gmail: the sender (else the creator and the fallback sender) is told why, and how to fix it. */
+async function notifyProblem(sb: Sb, p: ProposalRow, rec: WelcomeRecord) {
   const company = p.client?.company_name ?? p.title;
   let to = rec.from_email ? [rec.from_email] : [];
   if (!to.length) {
-    // No sender at all: the creator and the fallback sender hear about it.
     const s = await loadInvoicing(sb);
     const { data } = p.created_by ? await sb.from("profiles").select("email").eq("id", p.created_by).maybeSingle() : { data: null };
     to = [...new Set([(data as { email?: string } | null)?.email, s.fallback_sender_email].filter((e): e is string => Boolean(e)))];
   }
   if (!to.length) return;
-  const url = proposalLink(p.id, "welcome");
-  // A Gmail that has to be reconnected (expired, or calendar not allowed yet) is fixed in settings, not on the proposal.
   const reconnect = [...(rec.missing ?? []), rec.error ?? ""].some((m) => /reconnect|expired|connected their Gmail/i.test(m));
-  const lines =
-    what === "sent"
-      ? [
-        `It went to ${esc(rec.to ?? "the client")} from your Gmail${rec.cc?.length ? `, copying ${esc(rec.cc.join(", "))}` : ""}. Replies come to your inbox as usual.`,
-        `<strong>${esc(rec.subject ?? "")}</strong>`,
-        ...(rec.body ?? "").split(/\n\s*\n/).map((para) => esc(para).replace(/\n/g, "<br>")),
-      ]
-      : [
-        "Nothing has gone to the client yet. It's drafted on the proposal page for you to check, edit and send.",
-        ...(rec.missing?.length ? [`It needs a look because:<br>${rec.missing.map((m) => `&bull; ${esc(m)}`).join("<br>")}`] : []),
+  const reasons = [...(rec.error ? [rec.error] : []), ...(rec.missing ?? [])];
+  for (const email of to) {
+    await slackDm(
+      email,
+      [
+        `:warning: The welcome email for *${company}* couldn't be written into your Gmail. Nothing has gone to the client.`,
+        ...reasons.map((r) => `• ${r}`),
+        ...(reconnect ? [`Fix: <${gmailSettingsLink()}|Connected Gmail accounts>, click Reconnect next to your name.`] : []),
+        `<${proposalLink(p.id, "welcome")}|Open the proposal> to finish it.`,
+      ].join("\n"),
+    ).catch(() => {});
+  }
+  await sendEmail({
+    to,
+    subject: `Needs you: the welcome email for ${company}`,
+    html: proposalEmailHtml({
+      heading: `The welcome email for ${esc(company)} couldn't be drafted in Gmail`,
+      bodyLines: [
+        "Nothing has gone to the client. It's on the proposal page instead, ready to check and put into Gmail.",
+        ...(reasons.length ? [`Why:<br>${reasons.map((m) => `&bull; ${esc(m)}`).join("<br>")}`] : []),
         ...(reconnect
           ? [`Fix the Gmail connection once so the next one goes by itself: ${inlineLink(gmailSettingsLink(), "Connected Gmail accounts")} (click Reconnect next to your name).`]
           : []),
-      ];
-  await sendEmail({
-    to,
-    subject: what === "sent" ? `Welcome email sent to ${company}` : `Review the welcome email for ${company}`,
-    html: proposalEmailHtml({
-      heading: what === "sent" ? `Your welcome email to ${esc(company)} went out` : `The welcome email for ${esc(company)} is ready to review`,
-      bodyLines: lines,
-      ctaLabel: what === "sent" ? "Open the proposal" : "Review and send",
-      ctaUrl: url,
+      ],
+      ctaLabel: "Open the welcome email",
+      ctaUrl: proposalLink(p.id, "welcome"),
     }),
-  }).catch((e) => console.warn("welcome: sender notice failed", e));
+  }).catch((e) => console.warn("welcome: problem notice failed", e));
+}
+
+/** Drafts it in Gmail; if that can't happen, keeps it on the proposal page and says why. */
+async function draftOrHold(sb: Sb, p: ProposalRow, rec: WelcomeRecord): Promise<WelcomeRecord> {
+  try {
+    const drafted = await toGmail(sb, p, rec);
+    await save(sb, p.id, drafted);
+    return drafted;
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    const held: WelcomeRecord = { ...rec, status: "draft", error, notified_at: new Date().toISOString() };
+    await save(sb, p.id, held);
+    await notifyProblem(sb, p, held);
+    return held;
+  }
 }
 
 async function load(sb: Sb, id: string): Promise<ProposalRow | null> {
@@ -339,7 +368,7 @@ async function load(sb: Sb, id: string): Promise<ProposalRow | null> {
   return (data as ProposalRow | null) ?? null;
 }
 
-/** One waiting proposal: wait longer, draft it, or send it. */
+/** One waiting proposal: wait longer, or draft it in the sender's Gmail. */
 async function step(sb: Sb, p: ProposalRow, s: InvoicingSettings): Promise<string> {
   const w = s.welcome;
   const company = p.client?.company_name ?? p.title;
@@ -354,25 +383,9 @@ async function step(sb: Sb, p: ProposalRow, s: InvoicingSettings): Promise<strin
     await save(sb, p.id, { ...base, status: "waiting", missing: composed.rec.missing ?? [] });
     return `${company}: waiting (${(composed.rec.missing ?? []).length} to come)`;
   }
-  if (composed.ready && !w.review_first) {
-    if (!(await claim(sb, p.id, "waiting", { ...composed.rec, status: "sending" }))) return `${company}: taken by another run`;
-    try {
-      const sent = await deliver(sb, p, composed.rec, null);
-      await save(sb, p.id, { ...sent, notified_at: new Date().toISOString() });
-      await notifySender(sb, p, sent, "sent");
-      return `${company}: sent`;
-    } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      const draft: WelcomeRecord = { ...composed.rec, status: "draft", error, missing: [...(composed.rec.missing ?? []), `Sending failed: ${error}`] };
-      await save(sb, p.id, { ...draft, notified_at: new Date().toISOString() });
-      await notifySender(sb, p, draft, "draft");
-      return `${company}: send failed, drafted (${error})`;
-    }
-  }
-  const draft: WelcomeRecord = { ...composed.rec, status: "draft", notified_at: new Date().toISOString() };
-  if (!(await claim(sb, p.id, "waiting", draft))) return `${company}: taken by another run`;
-  await notifySender(sb, p, draft, "draft");
-  return `${company}: drafted for review`;
+  if (!(await claim(sb, p.id, "waiting", { ...composed.rec, status: "sending" }))) return `${company}: taken by another run`;
+  const out = await draftOrHold(sb, p, composed.rec);
+  return out.status === "drafted" ? `${company}: drafted in ${out.from_email}'s Gmail (${out.notified})` : `${company}: held, ${out.error}`;
 }
 
 /** The scheduled run. */
@@ -406,11 +419,11 @@ export async function welcomeTick(sb: Sb) {
   return { ok: true, queued: fresh?.length ?? 0, log };
 }
 
-/** From the proposal page: save edits to a draft. */
+/** From the proposal page: save edits to one held on the page (couldn't be put into Gmail). */
 export async function saveWelcomeDraft(sb: Sb, proposalId: string, edit: { subject?: string; body?: string }) {
   const p = await load(sb, proposalId);
   if (!p?.welcome_email) throw new Error("This proposal has no welcome email.");
-  if (p.welcome_email.status !== "draft") throw new Error("Only a draft can be edited.");
+  if (p.welcome_email.status !== "draft") throw new Error("Only one waiting on this page can be edited here. A Gmail draft is edited in Gmail.");
   const rec = {
     ...p.welcome_email,
     subject: typeof edit.subject === "string" ? edit.subject.slice(0, 300) : p.welcome_email.subject,
@@ -420,50 +433,46 @@ export async function saveWelcomeDraft(sb: Sb, proposalId: string, edit: { subje
   return rec;
 }
 
-/** From the proposal page: send the draft (with any edits), as the sender. */
-export async function sendWelcomeNow(sb: Sb, proposalId: string, userId: string, edit: { subject?: string; body?: string }) {
+/** From the proposal page: put one held on the page (with any edits) into the sender's Gmail as a draft. Never sends. */
+export async function sendWelcomeNow(sb: Sb, proposalId: string, _userId: string, edit: { subject?: string; body?: string }) {
   const p = await load(sb, proposalId);
   if (!p?.welcome_email) throw new Error("This proposal has no welcome email.");
-  if (p.welcome_email.status !== "draft") throw new Error(p.welcome_email.status === "sent" ? "It has already been sent." : "It isn't ready to send yet.");
+  if (p.welcome_email.status !== "draft") throw new Error("It isn't waiting on this page.");
   const rec: WelcomeRecord = {
     ...p.welcome_email,
     subject: typeof edit.subject === "string" && edit.subject.trim() ? edit.subject.slice(0, 300) : p.welcome_email.subject,
     body: typeof edit.body === "string" && edit.body.trim() ? edit.body.slice(0, 20_000) : p.welcome_email.body,
   };
-  // The invoice may have arrived since it was drafted: carry it.
+  // The invoice may have arrived since: carry it.
   if (!rec.invoice_id) rec.invoice_id = oneTimeInvoice(p)?.id ?? null;
-  if (!(await claim(sb, p.id, "draft", { ...rec, status: "sending" }))) throw new Error("Someone else is sending it right now.");
-  try {
-    const sent = await deliver(sb, p, rec, userId);
-    await save(sb, p.id, sent);
-    return sent;
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    await save(sb, p.id, { ...rec, status: "draft", error });
-    throw e;
+  // A sender may have connected since: pick them up.
+  if (!rec.from_user_id) {
+    const sender = await resolveSender(sb, p, await loadInvoicing(sb));
+    if (sender) Object.assign(rec, { from_user_id: sender.box.userId, from_email: sender.box.email, fallback: sender.fallback });
   }
+  if (!(await claim(sb, p.id, "draft", { ...rec, status: "sending" }))) throw new Error("Someone else is doing this right now.");
+  const out = await draftOrHold(sb, { ...p, welcome_email: rec }, rec);
+  if (out.status !== "drafted") throw new Error(out.error ?? "Could not put it into Gmail.");
+  return out;
 }
 
-/** From the proposal page: build the draft again from what is there now (new times, the intake form). Never sends. */
+/** From the proposal page: build it again from what is there now (new times, the intake form) and replace the Gmail draft. Never sends. */
 export async function rebuildWelcome(sb: Sb, proposalId: string) {
   const s = await loadInvoicing(sb);
   const p = await load(sb, proposalId);
   if (!p) throw new Error("Proposal not found.");
-  const st = p.welcome_email?.status;
-  if (st === "sent" || st === "sending") throw new Error("It has already been sent.");
+  if (p.welcome_email?.status === "sending") throw new Error("It's being drafted right now.");
   const info = await trackerInfo(p.id, true);
   const base: WelcomeRecord = p.welcome_email ?? { status: "draft", queued_at: new Date().toISOString() };
   const { rec } = await compose(sb, p, s, info, base);
-  const draft: WelcomeRecord = { ...rec, status: "draft" };
-  await save(sb, p.id, draft);
-  return draft;
+  return await draftOrHold(sb, p, { ...rec, status: "draft" });
 }
 
-/** From the proposal page: don't send it (e.g. it was handled by hand). The invoice can still be emailed from the Xero card. */
+/** From the proposal page: don't do it here (e.g. handled by hand). A Gmail draft it wrote stays in Drafts; the invoice can still be drafted from the Xero card. */
 export async function skipWelcome(sb: Sb, proposalId: string) {
   const p = await load(sb, proposalId);
   if (!p?.welcome_email) throw new Error("This proposal has no welcome email.");
-  if (p.welcome_email.status === "sent" || p.welcome_email.status === "sending") throw new Error("It has already been sent.");
+  if (p.welcome_email.status === "sending") throw new Error("It's being drafted right now.");
   const rec: WelcomeRecord = { ...p.welcome_email, status: "skipped" };
   await save(sb, p.id, rec);
   return rec;

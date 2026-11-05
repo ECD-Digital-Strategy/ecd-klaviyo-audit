@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock, Loader2, Mail, RefreshCw, Send } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, ExternalLink, Loader2, Mail, RefreshCw, Send } from 'lucide-react';
 import { welcomeAction } from '../../lib/invoice-sending';
 import { useFocusTarget } from '../../lib/use-focus-target';
 import { useToast } from '../ui/Toast';
@@ -18,7 +18,8 @@ const when = (iso: string | null | undefined) =>
 const PILL: Record<WelcomeEmailRecord['status'], { label: string; cls: string }> = {
   waiting: { label: 'Waiting', cls: 'bg-gray-100 text-gray-600' },
   sending: { label: 'Sending', cls: 'bg-brand-primary/10 text-brand-primary' },
-  draft: { label: 'To review', cls: 'bg-amber-50 text-amber-700' },
+  draft: { label: 'Needs you', cls: 'bg-amber-50 text-amber-700' },
+  drafted: { label: 'In Gmail', cls: 'bg-emerald-50 text-emerald-700' },
   sent: { label: 'Sent', cls: 'bg-emerald-50 text-emerald-700' },
   skipped: { label: 'Not sent', cls: 'bg-gray-100 text-gray-500' },
 };
@@ -80,7 +81,7 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
         <div className="mt-2 space-y-2 text-[11px] leading-relaxed text-gray-500">
           <p className="flex items-start gap-1.5">
             <Clock className="mt-0.5 h-3 w-3 shrink-0 text-gray-400" />
-            Goes out with the invoice once everything it needs is there, checked every 15 minutes.
+            Drafted in the sender&apos;s Gmail with the invoice once everything it needs is there (checked every 15 minutes), and they get the link on Slack.
           </p>
           {rec.missing?.length ? (
             <ul className="space-y-1 pl-4">
@@ -91,7 +92,7 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
             <button
               type="button"
               disabled={busy !== null}
-              onClick={() => run('rebuild', 'welcome_rebuild', 'Drafted with what is there now')}
+              onClick={() => run('rebuild', 'welcome_rebuild', 'Drafted in Gmail with what is there now')}
               className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
             >
               {busy === 'rebuild' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Draft it now
@@ -113,7 +114,7 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
               </ul>
             </div>
           ) : (
-            <p className="text-[11px] text-gray-500">Ready. Nothing has gone to the client yet.</p>
+            <p className="text-[11px] text-gray-500">It couldn&apos;t go into Gmail, so it&apos;s waiting here. Nothing has gone to the client.</p>
           )}
           {rec.error && <p className="text-[11px] text-red-600">Last try: {rec.error}</p>}
           <p className="text-[11px] text-gray-500">
@@ -151,11 +152,12 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"
-              disabled={busy !== null || !rec.from_email || !rec.to}
-              onClick={() => run('send', 'welcome_send', `Sent to ${rec.to}`, { confirm: `Send it to ${rec.to} now, from ${rec.from_email}?`, edit: true })}
+              disabled={busy !== null || !rec.to}
+              title="Writes it as a draft in the sender's Gmail. Nothing is sent: they check it and press Send there."
+              onClick={() => run('send', 'welcome_send', `Drafted in ${rec.from_email}'s Gmail`, { edit: true })}
               className="inline-flex items-center gap-1.5 rounded-lg gradient-bg px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
-              {busy === 'send' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send
+              {busy === 'send' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Put it in Gmail
             </button>
             {edited && (
               <button
@@ -181,9 +183,50 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
         </div>
       )}
 
+      {rec.status === 'drafted' && (
+        <div className="mt-2 space-y-2 text-[11px] leading-relaxed">
+          <p className="flex items-start gap-1.5 text-emerald-700">
+            <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
+            Drafted in {rec.from_email}&apos;s Gmail {when(rec.drafted_at)}, to {rec.to}
+            {rec.cc?.length ? `, ${rec.cc.join(', ')} copied` : ''}{rec.invoice_id ? ', invoice attached' : ''}. Nothing goes to the client until they press Send there.
+          </p>
+          <p className="text-gray-500">
+            {rec.notified === 'slack' ? 'They were sent the link on Slack.' : rec.notified === 'email' ? 'They were emailed the link (Slack could not reach them).' : 'They could not be told on Slack or by email: send them this link.'}
+          </p>
+          {rec.missing?.length ? (
+            <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800">
+              <p className="flex items-center gap-1 font-semibold"><AlertTriangle className="h-3 w-3" /> Check before sending</p>
+              <ul className="mt-1 space-y-0.5 pl-4">{rec.missing.map((m, i) => <li key={i} className="list-disc">{m}</li>)}</ul>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2 pt-1">
+            {rec.draft_url && (
+              <a
+                href={rec.draft_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Opens in the sender's own Gmail"
+                className="inline-flex items-center gap-1.5 rounded-lg gradient-bg px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              >
+                Open the draft <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )}
+            <button
+              type="button"
+              disabled={busy !== null}
+              title="Build it again with fresh launch call times and the latest invoice and intake form. The old draft in Gmail is replaced."
+              onClick={() => run('rebuild', 'welcome_rebuild', 'Gmail draft rebuilt', { confirm: 'Rebuild it? The draft in Gmail is replaced, including any edits made there.' })}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy === 'rebuild' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Rebuild
+            </button>
+          </div>
+        </div>
+      )}
+
       {rec.status === 'sending' && (
         <p className="mt-2 flex items-center gap-1.5 text-[11px] text-gray-500">
-          <Loader2 className="h-3 w-3 animate-spin" /> Sending now.
+          <Loader2 className="h-3 w-3 animate-spin" /> Putting it into Gmail now.
         </p>
       )}
 
@@ -204,7 +247,7 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
 
       {rec.status === 'skipped' && (
         <div className="mt-2 space-y-2 text-[11px] text-gray-500">
-          <p>Not sent from here. The invoice can still be emailed from the Xero card.</p>
+          <p>Not done from here. The invoice can still be drafted from the Xero card.</p>
           <button
             type="button"
             disabled={busy !== null}

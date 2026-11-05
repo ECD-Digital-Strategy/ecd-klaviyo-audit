@@ -448,6 +448,11 @@ export interface Proposal {
     last_client_reminder_at?: string | null;
     /** Why it could not be emailed automatically. */
     email_error?: string | null;
+    /** Since 2026-11-05: written as a draft in the sender's Gmail for them to check and send. */
+    drafted_at?: string | null;
+    drafted_from?: string | null;
+    drafted_to?: string | null;
+    draft_url?: string | null;
     /** Held as a draft because the proposal's own text splits the payment: the line that does (payment-terms.ts). */
     held_reason?: string | null;
     /** From Xero, by the daily follow-up (invoice_followup). */
@@ -711,7 +716,8 @@ export interface WelcomeSettings {
 
 /** Where a proposal's welcome email is (supabase/functions/_shared/welcome-delivery.ts). */
 export interface WelcomeEmailRecord {
-  status: 'waiting' | 'sending' | 'draft' | 'sent' | 'skipped';
+  /** drafted: in the sender's Gmail as a draft. draft: on the proposal page, it couldn't go into Gmail. */
+  status: 'waiting' | 'sending' | 'draft' | 'drafted' | 'sent' | 'skipped';
   queued_at: string;
   updated_at?: string;
   kind?: 'new' | 'project';
@@ -728,6 +734,10 @@ export interface WelcomeEmailRecord {
   invoice_id?: string | null;
   sent_at?: string | null;
   sent_by?: string | null;
+  drafted_at?: string | null;
+  draft_url?: string | null;
+  /** How the sender was told: a Slack DM, else an email. */
+  notified?: 'slack' | 'email' | 'none';
   error?: string | null;
 }
 

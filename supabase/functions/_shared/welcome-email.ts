@@ -5,16 +5,16 @@
 //    RS's calendars, the ECD onboarding form, our W-9 and their intake form;
 //  - an existing client signing more work: the invoice and the intake form for
 //    what they bought.
-// Sent automatically and the sender told, or (review_first) drafted for the
-// sender to check and send. Anything missing (no free time, no intake form, a
-// custom deal) always makes it a draft. Settings live in
+// Never sent by the app (2026-11-05, Zak + Xiomara): written as a draft in the
+// sender's Gmail and the sender Slacked the link, with anything missing (no free
+// time, no intake form, a custom deal) listed to check. Settings live in
 // platform_settings.proposal_settings.invoicing.welcome; keep the defaults in
 // sync with src/lib/proposals-db.ts DEFAULT_WELCOME.
 
 export type WelcomeSettings = {
   /** OFF until turned on. While on it replaces the invoice email for proposals signed since `since`. */
   enabled: boolean;
-  /** true: always a draft for the sender to review and send. false: sent, and the sender told. */
+  /** No longer used (2026-11-05): every welcome email is a Gmail draft for the sender. */
   review_first: boolean;
   /** Only proposals signed on or after this (set when turned on). */
   since: string | null;
@@ -137,7 +137,8 @@ export function mergeWelcome(raw: unknown): WelcomeSettings {
   };
 }
 
-export type WelcomeStatus = "waiting" | "sending" | "draft" | "sent" | "skipped";
+/** drafted: in the sender's Gmail as a draft (2026-11-05). draft: held on the proposal page because it couldn't go into Gmail. */
+export type WelcomeStatus = "waiting" | "sending" | "draft" | "drafted" | "sent" | "skipped";
 
 /** Whether the welcome email covers a proposal: on, and signed since it was turned on. */
 export function welcomeCovers(w: WelcomeSettings, signedAt: string | null | undefined): boolean {
@@ -151,7 +152,8 @@ export function holdsInvoice(
 ): boolean {
   if (!welcomeCovers(w, p.client_signed_at)) return false;
   const st = p.welcome_email?.status;
-  return !st || st === "waiting" || st === "sending" || st === "draft";
+  // drafted: the invoice is in the welcome draft in Gmail, so it must not be drafted again on its own.
+  return !st || st === "waiting" || st === "sending" || st === "draft" || st === "drafted";
 }
 
 export type WelcomeVars = {

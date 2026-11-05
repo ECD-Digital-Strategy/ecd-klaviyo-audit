@@ -11,7 +11,7 @@ import {
   senderFirstName,
   type InvoiceRecord,
 } from "../_shared/invoice-delivery.ts";
-import { sendAsPerson } from "../_shared/gmail.ts";
+import { draftForClient } from "../_shared/client-draft.ts";
 import { inlineLink, proposalLink } from "../_shared/app-links.ts";
 import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
 import { rebuildWelcome, saveWelcomeDraft, sendWelcomeNow, skipWelcome, welcomeTick } from "../_shared/welcome-delivery.ts";
@@ -121,9 +121,11 @@ async function tick(sb: Sb) {
           `${owed} is still due. It was sent ${longDate(sent)}${due ? ` and is due ${longDate(due)}` : ""}.`,
           inv.emailed_at
             ? `It was emailed to ${inv.emailed_to ?? "the client"} from ${inv.emailed_from ?? "us"}.`
-            : "It was not emailed to the client by the proposals app.",
-          s.client_reminders && inv.emailed_at
-            ? "The client is getting a short reminder from the same address today."
+            : inv.drafted_at
+              ? `It was drafted to ${inv.drafted_to ?? "the client"} in ${inv.drafted_from ?? "the sender"}'s Gmail for them to send.`
+              : "It was not emailed to the client by the proposals app.",
+          s.client_reminders && (inv.emailed_at || inv.drafted_at)
+            ? `A short reminder to the client is drafted in ${inv.emailed_from ?? inv.drafted_from}'s Gmail today, for them to send.`
             : "Worth a follow-up with the client.",
           "This comes again in a week until it is paid.",
           `The proposal: ${inlineLink(proposalLink(p.id, "xero"), "open its Xero card")}.`,
@@ -137,11 +139,14 @@ async function tick(sb: Sb) {
       log.push(`${company} ${inv.number}: team reminded (${days} days)`);
     }
 
-    // The client too, when turned on: from the Gmail it was sent from, Maria copied.
-    if (s.client_reminders && inv.emailed_at && inv.emailed_to && inv.online_url) {
+    // The client too, when turned on: a DRAFT in the Gmail it came from, Maria
+    // copied, and the sender Slacked to check and send it (2026-11-05).
+    const clientTo = inv.emailed_to ?? inv.drafted_to ?? null;
+    const clientFrom = inv.emailed_from ?? inv.drafted_from ?? null;
+    if (s.client_reminders && clientTo && clientFrom && inv.online_url) {
       try {
-        const box = await mailboxByEmail(sb, inv.emailed_from);
-        if (!box) throw new Error(`${inv.emailed_from} is no longer connected`);
+        const box = await mailboxByEmail(sb, clientFrom);
+        if (!box) throw new Error(`${clientFrom} is no longer connected`);
         const { full, first } = await senderFirstName(sb, box.userId);
         const email = renderInvoiceEmail({ subject: s.reminder_subject, body: s.reminder_body }, {
           first_name: (p.recipient_name ?? "").trim().split(/\s+/)[0] || "there",
@@ -153,10 +158,15 @@ async function tick(sb: Sb) {
           pay_link: inv.online_url,
           sender_first_name: first,
         });
-        const cc = s.cc_emails.filter((e) => e !== box.email.toLowerCase() && e !== inv.emailed_to!.toLowerCase());
-        await sendAsPerson(sb, box, { fromName: full || null, to: [inv.emailed_to], cc, subject: email.subject, html: email.html, text: email.text });
+        const cc = s.cc_emails.filter((e) => e !== box.email.toLowerCase() && e !== clientTo.toLowerCase());
+        await draftForClient(
+          sb,
+          box,
+          { fromName: full || null, to: [clientTo], cc, subject: email.subject, html: email.html, text: email.text },
+          { what: `Payment reminder for ${company} (${inv.number})`, to: clientTo, proposalId: p.id, focus: "xero" },
+        );
         await patchInvoiceRecord(sb, p.id, inv.id, { last_client_reminder_at: new Date().toISOString() });
-        log.push(`${company} ${inv.number}: client reminded`);
+        log.push(`${company} ${inv.number}: client reminder drafted`);
       } catch (e) {
         log.push(`${company} ${inv.number}: client reminder failed (${e instanceof Error ? e.message : String(e)})`);
       }

@@ -84,6 +84,8 @@ export async function listInvoiceSenders(): Promise<InvoiceSender[]> {
 
 /** Whether a connection allows reading calendar free/busy (for welcome email launch times). */
 export const canReadCalendars = (c: Pick<GmailConnection, 'scopes'>) => Boolean(c.scopes?.includes('calendar.freebusy'));
+/** Whether a connection allows writing drafts (2026-11-05: client emails are Gmail drafts, never sent by the app). */
+export const canWriteDrafts = (c: Pick<GmailConnection, 'scopes'>) => Boolean(c.scopes?.includes('gmail.compose'));
 
 /** The welcome email on a proposal page: save edits, send, build again from what's there now, or don't send it. */
 export const welcomeAction = (
@@ -93,6 +95,6 @@ export const welcomeAction = (
 ) =>
   call<{ welcome: WelcomeEmailRecord }>('invoice_followup', { action, proposal_id: proposalId, subject: edit.subject, email_body: edit.body }).then(r => r.welcome);
 
-/** Emails an approved invoice to the client now (only while invoice emails are on). */
+/** Drafts the invoice email in the sender's Gmail now and Slacks them the link (only while invoice emails are on). */
 export const emailInvoiceNow = (proposalId: string, invoiceId: string) =>
-  call<{ to: string; from: string }>('invoice_followup', { action: 'email_invoice', proposal_id: proposalId, invoice_id: invoiceId });
+  call<{ to: string; from: string; draft_url?: string }>('invoice_followup', { action: 'email_invoice', proposal_id: proposalId, invoice_id: invoiceId });

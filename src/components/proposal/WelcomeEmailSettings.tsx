@@ -71,7 +71,7 @@ export default function WelcomeEmailSettings({
     <SettingsCard
       icon={<PartyPopper className="h-4 w-4" />}
       title="Welcome email"
-      description="Replaces the invoice email after signing. A new client gets one email with the invoice, launch call times that fit the team's calendars, the onboarding form, the W-9 and their intake form. An existing client gets the invoice and the intake form for what they bought."
+      description="Replaces the invoice email after signing, drafted in the sender's Gmail for them to send. A new client's has the invoice, launch call times that fit the team's calendars, the onboarding form, the W-9 and their intake form. An existing client's has the invoice and the intake form for what they bought."
       control={
         <>
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${value.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
@@ -95,33 +95,22 @@ export default function WelcomeEmailSettings({
           <div>
             <h4 className="text-sm font-semibold text-gray-900">How it goes out</h4>
             <p className="mt-0.5 text-xs text-gray-500">
-              From the same Gmail as the invoice (the proposal&apos;s creator, else the fallback sender), with the invoice PDF and the
-              Always copy list from Invoice emails.
+              In the same Gmail as the invoice email (the proposal&apos;s creator, else the fallback sender), with the invoice PDF and
+              the Always copy list from Invoice emails.
             </p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {[
-              { review: false, title: 'Send it, then tell the sender', text: 'Goes to the client as soon as everything is there. The sender gets a copy by email so they know.' },
-              { review: true, title: 'Draft it for the sender to send', text: 'The sender gets an email to check it on the proposal page, edit it and press Send.' },
-            ].map(o => {
-              const active = value.review_first === o.review;
-              return (
-                <button
-                  key={o.title}
-                  type="button"
-                  onClick={() => set({ review_first: o.review })}
-                  className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? 'border-brand-primary bg-brand-primary/5' : 'border-gray-200 hover:bg-gray-50'}`}
-                >
-                  <span className={`block text-sm font-medium ${active ? 'text-brand-primary' : 'text-gray-800'}`}>{o.title}</span>
-                  <span className="mt-0.5 block text-xs text-gray-500">{o.text}</span>
-                </button>
-              );
-            })}
+          <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3 text-xs leading-relaxed text-gray-600">
+            <p className="font-semibold text-gray-800">Never sent automatically</p>
+            <p className="mt-0.5">
+              It&apos;s written as a draft in the sender&apos;s own Gmail, and they get a Slack message with a link that opens it, plus
+              anything to check (no free launch call time, no intake form, a custom deal). They read it, change what they like and press
+              Send.
+            </p>
           </div>
           <p className="flex items-start gap-1.5 text-[11px] text-gray-500">
             <Info className="mt-0.5 h-3 w-3 shrink-0 text-gray-400" />
-            Either way, if anything is missing (no free launch call time, no intake form, a custom deal the tracker has no form
-            for), it becomes a draft for the sender to finish.
+            If it can&apos;t go into Gmail (their Gmail isn&apos;t connected or needs reconnecting), it waits on the proposal page and they
+            are told how to fix it.
           </p>
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
             Wait up to
