@@ -52,7 +52,10 @@ function XeroHowItWorks() {
           due on receipt, with an online pay link. <strong>First month of the retainer</strong> (everything monthly) is
           created as a <strong>draft</strong>, dated the 1st of next month when there is also an implementation, otherwise
           the day they sign. A proposal with only one kind gets only that one. Optional lines count only if the client
-          ticked them, and a discount is spread across the lines it applies to.
+          ticked them, and a discount is spread across the lines it applies to. If the proposal&apos;s own text splits
+          the payment (a deposit, 50% now and 50% on completion, installments), the implementation is{' '}
+          <strong>held as a draft</strong> instead: nothing goes to the client, and Maria and whoever sent the proposal are
+          emailed to split it in Xero.
         </>
       ),
     },

@@ -12,6 +12,7 @@ import { autoCodeLines } from "./xero-autocode.ts";
 import { notificationRecipients, proposalEmailHtml, sendEmail } from "./mailer.ts";
 import { deliverNewInvoices, loadInvoicing } from "./invoice-delivery.ts";
 import { inlineLink, proposalLink } from "./app-links.ts";
+import { splitPaymentTerms } from "./payment-terms.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -59,6 +60,8 @@ export type CreatedInvoice = {
   online_url?: string | null;
   /** Why auto-send could not email it (invoice-delivery.ts), if it tried. */
   email_error?: string | null;
+  /** Held as a draft because the proposal's own text splits the payment (payment-terms.ts): the line that does. */
+  held_reason?: string | null;
 };
 
 type ProposalRow = {
@@ -74,6 +77,8 @@ type ProposalRow = {
   client_signed_at: string | null;
   xero_invoice_id: string | null;
   xero_invoices: CreatedInvoice[] | null;
+  /** The proposal's sections, read for payment terms that split the fee. */
+  content_blocks: unknown;
   client?: { company_name?: string | null; email?: string | null } | null;
 };
 
@@ -143,6 +148,34 @@ async function emailPaymentLinks(sb: SupabaseClient, proposalId: string, clientN
   }
 }
 
+/**
+ * Maria and whoever sent the proposal: its own terms split the fee, so the implementation invoice for the full
+ * amount was made as a draft, not approved or sent. Nothing went to the client; Maria splits it as the terms say.
+ */
+async function emailHeldInvoices(sb: SupabaseClient, proposalId: string, clientName: string, invoices: CreatedInvoice[]) {
+  const to = await notificationRecipients(sb, (await loadInvoicing(sb)).finance_emails, "proposals", proposalId);
+  if (!to.length) return;
+  const money = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  for (const inv of invoices) {
+    await sendEmail({
+      to,
+      subject: `Held: ${clientName} invoice ${inv.number} (the proposal splits the payment)`,
+      html: proposalEmailHtml({
+        heading: `${esc(clientName)}: the invoice is held, the terms split the payment`,
+        bodyLines: [
+          `${esc(clientName)} signed. Their proposal says: “${esc(inv.held_reason ?? "")}”`,
+          `So the implementation invoice for the full ${money(inv.total)} was not approved or sent: it is a draft in Xero. Nothing has gone to the client.`,
+          "Change it to what the terms say (for example the first part now and a second invoice for the rest when it is due), then approve and send it from Xero.",
+          `The proposal: ${inlineLink(proposalLink(proposalId, "xero"), "open it")}.`,
+        ],
+        ctaLabel: "Open the draft in Xero",
+        ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,
+      }),
+    }).catch((e) => console.warn("xero: held invoice notice failed", e));
+  }
+}
+
 /** Maria: the first month of a retainer is a draft in Xero, waiting for her to approve and send it. */
 async function emailMonthlyDrafts(sb: SupabaseClient, proposalId: string, clientName: string, invoices: CreatedInvoice[]) {
   const to = (await loadInvoicing(sb)).finance_emails;
@@ -206,7 +239,7 @@ export async function createDraftInvoiceForProposal(
   const { data: proposalRow } = await sb
     .from("proposals")
     .select(
-      "id, proposal_number, title, recipient_name, recipient_email, discount_type, discount_value, discount_applies_to, discount_label, client_signed_at, xero_invoice_id, xero_invoices, client:clients(company_name, email)",
+      "id, proposal_number, title, recipient_name, recipient_email, discount_type, discount_value, discount_applies_to, discount_label, client_signed_at, xero_invoice_id, xero_invoices, content_blocks, client:clients(company_name, email)",
     )
     .eq("id", proposalId)
     .maybeSingle();
@@ -328,6 +361,10 @@ export async function createDraftInvoiceForProposal(
   const contactName = proposal.client?.company_name?.trim() || proposal.recipient_name?.trim() || "Client";
   const contactEmail = proposal.recipient_email?.trim() || proposal.client?.email?.trim() || undefined;
   const totalDiscount = oneTimeDiscount + monthlyDiscount;
+  // The proposal's own text splits the one-time fee (a deposit, 50% now and 50% on completion): one approved
+  // invoice for all of it would be the wrong bill, so it is held as a draft for Maria (Zak and Emil, Nov 5, after
+  // Burton's INV-1616 went out for the full $10,000).
+  const splitTerms = plan.some((p) => p.kind === "one_time") ? splitPaymentTerms(proposal.content_blocks) : null;
 
   const created: CreatedInvoice[] = [...already];
   try {
@@ -338,6 +375,9 @@ export async function createDraftInvoiceForProposal(
 
     for (const inv of plan) {
       if (created.some((c) => c.kind === inv.kind)) continue;
+      // Approved means payable: it gets a pay link and may be emailed to the client. Not when the terms split it.
+      const held = inv.kind === "one_time" && splitTerms !== null;
+      const approved = inv.kind === "one_time" && !held;
       const payload = {
         Invoices: [
           {
@@ -346,7 +386,8 @@ export async function createDraftInvoiceForProposal(
             // emails nothing unless asked, and its payment link goes on the
             // proposal and to whoever sold it. The retainer's first month stays a
             // draft dated the 1st, for Maria to review and set up as repeating.
-            Status: inv.kind === "one_time" ? "AUTHORISED" : "DRAFT",
+            // An implementation whose terms split the fee stays a draft too (held).
+            Status: approved ? "AUTHORISED" : "DRAFT",
             Contact: contact,
             Date: inv.date,
             DueDate: inv.dueDate,
@@ -381,6 +422,9 @@ export async function createDraftInvoiceForProposal(
         inv.kind === "monthly"
           ? "First month of the retainer. Set up the repeating invoice for the months after this one."
           : "",
+        held
+          ? `Held as a draft for the full fee: the proposal splits the payment ("${splitTerms}"). Change it to what the terms say, then approve and send it.`
+          : "",
       ].filter(Boolean).join(" ");
       await xeroApi(sb, `/Invoices/${made.InvoiceID}/History`, {
         method: "PUT",
@@ -389,7 +433,7 @@ export async function createDraftInvoiceForProposal(
 
       // The link the client pays from, for an approved invoice.
       let onlineUrl: string | null = null;
-      if (inv.kind === "one_time") {
+      if (approved) {
         const online = await xeroApi<{ OnlineInvoices?: Array<{ OnlineInvoiceUrl?: string }> }>(
           sb,
           `/Invoices/${made.InvoiceID}/OnlineInvoice`,
@@ -404,8 +448,9 @@ export async function createDraftInvoiceForProposal(
         date: inv.date,
         due_date: inv.dueDate,
         total: Math.round(inv.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100,
-        status: inv.kind === "one_time" ? "AUTHORISED" : "DRAFT",
+        status: approved ? "AUTHORISED" : "DRAFT",
         online_url: onlineUrl,
+        ...(held ? { held_reason: splitTerms } : {}),
       });
       // Saved after each one, so a failure on the second keeps the first.
       await sb
@@ -433,6 +478,8 @@ export async function createDraftInvoiceForProposal(
     if (notEmailed.length) await emailPaymentLinks(sb, proposalId, contactName, notEmailed).catch((e) => console.warn("xero: payment link email failed", e));
     const freshMonthly = created.filter((c) => c.kind === "monthly" && !already.some((a) => a.id === c.id));
     if (freshMonthly.length) await emailMonthlyDrafts(sb, proposalId, contactName, freshMonthly);
+    const freshHeld = created.filter((c) => c.held_reason && !already.some((a) => a.id === c.id));
+    if (freshHeld.length) await emailHeldInvoices(sb, proposalId, contactName, freshHeld);
     return { ok: true, invoices: created };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

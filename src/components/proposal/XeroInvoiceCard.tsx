@@ -75,7 +75,7 @@ export default function XeroInvoiceCard({
             <li key={inv.id}>
               <p className="text-sm font-medium text-gray-900">
                 {invoices.length > 1 || inv.kind === 'monthly' ? `${KIND_LABEL[inv.kind]}: ` : ''}
-                {inv.paid_at ? 'paid' : inv.emailed_at ? 'sent to the client' : inv.status === 'AUTHORISED' ? 'approved' : 'draft'}{' '}
+                {inv.paid_at ? 'paid' : inv.emailed_at ? 'sent to the client' : inv.status === 'AUTHORISED' ? 'approved' : inv.held_reason ? 'held as a draft' : 'draft'}{' '}
                 {inv.number ? `#${inv.number}` : 'created'}
               </p>
               {inv.date && (
@@ -166,7 +166,8 @@ function InvoiceNotes({
   const oneTime = invoices.filter(i => i.kind === 'one_time' && i.online_url);
   const emailed = oneTime.filter(i => i.emailed_at);
   const notEmailed = oneTime.filter(i => !i.emailed_at);
-  const drafts = invoices.filter(i => i.status !== 'AUTHORISED' && !i.paid_at);
+  const drafts = invoices.filter(i => i.status !== 'AUTHORISED' && !i.paid_at && !i.held_reason);
+  const held = invoices.filter(i => i.held_reason && i.status !== 'AUTHORISED' && !i.paid_at);
   const monthly = invoices.some(i => i.kind === 'monthly');
   const cc = invoicing?.cc_emails ?? [];
   const lines: Array<{ text: string; tone?: 'ok' | 'warn' }> = [];
@@ -196,6 +197,12 @@ function InvoiceNotes({
     } else {
       lines.push({ text: 'Not emailed to the client. Share the payment link with them; whoever sent the proposal was emailed it too.' });
     }
+  }
+  for (const inv of held) {
+    lines.push({
+      tone: 'warn',
+      text: `Held as a draft: the proposal splits the payment (“${inv.held_reason}”). Maria changes it to what the terms say, then approves and sends it from Xero. Nothing has gone to the client.`,
+    });
   }
   if (drafts.length) {
     lines.push({

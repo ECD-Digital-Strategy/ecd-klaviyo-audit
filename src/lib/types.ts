@@ -448,6 +448,8 @@ export interface Proposal {
     last_client_reminder_at?: string | null;
     /** Why it could not be emailed automatically. */
     email_error?: string | null;
+    /** Held as a draft because the proposal's own text splits the payment: the line that does (payment-terms.ts). */
+    held_reason?: string | null;
     /** From Xero, by the daily follow-up (invoice_followup). */
     paid_at?: string | null;
     amount_due?: number | null;
