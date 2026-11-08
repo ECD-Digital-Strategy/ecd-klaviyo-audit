@@ -40,7 +40,8 @@ export type DraftNotice = {
   what: string;
   /** Who it's to, shown in the message. */
   to: string;
-  proposalId: string;
+  /** Omitted only for a test draft, which has no proposal. */
+  proposalId?: string;
   focus?: "welcome" | "xero";
   /** Things to check before sending (missing times, a custom deal...). */
   checks?: string[];
@@ -54,7 +55,9 @@ export async function notifyDraft(box: Mailbox, url: string, n: DraftNotice): Pr
   const text = [
     `:envelope_with_arrow: *${slackEsc(n.what)}* is drafted in your Gmail, to ${slackEsc(n.to)}. Nothing has gone to the client yet: check it and press Send.`,
     ...(checks.length ? ["*Check before sending:*", ...checks.map((c) => `• ${slackEsc(c)}`)] : []),
-    `${slackLink(url, "Open the draft in Gmail")}  ·  ${slackLink(proposalLink(n.proposalId, n.focus), "Open the proposal")}`,
+    n.proposalId
+      ? `${slackLink(url, "Open the draft in Gmail")}  ·  ${slackLink(proposalLink(n.proposalId, n.focus), "Open the proposal")}`
+      : slackLink(url, "Open the draft in Gmail"),
   ].join("\n");
   const dm = await slackDm(box.email, text);
   if (dm.ok) return "slack";

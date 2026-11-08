@@ -186,6 +186,39 @@ serve(async (req) => {
   const body = (await req.json().catch(() => ({}))) as { action?: string; proposal_id?: string; invoice_id?: string; subject?: string; email_body?: string };
   const sb = assertServiceRoleClient();
 
+  // An end-to-end check of the draft path (2026-11-08), run by an admin with the cron
+  // secret: the usual invoice email, with example values, written as a DRAFT in that
+  // person's Gmail addressed to THEMSELVES, and the Slack DM with its link. No client,
+  // no real invoice.
+  if (body.action === "draft_test") {
+    if (!(await hasCronSecret(req, "invoice_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
+    try {
+      const box = await mailboxByEmail(sb, (body as { email?: string }).email);
+      if (!box) return json({ ok: false, error: "That Gmail isn't connected." }, 404);
+      const s = await loadInvoicing(sb);
+      const { full, first } = await senderFirstName(sb, box.userId);
+      const email = renderInvoiceEmail(s, {
+        first_name: first,
+        company: "Example Brand",
+        proposal_title: "Website retainer",
+        invoice_number: "INV-0000",
+        total: money(700),
+        due_date: longDate(new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10)),
+        pay_link: "https://in.xero.com/example",
+        sender_first_name: first,
+      });
+      const r = await draftForClient(
+        sb,
+        box,
+        { fromName: full || null, to: [box.email], subject: `[Test draft] ${email.subject}`, html: email.html, text: email.text },
+        { what: "A test invoice email (to yourself)", to: box.email },
+      );
+      return json({ ok: true, draft_url: r.url, notified: r.notified, signature: r.signature });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
   if (body.action === "tick" || body.action === "welcome_tick") {
     if (!(await hasCronSecret(req, "invoice_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
     try {
