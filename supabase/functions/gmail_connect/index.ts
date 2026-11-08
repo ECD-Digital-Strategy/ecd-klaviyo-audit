@@ -177,7 +177,7 @@ serve(async (req) => {
       const s = await loadInvoicing(sb);
       const { data: me } = await sb.from("profiles").select("name").eq("id", userId).maybeSingle();
       const myName = String((me as { name?: string } | null)?.name ?? "").trim();
-      const myFirst = myName.split(/s+/)[0] || "there";
+      const myFirst = myName.split(/\s+/)[0] || "there";
 
       // The welcome email, new client or existing client, with example values and example times.
       if (body.template === "welcome_new" || body.template === "welcome_project") {

@@ -56,7 +56,9 @@ serve(async (req) => {
 
     const result = await createDraftInvoiceForProposal(sb, proposalId);
     if (!result.ok) {
-      if (atSigning && result.error !== "already_invoiced") await emailInvoiceFailure(sb, proposalId, result.error);
+      // Not problems: already made, nothing billable, or discounted to nothing. No alarm for those.
+      const expected = ["already_invoiced", "no_billable_fees", "fully_discounted"];
+      if (atSigning && !expected.includes(result.error)) await emailInvoiceFailure(sb, proposalId, result.error);
       return json({ ok: false, error: { code: "invoice_failed", message: result.error } });
     }
     return json({

@@ -310,8 +310,22 @@ async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings
   if (await suppressed(sb, p.domain)) return { ok: false, error: "Someone at this company asked not to be contacted." };
   const subject = p.email_subject.trim();
   const text = initialText(p.email_body, settings);
+  // Take it first: sent_at is set only if nobody else set it, so "Send now" and the
+  // scheduled run can never both send the same first email (audit, 2026-11-08).
+  const claimedAt = new Date().toISOString();
+  const { data: mine } = await sb
+    .from("outreach_prospects")
+    .update({ sent_at: claimedAt })
+    .eq("id", p.id)
+    .is("sent_at", null)
+    .select("id");
+  if (!mine?.length) return { ok: false, error: "Already sent." };
   const r = await deliver(sb, box, settings, p, "initial", subject, text);
-  if (!r.ok) return r;
+  if (!r.ok) {
+    // Not sent: free it again so it can be retried.
+    await sb.from("outreach_prospects").update({ sent_at: null }).eq("id", p.id).eq("sent_at", claimedAt);
+    return r;
+  }
   const now = new Date().toISOString();
   await sb.from("outreach_prospects").update({ status: "sent", sent_at: now, last_sent_at: now, message_id: r.messageId }).eq("id", p.id);
   await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email }, "ATTEMPTED_TO_CONTACT");
@@ -529,9 +543,20 @@ async function tick(sb: Sb) {
         bookingUrl: settings.booking_url,
       });
       const subject = /^re:/i.test(p.email_subject) ? p.email_subject : `Re: ${p.email_subject}`;
+      // Take this follow-up first, so two overlapping runs can't both send it.
+      const { data: mine } = await sb
+        .from("outreach_prospects")
+        .update({ followups_sent: n })
+        .eq("id", p.id)
+        .eq("followups_sent", p.followups_sent)
+        .select("id");
+      if (!mine?.length) continue;
       const r = await deliver(sb, box, settings, p, n === 1 ? "followup_1" : "followup_2", subject, text);
-      if (!r.ok) break;
-      await sb.from("outreach_prospects").update({ followups_sent: n, last_sent_at: new Date().toISOString() }).eq("id", p.id);
+      if (!r.ok) {
+        await sb.from("outreach_prospects").update({ followups_sent: p.followups_sent }).eq("id", p.id).eq("followups_sent", n);
+        break;
+      }
+      await sb.from("outreach_prospects").update({ last_sent_at: new Date().toISOString() }).eq("id", p.id);
       await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email ?? "" });
       sent.push(`${p.domain}: follow-up ${n}`);
       if ((await loadSettings(sb)).paused) return { ok: true, sent, paused: true };
@@ -551,7 +576,8 @@ async function tick(sb: Sb) {
     if (next) {
       const r = await sendInitial(sb, box, next, settings);
       if (r.ok) sent.push(`${next.domain}: first email`);
-      else await sb.from("outreach_prospects").update({ status: "ready", notes: `Not sent: ${r.error}` }).eq("id", next.id);
+      // "Already sent": "Send now" took it a moment ago. Leave it alone, it is going out.
+      else if (r.error !== "Already sent.") await sb.from("outreach_prospects").update({ status: "ready", notes: `Not sent: ${r.error}` }).eq("id", next.id);
     }
   }
   return { ok: true, sent, inbox: inboxOk };

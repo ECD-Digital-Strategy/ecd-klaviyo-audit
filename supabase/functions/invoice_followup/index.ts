@@ -15,6 +15,7 @@ import { draftForClient } from "../_shared/client-draft.ts";
 import { inlineLink, proposalLink } from "../_shared/app-links.ts";
 import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
 import { rebuildWelcome, saveWelcomeDraft, sendWelcomeNow, skipWelcome, welcomeTick } from "../_shared/welcome-delivery.ts";
+import { holdsInvoice, type WelcomeStatus } from "../_shared/welcome-email.ts";
 
 // Unpaid invoices (Emil + Isa, 2026-11-02): "if an invoice is not paid within 7
 // days of sending, an email is sent to Xiomara, Maria and Isa". Daily (cron
@@ -134,10 +135,12 @@ async function tick(sb: Sb) {
         ctaUrl: `https://go.xero.com/app/invoicing/edit/${inv.id}`,
       }),
     });
-    if (mail.status === "sent") {
-      await patchInvoiceRecord(sb, p.id, inv.id, { last_nudge_at: new Date().toISOString() });
-      log.push(`${company} ${inv.number}: team reminded (${days} days)`);
-    }
+    // Whether this round did anything. The round is marked done if EITHER the team email
+    // or the client reminder happened: marking it only on the team email meant a failing
+    // email made a fresh client reminder draft every day.
+    let acted = mail.status === "sent";
+    if (acted) log.push(`${company} ${inv.number}: team reminded (${days} days)`);
+    else log.push(`${company} ${inv.number}: team email not sent (${mail.status})`);
 
     // The client too, when turned on: a DRAFT in the Gmail it came from, Maria
     // copied, and the sender Slacked to check and send it (2026-11-05).
@@ -166,11 +169,13 @@ async function tick(sb: Sb) {
           { what: `Payment reminder for ${company} (${inv.number})`, to: clientTo, proposalId: p.id, focus: "xero" },
         );
         await patchInvoiceRecord(sb, p.id, inv.id, { last_client_reminder_at: new Date().toISOString() });
+        acted = true;
         log.push(`${company} ${inv.number}: client reminder drafted`);
       } catch (e) {
         log.push(`${company} ${inv.number}: client reminder failed (${e instanceof Error ? e.message : String(e)})`);
       }
     }
+    if (acted) await patchInvoiceRecord(sb, p.id, inv.id, { last_nudge_at: new Date().toISOString() });
   }
   return { ok: true, checked: watch.length, log };
 }
@@ -213,6 +218,12 @@ serve(async (req) => {
   if (body.action === "email_invoice") {
     const s = await loadInvoicing(sb);
     if (!s.auto_send) return json({ ok: false, error: "Invoice emails are switched off in Proposal settings." }, 409);
+    // The welcome email carries this invoice (or will, once its run picks the proposal up):
+    // drafting it on its own as well would put it in front of the client twice.
+    const { data: row } = await sb.from("proposals").select("client_signed_at, welcome_email").eq("id", body.proposal_id ?? "").maybeSingle();
+    if (row && holdsInvoice(s.welcome, row as { client_signed_at: string | null; welcome_email: { status?: WelcomeStatus } | null })) {
+      return json({ ok: false, error: "This invoice goes with the welcome email, so it isn't drafted on its own. See the Welcome email card." }, 409);
+    }
     try {
       const r = await emailInvoiceToClient(sb, body.proposal_id ?? "", body.invoice_id ?? "", s);
       return json({ ok: true, ...r });

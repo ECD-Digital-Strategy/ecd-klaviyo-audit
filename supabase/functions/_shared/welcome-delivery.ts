@@ -132,16 +132,23 @@ async function save(sb: Sb, id: string, rec: WelcomeRecord) {
   await sb.from("proposals").update({ welcome_email: { ...rec, updated_at: new Date().toISOString() } }).eq("id", id);
 }
 
-/** Moves a record from one status to the next only if nobody else did first. */
-async function claim(sb: Sb, id: string, from: WelcomeStatus, rec: WelcomeRecord): Promise<boolean> {
-  const { data } = await sb
+/** Moves a record from one status to the next only if nobody else did first.
+ * from null: only if the proposal has no welcome record yet. */
+async function claim(sb: Sb, id: string, from: WelcomeStatus | null, rec: WelcomeRecord): Promise<boolean> {
+  let q = sb
     .from("proposals")
     .update({ welcome_email: { ...rec, updated_at: new Date().toISOString() } })
-    .eq("id", id)
-    .eq("welcome_email->>status", from)
-    .select("id");
+    .eq("id", id);
+  q = from === null ? q.is("welcome_email", null) : q.eq("welcome_email->>status", from);
+  const { data } = await q.select("id");
   return Boolean(data?.length);
 }
+
+/** A run that died while putting it into Gmail leaves it "sending" for good. After this long it is
+ * treated as interrupted (no run takes longer: the function's own limit is 150 seconds). */
+const STALE_SENDING_MS = 10 * 60_000;
+export const isStaleSending = (rec: { status?: string; updated_at?: string } | null | undefined, now = Date.now()) =>
+  rec?.status === "sending" && (!rec.updated_at || now - Date.parse(rec.updated_at) > STALE_SENDING_MS);
 
 /** Launch call times everyone is free for, read through the sender's Google connection. */
 async function launchTimes(
@@ -191,7 +198,16 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
   const missing: string[] = [];
   const kind: "new" | "project" = info?.found ? (info.kind === "project" ? "project" : "new") : (await earlierSigned(sb, p)) ? "project" : "new";
   const inv = oneTimeInvoice(p);
-  if (!inv && (await expectsInvoice(sb, p.id))) missing.push("The implementation invoice isn't in Xero yet, so there's no pay link.");
+  // Things to check that more waiting won't change: shown, but they never hold the email back.
+  const notes: string[] = [];
+  // A proposal that splits the payment gets a held draft with no pay link (payment-terms.ts):
+  // Maria sends that invoice from Xero, so this email goes without one rather than waiting all day.
+  const held = (p.xero_invoices ?? []).find((i) => i.kind === "one_time" && (i as { held_reason?: string | null }).held_reason);
+  if (!inv && held) {
+    notes.push("The invoice is held for Maria because the proposal splits the payment, so this email has no pay link. She sends the invoice from Xero.");
+  } else if (!inv && (await expectsInvoice(sb, p.id))) {
+    missing.push("The implementation invoice isn't in Xero yet, so there's no pay link.");
+  }
   if (!info?.found) missing.push("The Client Tracker has no onboarding for this proposal, so there's no intake form.");
   else if (!info.intake_link) missing.push(info.intake_note ? `No intake form: ${info.intake_note}` : "The intake form hasn't been made yet.");
 
@@ -201,7 +217,7 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
   if (!sender) {
     return {
       ready: false,
-      rec: { ...base, status: "draft", kind, missing: [...missing, "Neither the proposal's creator nor the fallback sender has connected their Gmail."], error: null },
+      rec: { ...base, status: "draft", kind, missing: [...missing, ...notes, "Neither the proposal's creator nor the fallback sender has connected their Gmail."], error: null },
     };
   }
   const { box, fallback } = sender;
@@ -244,7 +260,7 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
     rec: {
       ...base,
       kind,
-      missing,
+      missing: [...missing, ...notes],
       subject: fillSubject(template.subject, vars),
       body: fillWelcome(template.body, vars, times),
       links,
@@ -380,8 +396,9 @@ async function step(sb: Sb, p: ProposalRow, s: InvoicingSettings): Promise<strin
   const trackerGaveUp = !info?.found && age >= 2;
   const timeUp = age >= w.wait_hours;
   if (!composed.ready && !timeUp && !trackerGaveUp) {
-    await save(sb, p.id, { ...base, status: "waiting", missing: composed.rec.missing ?? [] });
-    return `${company}: waiting (${(composed.rec.missing ?? []).length} to come)`;
+    // Conditional: a "Don't send" or a rebuild pressed meanwhile must not be undone.
+    const still = await claim(sb, p.id, "waiting", { ...base, status: "waiting", missing: composed.rec.missing ?? [] });
+    return still ? `${company}: waiting (${(composed.rec.missing ?? []).length} to come)` : `${company}: changed meanwhile, left alone`;
   }
   if (!(await claim(sb, p.id, "waiting", { ...composed.rec, status: "sending" }))) return `${company}: taken by another run`;
   const out = await draftOrHold(sb, p, composed.rec);
@@ -407,7 +424,30 @@ export async function welcomeTick(sb: Sb) {
     await sb.from("proposals").update({ welcome_email: rec }).eq("id", r.id).is("welcome_email", null);
   }
 
-  // 2. Move each waiting one on.
+  // 2. One interrupted while going into Gmail goes back on the page for the sender, who is told.
+  const { data: sending } = await sb.from("proposals").select(SELECT).eq("welcome_email->>status", "sending").limit(20);
+  for (const p of (sending ?? []) as ProposalRow[]) {
+    const rec = p.welcome_email!;
+    if (!isStaleSending(rec)) continue;
+    const held: WelcomeRecord = {
+      ...rec,
+      status: "draft",
+      error: "It was interrupted while going into Gmail. Look in your Gmail Drafts first: it may already be there.",
+    };
+    const { data: moved } = await sb
+      .from("proposals")
+      .update({ welcome_email: { ...held, updated_at: new Date().toISOString() } })
+      .eq("id", p.id)
+      .eq("welcome_email->>status", "sending")
+      .eq("welcome_email->>updated_at", rec.updated_at ?? "")
+      .select("id");
+    if (moved?.length) {
+      await notifyProblem(sb, p, held);
+      log.push(`${p.client?.company_name ?? p.id}: interrupted, back on the page`);
+    }
+  }
+
+  // 3. Move each waiting one on.
   const { data: waiting } = await sb.from("proposals").select(SELECT).eq("welcome_email->>status", "waiting").limit(20);
   for (const p of (waiting ?? []) as ProposalRow[]) {
     try {
@@ -461,19 +501,29 @@ export async function rebuildWelcome(sb: Sb, proposalId: string) {
   const s = await loadInvoicing(sb);
   const p = await load(sb, proposalId);
   if (!p) throw new Error("Proposal not found.");
-  if (p.welcome_email?.status === "sending") throw new Error("It's being drafted right now.");
-  const info = await trackerInfo(p.id, true);
-  const base: WelcomeRecord = p.welcome_email ?? { status: "draft", queued_at: new Date().toISOString() };
-  const { rec } = await compose(sb, p, s, info, base);
-  return await draftOrHold(sb, p, { ...rec, status: "draft" });
+  const cur = p.welcome_email;
+  if (cur?.status === "sending" && !isStaleSending(cur)) throw new Error("It's being drafted right now.");
+  const base: WelcomeRecord = cur ?? { status: "draft", queued_at: new Date().toISOString() };
+  // Take it first, from whatever it is now: the 15-minute run can't draft it at the same time.
+  if (!(await claim(sb, p.id, cur ? cur.status : null, { ...base, status: "sending" }))) {
+    throw new Error("Someone else changed it just now. Refresh and try again.");
+  }
+  try {
+    const info = await trackerInfo(p.id, true);
+    const { rec } = await compose(sb, p, s, info, base);
+    return await draftOrHold(sb, p, { ...rec, status: "draft" });
+  } catch (e) {
+    await save(sb, p.id, { ...base, status: cur?.status === "sending" ? "draft" : (cur?.status ?? "draft") });
+    throw e;
+  }
 }
 
 /** From the proposal page: don't do it here (e.g. handled by hand). A Gmail draft it wrote stays in Drafts; the invoice can still be drafted from the Xero card. */
 export async function skipWelcome(sb: Sb, proposalId: string) {
   const p = await load(sb, proposalId);
   if (!p?.welcome_email) throw new Error("This proposal has no welcome email.");
-  if (p.welcome_email.status === "sending") throw new Error("It's being drafted right now.");
+  if (p.welcome_email.status === "sending" && !isStaleSending(p.welcome_email)) throw new Error("It's being drafted right now.");
   const rec: WelcomeRecord = { ...p.welcome_email, status: "skipped" };
-  await save(sb, p.id, rec);
+  if (!(await claim(sb, p.id, p.welcome_email.status, rec))) throw new Error("Someone else changed it just now. Refresh and try again.");
   return rec;
 }

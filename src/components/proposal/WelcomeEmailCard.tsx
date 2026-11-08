@@ -43,6 +43,8 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
   if (!rec) return null;
   const edited = rec.status === 'draft' && (subject !== (rec.subject ?? '') || body !== (rec.body ?? ''));
   const pill = PILL[rec.status];
+  // Mirrors isStaleSending in supabase/functions/_shared/welcome-delivery.ts (10 minutes).
+  const stale = rec.status === 'sending' && (!rec.updated_at || Date.now() - Date.parse(rec.updated_at) > 10 * 60_000);
 
   const run = async (
     label: string,
@@ -224,10 +226,27 @@ export default function WelcomeEmailCard({ proposal, onChanged }: { proposal: Pr
         </div>
       )}
 
-      {rec.status === 'sending' && (
+      {rec.status === 'sending' && !stale && (
         <p className="mt-2 flex items-center gap-1.5 text-[11px] text-gray-500">
           <Loader2 className="h-3 w-3 animate-spin" /> Putting it into Gmail now.
         </p>
+      )}
+      {/* Interrupted while going into Gmail (the 15-minute run also puts it back here). */}
+      {rec.status === 'sending' && stale && (
+        <div className="mt-2 space-y-2 text-[11px] text-amber-800">
+          <p>It was interrupted while going into Gmail. Look in Gmail Drafts first: it may already be there.</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => run('rebuild', 'welcome_rebuild', 'Drafted in Gmail', { confirm: 'Draft it again? If it is already in Gmail Drafts, you will have two.' })}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy === 'rebuild' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Draft it again
+            </button>
+            <SkipButton busy={busy} onSkip={() => run('skip', 'welcome_skip', 'Welcome email won’t be sent', { confirm: SKIP_CONFIRM })} />
+          </div>
+        </div>
       )}
 
       {rec.status === 'sent' && (

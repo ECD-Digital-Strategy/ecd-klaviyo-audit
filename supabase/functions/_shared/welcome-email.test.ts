@@ -61,3 +61,16 @@ Deno.test("mergeWelcome: off by default, bounds", () => {
   assertEquals(w.call_count, 6);
   assertEquals(w.call_include_rs, true);
 });
+
+Deno.test("holdsInvoice: only proposals the welcome email covers, until it is skipped", async () => {
+  const { holdsInvoice } = await import("./welcome-email.ts");
+  const w = mergeWelcome({ enabled: true, since: "2026-11-05T00:00:00Z" });
+  const signed = "2026-11-06T10:00:00Z";
+  assertEquals(holdsInvoice(w, { client_signed_at: signed, welcome_email: null }), true); // before its run queues it
+  for (const status of ["waiting", "sending", "draft", "drafted"] as const) {
+    assertEquals(holdsInvoice(w, { client_signed_at: signed, welcome_email: { status } }), true);
+  }
+  assertEquals(holdsInvoice(w, { client_signed_at: signed, welcome_email: { status: "skipped" } }), false);
+  assertEquals(holdsInvoice(w, { client_signed_at: "2026-11-01T00:00:00Z", welcome_email: null }), false); // signed before it was on
+  assertEquals(holdsInvoice({ ...w, enabled: false }, { client_signed_at: signed, welcome_email: null }), false);
+});

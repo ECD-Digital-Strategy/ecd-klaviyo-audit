@@ -98,7 +98,7 @@ export default function XeroInvoiceCard({
                   proposalId={proposal.id}
                   invoice={inv}
                   // Not while the welcome email is going to carry it: it would go twice.
-                  canEmail={autoSend && !['waiting', 'draft', 'drafted', 'sending'].includes(proposal.welcome_email?.status ?? '')}
+                  canEmail={autoSend && !welcomeCarriesInvoice(invoicing, proposal)}
                   onChanged={onChanged}
                 />
               )}
@@ -145,6 +145,18 @@ export default function XeroInvoiceCard({
 }
 
 type InvoiceEntry = NonNullable<Proposal['xero_invoices']>[number];
+
+/**
+ * Whether the welcome email carries this proposal's invoice, so it must not be drafted
+ * on its own as well. Mirrors holdsInvoice in supabase/functions/_shared/welcome-email.ts,
+ * including the first minutes after signing, before the welcome run has queued it.
+ */
+function welcomeCarriesInvoice(invoicing: InvoicingSettings | null, proposal: Proposal): boolean {
+  const w = invoicing?.welcome;
+  if (!w?.enabled || !w.since || !proposal.client_signed_at || proposal.client_signed_at < w.since) return false;
+  const st = proposal.welcome_email?.status;
+  return !st || st === 'waiting' || st === 'sending' || st === 'draft' || st === 'drafted';
+}
 
 /**
  * What happened to each invoice and who does what next, in plain words
