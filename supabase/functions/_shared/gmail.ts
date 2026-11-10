@@ -122,6 +122,14 @@ export async function completeConnection(sb: Sb, userId: string, code: string): 
   const email = idTokenEmail(tokens.id_token);
   if (!email) throw new Error("Google did not say which account this is.");
   if (!email.endsWith(`@${ALLOWED_DOMAIN}`)) throw new Error(`Connect your @${ALLOWED_DOMAIN} account, not ${email}.`);
+  // The Google account must be the person's OWN (2026-11-10): otherwise someone could
+  // send their "Connect Gmail" link to a colleague and attach that colleague's mailbox
+  // to their own login, then draft emails as them.
+  const { data: prof } = await sb.from("profiles").select("email").eq("id", userId).maybeSingle();
+  const own = String((prof as { email?: string } | null)?.email ?? "").trim().toLowerCase();
+  if (!own || own !== email) {
+    throw new Error(`Connect your own Gmail (${own || "your ECD address"}), not ${email}. Sign in to Google with that account and try again.`);
+  }
   if (!tokens.refresh_token) throw new Error("Google did not grant offline access. Try connecting again.");
   const enc = await encryptString(tokens.refresh_token);
   const { error } = await sb.from("mailbox_connections").upsert({
