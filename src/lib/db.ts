@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 import { attachActorNames } from './actor-names';
+import { resolvePublicInvoke } from './public-fetch';
+import { orIlikeAny } from './search-escape';
 import { auditHasAnalysisContent } from './audit-pipeline-status';
 import type {
   Audit,
@@ -18,15 +20,10 @@ import type {
   IndustryEmailLibrary,
   AuditEmailDesign,
   RevenueOpportunityTemplate,
-  AnnotationSize,
   WebPageSnapshot,
   ShopifyDataSnapshot,
 } from './types';
-import {
-  applyEntityHighlightStyle,
-  normalizeEntityHighlightStyle,
-  type EntityHighlightStyle,
-} from './entity-highlight-styles';
+import { applyEntityHighlightStyle, type EntityHighlightStyle } from './entity-highlight-styles';
 import { dedupeClientsByCompany, normalizeCompanyKey } from './client-display';
 import { normalizeClientWebsiteUrl } from './site-favicon';
 import { resolveRevenueOpportunityContent } from './revenue-opportunity-content';
@@ -35,15 +32,8 @@ import { computeAuditTotalRevenueOpportunity, REVENUE_OPPORTUNITY_SECTION_KEYS }
 import { computeCampaignRevenuePerRecipient } from './campaign-metrics';
 import type { DeliverabilitySnapshot } from './deliverability';
 import type { RevenueBreakdown } from './revenue-breakdown';
-import {
-  DEFAULT_BENCHMARK_CONFIG,
-  resolveBenchmarkConfig,
-  type BenchmarkConfig,
-} from './benchmarks';
-import {
-  mergeCoreFlowRecommendations,
-  type CoreFlowRecommendations,
-} from './core-flow-recommendations';
+import type { BenchmarkConfig } from './benchmarks';
+import type { CoreFlowRecommendations } from './core-flow-recommendations';
 
 const FLOW_SNAPSHOT_SELECT =
   'id, audit_id, client_id, flow_id, name, status, trigger_type, archived, created_at_klaviyo, updated_at_klaviyo, fetched_at, action_count:raw->attributes->action_count, flow_actions:raw->relationships->flow_actions->data';
@@ -130,7 +120,13 @@ function reshapeCampaignSnapshotRow(
   };
 }
 
-const AUDIT_LIST_SELECT = '*, audit_sections(audit_id, section_key, revenue_opportunity, section_config)';
+// List views only: no layout or context (large JSON nobody in a list reads).
+// executive_summary stays because the list badge checks whether it is empty.
+const AUDIT_LIST_COLUMNS =
+  'id,client_id,title,status,audit_type,audit_method,list_size,aov,monthly_traffic,total_revenue_opportunity,' +
+  'executive_summary,created_by,created_at,updated_at,published_at,public_share_token,show_recommendations,' +
+  'web_afters_ready,is_outreach';
+const AUDIT_LIST_SELECT = `${AUDIT_LIST_COLUMNS}, audit_sections(audit_id, section_key, revenue_opportunity, section_config)`;
 
 type AuditSectionRevenueRow = {
   audit_id: string;
@@ -229,6 +225,25 @@ async function fetchAuditCountByClient(): Promise<Map<string, number>> {
   return counts;
 }
 
+// The counts only break ties between duplicate clients, so a minute-old copy is
+// fine for search and lookups: search runs on every keystroke and used to read
+// every audit each time. A full client list load always refreshes it.
+const AUDIT_COUNT_TTL_MS = 60_000;
+let auditCountCache: { at: number; promise: Promise<Map<string, number>> } | null = null;
+
+function getAuditCountByClient(fresh = false): Promise<Map<string, number>> {
+  if (!fresh && auditCountCache && Date.now() - auditCountCache.at < AUDIT_COUNT_TTL_MS) {
+    return auditCountCache.promise;
+  }
+  const promise = fetchAuditCountByClient();
+  const entry = { at: Date.now(), promise };
+  auditCountCache = entry;
+  promise.catch(() => {
+    if (auditCountCache === entry) auditCountCache = null;
+  });
+  return promise;
+}
+
 export async function findClientByCompanyName(companyName: string): Promise<Client | null> {
   const key = normalizeCompanyKey(companyName);
   if (!key) return null;
@@ -243,14 +258,14 @@ export async function findClientByCompanyName(companyName: string): Promise<Clie
   if (error) throw error;
   const matches = (data ?? []).filter(c => normalizeCompanyKey(c.company_name) === key) as Client[];
   if (!matches.length) return null;
-  const auditCounts = await fetchAuditCountByClient();
+  const auditCounts = await getAuditCountByClient();
   return dedupeClientsByCompany(matches, auditCounts)[0] ?? null;
 }
 
 export async function listClients(): Promise<Client[]> {
   const [{ data, error }, auditCounts] = await Promise.all([
     supabase.from('clients').select('*').eq('is_outreach', false).order('created_at', { ascending: false }),
-    fetchAuditCountByClient(),
+    getAuditCountByClient(true),
   ]);
   if (error) throw error;
   return dedupeClientsByCompany((data ?? []) as Client[], auditCounts);
@@ -288,11 +303,6 @@ export async function updateClient(id: string, updates: Partial<Omit<Client, 'id
   const { data, error } = await supabase.from('clients').update(patch).eq('id', id).select('*').single();
   if (error) throw error;
   return data as Client;
-}
-
-export async function deleteClient(id: string): Promise<void> {
-  const { error } = await supabase.from('clients').delete().eq('id', id);
-  if (error) throw error;
 }
 
 export async function listAdminProfiles(): Promise<Profile[]> {
@@ -333,10 +343,10 @@ export async function searchClients(query: string, limit = 5): Promise<Client[]>
       .from('clients')
       .select('*')
       .eq('is_outreach', false)
-      .or(`company_name.ilike.%${q}%,name.ilike.%${q}%,industry.ilike.%${q}%`)
+      .or(orIlikeAny(['company_name', 'name', 'industry'], q))
       .order('created_at', { ascending: false })
       .limit(Math.max(limit * 3, limit)),
-    fetchAuditCountByClient(),
+    getAuditCountByClient(),
   ]);
   if (error) throw error;
   return dedupeClientsByCompany((data ?? []) as Client[], auditCounts).slice(0, limit);
@@ -488,86 +498,6 @@ export async function updateAuditSection(id: string, updates: Partial<AuditSecti
   return data as AuditSection;
 }
 
-export async function updateFlowPerformanceRow(
-  id: string,
-  patch: Partial<Pick<FlowPerformance, 'is_hidden' | 'display_name' | 'display_assessment' | 'display_rating' | 'display_order' | 'notes'>>,
-): Promise<FlowPerformance> {
-  const { data, error } = await supabase
-    .from('flow_performance')
-    .update(patch)
-    .eq('id', id)
-    .select('*')
-    .single();
-  if (error) throw error;
-  return data as FlowPerformance;
-}
-
-export async function listFlowPerformance(auditId: string): Promise<FlowPerformance[]> {
-  const { data, error } = await supabase
-    .from('flow_performance')
-    .select('*')
-    .eq('audit_id', auditId);
-  if (error) throw error;
-  return (data ?? []) as FlowPerformance[];
-}
-
-// -----------------------------------------------------------------------------
-// Per-row overrides for segment / form / campaign snapshots
-// -----------------------------------------------------------------------------
-
-type SnapshotRowPatch = {
-  is_hidden?: boolean;
-  display_name?: string | null;
-  display_notes?: string | null;
-  display_order?: number | null;
-};
-
-export async function listSegmentSnapshots(auditId: string): Promise<KlaviyoSegmentSnapshot[]> {
-  const { data, error } = await supabase
-    .from('klaviyo_segment_snapshots')
-    .select('*')
-    .eq('audit_id', auditId);
-  if (error) throw error;
-  return (data ?? []) as KlaviyoSegmentSnapshot[];
-}
-
-export async function updateSegmentSnapshotRow(
-  id: string,
-  patch: SnapshotRowPatch,
-): Promise<KlaviyoSegmentSnapshot> {
-  const { data, error } = await supabase
-    .from('klaviyo_segment_snapshots')
-    .update(patch)
-    .eq('id', id)
-    .select('*')
-    .single();
-  if (error) throw error;
-  return data as KlaviyoSegmentSnapshot;
-}
-
-export async function listFormSnapshots(auditId: string): Promise<KlaviyoFormSnapshot[]> {
-  const { data, error } = await supabase
-    .from('klaviyo_form_snapshots')
-    .select('*')
-    .eq('audit_id', auditId);
-  if (error) throw error;
-  return (data ?? []) as KlaviyoFormSnapshot[];
-}
-
-export async function updateFormSnapshotRow(
-  id: string,
-  patch: SnapshotRowPatch,
-): Promise<KlaviyoFormSnapshot> {
-  const { data, error } = await supabase
-    .from('klaviyo_form_snapshots')
-    .update(patch)
-    .eq('id', id)
-    .select('*')
-    .single();
-  if (error) throw error;
-  return data as KlaviyoFormSnapshot;
-}
-
 export async function listCampaignSnapshots(auditId: string): Promise<KlaviyoCampaignSnapshot[]> {
   // Never select('*') here: it drags `raw` along, and every row's raw carries
   // the same ~50KB of account-wide name maps, so an audit with a few hundred
@@ -579,20 +509,6 @@ export async function listCampaignSnapshots(auditId: string): Promise<KlaviyoCam
     .eq('audit_id', auditId);
   if (error) throw error;
   return (data ?? []) as KlaviyoCampaignSnapshot[];
-}
-
-export async function updateCampaignSnapshotRow(
-  id: string,
-  patch: SnapshotRowPatch,
-): Promise<KlaviyoCampaignSnapshot> {
-  const { data, error } = await supabase
-    .from('klaviyo_campaign_snapshots')
-    .update(patch)
-    .eq('id', id)
-    .select('*')
-    .single();
-  if (error) throw error;
-  return data as KlaviyoCampaignSnapshot;
 }
 
 export async function createAuditSections(
@@ -618,45 +534,6 @@ export async function createAuditSections(
   const { data, error } = await supabase.from('audit_sections').insert(rows).select('*');
   if (error) throw error;
   return (data ?? []) as AuditSection[];
-}
-
-export async function listAssets(auditId: string): Promise<AuditAsset[]> {
-  const { data, error } = await supabase.from('audit_assets').select('*').eq('audit_id', auditId);
-  if (error) throw error;
-  return (data ?? []) as AuditAsset[];
-}
-
-export async function createAuditAsset(input: Omit<AuditAsset, 'id' | 'uploaded_at'>): Promise<AuditAsset> {
-  const { data, error } = await supabase.from('audit_assets').insert(input).select('*').single();
-  if (error) throw error;
-  return data as AuditAsset;
-}
-
-export async function uploadAuditAssetFile(params: {
-  auditId: string;
-  clientId: string;
-  sectionKey: string;
-  side: 'current' | 'optimized';
-  file: File;
-}): Promise<{ publicUrl: string; path: string }> {
-  const safeName = params.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const path = `${params.clientId}/${params.auditId}/${params.sectionKey}/${params.side}/${crypto.randomUUID()}_${safeName}`;
-
-  const { error } = await supabase.storage
-    .from('audit-assets')
-    .upload(path, params.file, { upsert: false, contentType: params.file.type });
-  if (error) throw error;
-
-  const { data } = supabase.storage.from('audit-assets').getPublicUrl(path);
-  if (!data.publicUrl) throw new Error('Failed to get public URL');
-  return { publicUrl: data.publicUrl, path };
-}
-
-export async function listAnnotationsForAuditSections(sectionIds: string[]): Promise<Annotation[]> {
-  if (sectionIds.length === 0) return [];
-  const { data, error } = await supabase.from('annotations').select('*').in('audit_section_id', sectionIds);
-  if (error) throw error;
-  return (data ?? []) as Annotation[];
 }
 
 export async function createAnnotation(input: Omit<Annotation, 'id' | 'created_at'>): Promise<Annotation> {
@@ -820,9 +697,10 @@ export async function fetchAuditReportBundleForAudit(audit: Audit): Promise<Audi
 export async function fetchPublicAuditReportBundle(token: string): Promise<AuditReportBundle | null> {
   // ?preview=1 is Emil's own link from the Outreach page: not counted as an open.
   const preview = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('preview');
-  const { data, error } = await supabase.functions.invoke('audit_public', { body: { token, preview } });
-  if (error) return null;
-  if (data?.ok !== true) return null;
+  const res = await supabase.functions.invoke('audit_public', { body: { token, preview } });
+  // Null only for a real not found; a backend error throws so the page can offer a retry.
+  const data = resolvePublicInvoke<typeof res.data>(res.data, res.error);
+  if (!data) return null;
 
   if ((data.audit as Audit | undefined)?.audit_type === 'web') {
     return {
@@ -983,18 +861,6 @@ export async function listIndustryEmailLibrary(): Promise<IndustryEmailLibrary[]
   return (data ?? []) as IndustryEmailLibrary[];
 }
 
-export async function getIndustryEmailByIndustry(industry: string): Promise<IndustryEmailLibrary | null> {
-  const { data, error } = await supabase
-    .from('industry_email_library')
-    .select('*')
-    .eq('industry', industry)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return (data ?? null) as IndustryEmailLibrary | null;
-}
-
 export async function createIndustryEmail(input: Omit<IndustryEmailLibrary, 'id' | 'created_at' | 'updated_at'>): Promise<IndustryEmailLibrary> {
   const { data, error } = await supabase.from('industry_email_library').insert(input).select('*').single();
   if (error) throw error;
@@ -1113,43 +979,8 @@ export async function ensureClientCreator(user: Profile | null, client: Partial<
   return { ...client, created_by: requireUserId(user) };
 }
 
-export type PlatformSettings = {
-  annotation_size: AnnotationSize;
-  annotations_expanded: boolean;
-  entity_highlight_style: EntityHighlightStyle;
-  benchmarks: BenchmarkConfig;
-  core_flow_recommendations: CoreFlowRecommendations;
-};
-
-export async function getPlatformSettings(): Promise<PlatformSettings> {
-  const { data, error } = await supabase
-    .from('platform_settings')
-    .select('*')
-    .eq('id', 'default')
-    .single();
-
-  const defaults: PlatformSettings = {
-    annotation_size: 'md',
-    annotations_expanded: false,
-    entity_highlight_style: 'purple',
-    benchmarks: { ...DEFAULT_BENCHMARK_CONFIG },
-    core_flow_recommendations: mergeCoreFlowRecommendations(),
-  };
-
-  if (error || !data) return defaults;
-
-  return {
-    annotation_size: (data.annotation_size || defaults.annotation_size) as AnnotationSize,
-    annotations_expanded: data.annotations_expanded ?? defaults.annotations_expanded,
-    entity_highlight_style: normalizeEntityHighlightStyle(
-      data.entity_highlight_style ?? defaults.entity_highlight_style,
-    ),
-    benchmarks: resolveBenchmarkConfig(data.benchmarks as Partial<BenchmarkConfig> | null),
-    core_flow_recommendations: mergeCoreFlowRecommendations(
-      data.core_flow_recommendations as Partial<CoreFlowRecommendations> | null,
-    ),
-  };
-}
+// Moved to its own module so the entry chunk does not load db.ts; re-exported for old imports.
+export { getPlatformSettings, type PlatformSettings } from './platform-settings-db';
 
 export async function updatePlatformSettings(updates: {
   annotation_size?: string;

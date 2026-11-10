@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { resolvePublicInvoke } from './public-fetch';
+import { addDaysToDate, businessDate } from './valid-until';
 import { attachActorNames } from './actor-names';
 import { publicDocumentOrigin } from './public-origin';
 import { listStaffSigners, resolveSigner, signerImage, type StaffSigner } from './staff-signers';
@@ -64,13 +66,18 @@ function mapDocumentRow(row: Record<string, unknown>): Document {
   };
 }
 
+// Every Document column except the body: the list never shows it, so content comes back ''.
+const DOCUMENT_LIST_COLUMNS =
+  'id,document_number,template_id,title,status,recipient_name,recipient_email,sender_signature_enabled,' +
+  'recipient_signature_enabled,public_token,valid_until,sent_at,first_viewed_at,signed_at,void_at,created_by,created_at,updated_at';
+
 export async function listDocuments(): Promise<Document[]> {
   const { data, error } = await supabase
     .from('documents')
-    .select('*')
+    .select(DOCUMENT_LIST_COLUMNS)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []).map(mapDocumentRow);
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map(mapDocumentRow);
 }
 
 export async function getDocument(id: string): Promise<Document | null> {
@@ -203,7 +210,8 @@ export async function markDocumentSent(document: Document): Promise<Document> {
   const validDays = settings.defaults.valid_days || 0;
   const validUntil =
     document.valid_until ??
-    (validDays > 0 ? new Date(Date.now() + validDays * 86400000).toISOString().slice(0, 10) : null);
+    // Counted from today in New York, the same clock that expires the link.
+    (validDays > 0 ? addDaysToDate(businessDate(), validDays) : null);
 
   const updates: Record<string, unknown> = {
     public_token: document.public_token ?? generatePublicToken(),
@@ -243,7 +251,8 @@ export type PublicDocumentPayload = {
     sender_signature_enabled: boolean;
     recipient_signature_enabled: boolean;
   };
-  signature: DocumentSignature | null;
+  /** The recipient's signature, display fields only (the server leaves out IP, browser and email). */
+  signature: PublicSenderSignature | null;
   sender_signature: PublicSenderSignature | null;
   signed: boolean;
   expired: boolean;
@@ -256,9 +265,8 @@ export async function fetchPublicDocument(
   const { data, error } = await supabase.functions.invoke('document_public', {
     body: { token, preview: options.preview ?? false },
   });
-  if (error) return null;
-  if (data?.ok !== true) return null;
-  return data as PublicDocumentPayload;
+  // Null only for an unknown token (404); other errors throw so the page can offer a retry.
+  return resolvePublicInvoke<PublicDocumentPayload>(data, error);
 }
 
 export async function signDocumentPublic(input: {

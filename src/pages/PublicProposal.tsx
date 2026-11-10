@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
-import { CheckCircle2, Clock, Download, FileX2, PenLine } from 'lucide-react';
+import { CheckCircle2, Clock, CloudOff, Download, FileX2, PenLine } from 'lucide-react';
 import AppPreloader from '../components/ui/AppPreloader';
 import ProposalDocument from '../components/proposal/ProposalDocument';
 import SignaturePad, { type SignaturePadHandle } from '../components/proposal/SignaturePad';
@@ -21,10 +21,12 @@ function FullScreenNotice({
   icon: Icon,
   title,
   description,
+  action,
 }: {
   icon: typeof FileX2;
   title: string;
   description: string;
+  action?: ReactNode;
 }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#f9f9f9] p-6">
@@ -32,6 +34,7 @@ function FullScreenNotice({
         <Icon className="mx-auto mb-4 h-10 w-10 text-gray-300" />
         <h1 className="mb-2 text-lg font-bold text-gray-900">{title}</h1>
         <p className="text-sm leading-relaxed text-gray-500">{description}</p>
+        {action}
       </div>
     </div>
   );
@@ -231,6 +234,8 @@ export default function PublicProposal() {
   const [payload, setPayload] = useState<PublicProposalPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // A backend error is not a dead link: say so and offer a retry.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState('');
   const [justSigned, setJustSigned] = useState(false);
@@ -260,10 +265,16 @@ export default function PublicProposal() {
       setLoading(false);
       return;
     }
-    const data = await fetchPublicProposal(token, { preview: isPreview });
-    if (!data) setNotFound(true);
-    else setPayload(data);
-    setLoading(false);
+    try {
+      const data = await fetchPublicProposal(token, { preview: isPreview });
+      setLoadFailed(false);
+      if (!data) setNotFound(true);
+      else setPayload(data);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      setLoading(false);
+    }
   }, [token, isPreview]);
 
   useEffect(() => {
@@ -323,6 +334,27 @@ export default function PublicProposal() {
   };
 
   if (loading) return <AppPreloader />;
+
+  if (loadFailed) {
+    return (
+      <FullScreenNotice
+        icon={CloudOff}
+        title="Couldn't load this right now"
+        description="Something went wrong on our side or with the connection. Your link is fine; please try again."
+        action={
+          <button
+            onClick={() => {
+              setLoading(true);
+              void load();
+            }}
+            className="mt-5 rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:bg-brand-primary-dark"
+          >
+            Retry
+          </button>
+        }
+      />
+    );
+  }
 
   if (notFound || !payload) {
     return (

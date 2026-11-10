@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { hubAccessToken } from './hub';
+import { hasSignedOutCookie, SIGNED_OUT_COOKIE, signedOutCookieString } from './signed-out-flag';
 
 // Sign in once (Emil, 2026-10-28): someone signed in to ECD Hub (PTO, HR, the
 // Client Tracker) is signed in here too, instead of being sent a second magic
@@ -9,22 +10,38 @@ import { hubAccessToken } from './hub';
 // Signing out here sticks: it turns this off until the next sign-in by email, so
 // pressing "Sign out" does not sign you straight back in from Hub.
 
-const OFF_KEY = 'ecd_hub_sso_off';
+// The flag is a cookie shared across the ECD subdomains (see signed-out-flag.ts).
+// It used to be in this site's localStorage only, so signing out on one
+// subdomain did not stick on the others; an old localStorage flag still counts.
+const OFF_KEY = SIGNED_OUT_COOKIE;
+
+function legacyOffFlag(): boolean {
+  try {
+    return localStorage.getItem(OFF_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 export function hubSsoEnabled(): boolean {
   try {
-    return localStorage.getItem(OFF_KEY) !== '1';
+    if (hasSignedOutCookie(document.cookie)) return false;
   } catch {
-    return true;
+    // no cookies: fall through
   }
+  return !legacyOffFlag();
 }
 
 export function setHubSsoEnabled(on: boolean) {
   try {
-    if (on) localStorage.removeItem(OFF_KEY);
-    else localStorage.setItem(OFF_KEY, '1');
+    document.cookie = signedOutCookieString(!on, window.location.hostname, window.location.protocol === 'https:');
   } catch {
-    // no storage: nothing to remember
+    // no cookies: nothing to remember
+  }
+  try {
+    localStorage.removeItem(OFF_KEY);
+  } catch {
+    // no storage
   }
 }
 

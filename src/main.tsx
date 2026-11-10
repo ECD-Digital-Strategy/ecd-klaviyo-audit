@@ -4,6 +4,13 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import { reloadOnceForStaleChunk } from './lib/stale-chunk-reload';
+
+// A tab opened before a deploy asks for page chunks that no longer exist. Reload
+// once to pick up the new build; the guard stops a reload loop if it still fails.
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadOnceForStaleChunk()) event.preventDefault();
+});
 
 // Shopify sometimes opens a client's audit app at its App URL (this site's
 // root) after an install, with a signed shop/hmac/host query, instead of

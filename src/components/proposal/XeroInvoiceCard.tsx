@@ -7,6 +7,7 @@ import { useFocusTarget } from '../../lib/use-focus-target';
 import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
 import { formatCurrency } from '../../lib/revenue-calculator';
+import { businessDate } from '../../lib/valid-until';
 import { useToast } from '../ui/Toast';
 import type { InvoicingSettings, Proposal, ProposalLineItem, WelcomeEmailRecord } from '../../lib/types';
 
@@ -263,7 +264,8 @@ function InvoiceEmailStatus({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const today = new Date().toISOString().slice(0, 10);
+  // Today in New York (UTC flipped to tomorrow every evening and called invoices overdue early).
+  const today = businessDate();
   // Only once the daily Xero check has looked (amount_due set): before that an
   // invoice's paid state is unknown, not overdue.
   const overdue = !inv.paid_at && typeof inv.amount_due === 'number' && inv.amount_due > 0 && inv.due_date && inv.due_date < today;

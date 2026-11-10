@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { resolvePublicInvoke } from './public-fetch';
 import { attachActorNames } from './actor-names';
 import { publicProposalOrigin } from './public-origin';
 import { resolveSignatureImage } from './signature-image';
@@ -711,12 +712,8 @@ export async function fetchPublicProposal(
   const { data, error } = await supabase.functions.invoke('proposal_public', {
     body: { token, preview: options.preview ?? false },
   });
-  if (error) {
-    // FunctionsHttpError with 404 means unknown token/draft — treat as not found.
-    return null;
-  }
-  if (data?.ok !== true) return null;
-  return data as PublicProposalPayload;
+  // Null only for an unknown token or draft (404); other errors throw so the page can offer a retry.
+  return resolvePublicInvoke<PublicProposalPayload>(data, error);
 }
 
 export async function signProposalPublic(input: {

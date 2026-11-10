@@ -53,10 +53,19 @@ export function createHubStorage(): {
         const fromCookie = getCookie(key);
         if (fromCookie != null && fromCookie !== '') return fromCookie;
       }
-      return localStorage.getItem(key);
+      // Storage can throw (blocked site data, private mode): treat as no sign-in.
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
     },
     setItem(key, value) {
-      localStorage.setItem(key, value);
+      try {
+        localStorage.setItem(key, value);
+      } catch {
+        // No storage or quota full: the shared cookie below may still hold it.
+      }
       if (shared) {
         try {
           setCookie(key, value);
@@ -66,7 +75,11 @@ export function createHubStorage(): {
       }
     },
     removeItem(key) {
-      localStorage.removeItem(key);
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // no storage
+      }
       if (shared) removeCookie(key);
     },
   };

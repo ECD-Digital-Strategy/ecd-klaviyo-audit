@@ -67,19 +67,45 @@ export default function PublicDocument() {
   const [payload, setPayload] = useState<PublicDocumentPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // A backend error is not a dead link: say so and offer a retry.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = async () => {
     if (!token) return;
-    const data = await fetchPublicDocument(token);
-    if (!data) setNotFound(true);
-    else setPayload(data);
-    setLoading(false);
+    try {
+      const data = await fetchPublicDocument(token);
+      setLoadFailed(false);
+      if (!data) setNotFound(true);
+      else setPayload(data);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const retry = () => {
+    setLoading(true);
+    void load();
   };
 
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
 
   if (loading) {
     return <Shell><div className="flex items-center gap-2 text-sm text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div></Shell>;
+  }
+  if (loadFailed) {
+    return (
+      <Shell>
+        <div className="rounded-2xl border border-gray-100 bg-white p-8 text-center">
+          <p className="text-sm font-medium text-gray-900">Couldn&apos;t load this right now</p>
+          <p className="mt-1 text-sm text-gray-500">Please check your connection and try again.</p>
+          <button onClick={retry} className="mt-4 rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:bg-brand-primary-dark">
+            Retry
+          </button>
+        </div>
+      </Shell>
+    );
   }
   if (notFound || !payload) {
     return <Shell><div className="rounded-2xl border border-gray-100 bg-white p-8 text-center text-sm text-gray-500">This document link is invalid or is no longer available.</div></Shell>;

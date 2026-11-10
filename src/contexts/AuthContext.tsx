@@ -1,9 +1,10 @@
-import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, useEffect, useRef, type ReactNode } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Profile, UserRole } from '../lib/types';
 import { clearCachedProfile, readCachedProfile, writeCachedProfile } from '../lib/profile-cache';
 import { isAllowedSignInEmail, signInErrorMessage } from '../lib/sign-in-policy';
 import { hubSsoEnabled, setHubSsoEnabled, signInWithHub } from '../lib/hubSso';
+import { safeInternalPath } from '../lib/safe-redirect';
 
 interface AuthState {
   user: Profile | null;
@@ -11,6 +12,10 @@ interface AuthState {
   /** A saved session is being refreshed; signed in again in a moment. */
   isRestoring: boolean;
   authError: string;
+  /** Signed in, but the profile could not be read (timeout or server error). */
+  serverUnreachable: boolean;
+  /** Try the profile read again after serverUnreachable. */
+  retryAuth: () => void;
   sendMagicLink: (email: string, redirectPath?: string) => Promise<void>;
   signOut: () => Promise<void>;
   hasRole: (role: UserRole | UserRole[]) => boolean;
@@ -39,31 +44,65 @@ function hasSessionCookie(): boolean {
 }
 const ADMIN_DOMAIN = 'ecdigitalstrategy.com';
 
+// How long the profile read (with its refresh retries) may take before we say
+// the server cannot be reached, instead of a loading screen that never ends.
+const PROFILE_LOAD_TIMEOUT_MS = 6000;
+
+/** Same profile as far as the app can tell (the columns we read). */
+function sameProfile(a: Profile | null, b: Profile): boolean {
+  if (!a) return false;
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.email === b.email &&
+    a.role === b.role &&
+    a.created_at === b.created_at &&
+    JSON.stringify(a.app_access ?? null) === JSON.stringify(b.app_access ?? null)
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const cachedProfile = readCachedProfile();
+  // The cached profile is shared by every tab on this origin but the session
+  // cookie is what says someone is signed in (it is cleared on sign-out on any
+  // ECD subdomain), so without the cookie the cache is stale.
+  const [cachedProfile] = useState(() => {
+    if (hasSessionCookie()) return readCachedProfile();
+    clearCachedProfile();
+    return null;
+  });
   const [user, setUser] = useState<Profile | null>(cachedProfile);
   const [isLoading, setIsLoading] = useState(!cachedProfile);
   const [authError, setAuthError] = useState('');
+  const [serverUnreachable, setServerUnreachable] = useState(false);
   // True while a saved but expired session is being refreshed, so the app can
   // say "Signing you in" instead of flashing the login screen.
   const [isRestoring, setIsRestoring] = useState(false);
-  const handlingUserId = useRef<string | null>(null);
+  // The profile read in flight, so a second auth event for the same user waits
+  // for it instead of finishing the initial load while it is still running.
+  const inFlight = useRef<{ userId: string; promise: Promise<void> } | null>(null);
+  const retryRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let isMounted = true;
 
-    const handleSessionUser = async (sessionUser: { id: string; email?: string | null }) => {
-      if (handlingUserId.current === sessionUser.id) return;
-      handlingUserId.current = sessionUser.id;
+    const applyProfile = (profile: Profile) => {
+      // Every auth event (the hourly token refresh too) reads the profile again;
+      // only a real change should re-render the app.
+      setUser((prev) => (sameProfile(prev, profile) ? prev : profile));
+      writeCachedProfile(profile);
+      setAuthError('');
+      setServerUnreachable(false);
+    };
 
+    const loadSessionUser = async (sessionUser: { id: string; email?: string | null }) => {
       const email = (sessionUser.email ?? '').toLowerCase().trim();
 
-      try {
-        const fetchProfile = () => supabase
-          .from('profiles')
-          .select(PROFILE_COLUMNS)
-          .eq('id', sessionUser.id)
-          .maybeSingle();
+      const fetchProfile = () => supabase
+        .from('profiles')
+        .select(PROFILE_COLUMNS)
+        .eq('id', sessionUser.id)
+        .maybeSingle();
+      const readProfile = async () => {
         let { data: existing, error: profileErr } = await fetchProfile();
         // The usual cause of "login screen, then signed in a second later": the
         // profile read went out on an access token that was just expiring, it
@@ -77,60 +116,104 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ({ data: existing, error: profileErr } = await fetchProfile());
           if (profileErr) await new Promise((r) => setTimeout(r, 400 * attempt));
         }
+        return { existing, profileErr };
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), PROFILE_LOAD_TIMEOUT_MS);
+      });
+      const read = readProfile().catch(() => 'failed' as const);
+      const result = await Promise.race([read, timedOut]);
+      clearTimeout(timer);
 
-        if (!isMounted) return;
-        if (profileErr) {
-          setAuthError(profileErr.message);
-          return;
-        }
-
-        if (existing) {
-          setUser(existing);
-          writeCachedProfile(existing);
-          setAuthError('');
-          return;
-        }
-
-        const isEcdEmail = email.endsWith(`@${ADMIN_DOMAIN}`);
-        if (!isEcdEmail) {
-          setAuthError('Your account has not been set up yet. Please contact the ECD team.');
-          await supabase.auth.signOut();
-          if (!isMounted) return;
-          setUser(null);
-          clearCachedProfile();
-          return;
-        }
-
-        const defaultName = (email.split('@')[0] || '').replace(/\./g, ' ').trim();
-        // A first sign-in from the company domain self-provisions as a MEMBER
-        // with all three areas (the column default), not as an admin: this is
-        // exactly how every account ended up admin before roles existed. Admins
-        // are made by other admins in Settings, never by signing in.
-        const { data: created, error: insertErr } = await supabase
-          .from('profiles')
-          .insert({
-            id: sessionUser.id,
-            name: defaultName,
-            email,
-            role: 'auditor',
-          })
-          .select(PROFILE_COLUMNS)
-          .single();
-
-        if (!isMounted) return;
-        if (insertErr) {
-          setAuthError(insertErr.message);
-          return;
-        }
-
-        setUser(created);
-        writeCachedProfile(created);
-        setAuthError('');
-      } finally {
-        if (handlingUserId.current === sessionUser.id) {
-          handlingUserId.current = null;
-        }
+      if (!isMounted) return;
+      if (result === 'timeout') {
+        // A late answer still signs them in without pressing Retry.
+        void read.then((late) => {
+          if (isMounted && late !== 'failed' && !late.profileErr && late.existing) applyProfile(late.existing as Profile);
+        });
       }
+      if (result === 'timeout' || result === 'failed' || result.profileErr) {
+        // Not "signed out" and not raw database text: say the server is not
+        // answering and offer a retry. A cached profile keeps the app usable.
+        setServerUnreachable(true);
+        return;
+      }
+      const { existing } = result;
+
+      if (existing) {
+        applyProfile(existing as Profile);
+        return;
+      }
+
+      setServerUnreachable(false);
+      const isEcdEmail = email.endsWith(`@${ADMIN_DOMAIN}`);
+      if (!isEcdEmail) {
+        setAuthError('Your account has not been set up yet. Please contact the ECD team.');
+        await supabase.auth.signOut();
+        if (!isMounted) return;
+        setUser(null);
+        clearCachedProfile();
+        return;
+      }
+
+      const defaultName = (email.split('@')[0] || '').replace(/\./g, ' ').trim();
+      // A first sign-in from the company domain self-provisions as a MEMBER
+      // with all three areas (the column default), not as an admin: this is
+      // exactly how every account ended up admin before roles existed. Admins
+      // are made by other admins in Settings, never by signing in.
+      const { data: created, error: insertErr } = await supabase
+        .from('profiles')
+        .insert({
+          id: sessionUser.id,
+          name: defaultName,
+          email,
+          role: 'auditor',
+        })
+        .select(PROFILE_COLUMNS)
+        .single();
+
+      if (!isMounted) return;
+      if (insertErr) {
+        setAuthError(insertErr.message);
+        return;
+      }
+
+      applyProfile(created as Profile);
+    };
+
+    const handleSessionUser = (sessionUser: { id: string; email?: string | null }): Promise<void> => {
+      // Same user already loading: share that read so this event's follow-up
+      // (finishing the initial load) waits for it too.
+      if (inFlight.current?.userId === sessionUser.id) return inFlight.current.promise;
+      const entry = {
+        userId: sessionUser.id,
+        promise: loadSessionUser(sessionUser).finally(() => {
+          if (inFlight.current === entry) inFlight.current = null;
+        }),
+      };
+      inFlight.current = entry;
+      return entry.promise;
+    };
+
+    // Retry after "Can't reach the server": read the profile for the current session again.
+    retryRef.current = () => {
+      if (isMounted) {
+        setServerUnreachable(false);
+        setIsLoading(true);
+      }
+      void supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          const sessionUser = data.session?.user;
+          if (sessionUser) return handleSessionUser({ id: sessionUser.id, email: sessionUser.email });
+        })
+        .catch(() => {
+          if (isMounted) setServerUnreachable(true);
+        })
+        .finally(() => {
+          if (isMounted) setIsLoading(false);
+        });
     };
 
     // A saved session whose access token has expired comes back as "no session"
@@ -151,8 +234,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
     const signedOut = () => {
-      handlingUserId.current = null;
+      inFlight.current = null;
       setUser(null);
+      setServerUnreachable(false);
       clearCachedProfile();
     };
 
@@ -240,15 +324,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const sendMagicLink = async (email: string, redirectPath?: string) => {
+  const sendMagicLink = useCallback(async (email: string, redirectPath?: string) => {
     const trimmed = email.trim().toLowerCase();
     setAuthError('');
 
     // Preserve the page the user was trying to reach (e.g. a proposal link from an
     // email notification) so the magic link drops them back there instead of at "/".
-    const target = redirectPath && redirectPath.startsWith('/')
-      ? `${window.location.origin}${redirectPath}`
-      : window.location.origin;
+    const safePath = safeInternalPath(redirectPath);
+    const target = safePath ? `${window.location.origin}${safePath}` : window.location.origin;
 
     // Refuse anything off the agency's domain before an email is even sent.
     if (!isAllowedSignInEmail(trimmed)) {
@@ -268,24 +351,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw new Error(signInErrorMessage(error.message));
     // Signing in on purpose turns "signed in with ECD Hub" back on.
     setHubSsoEnabled(true);
-  };
+  }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     // Stay signed out: without this the Hub sign-in would sign straight back in.
     setHubSsoEnabled(false);
     await supabase.auth.signOut();
     setUser(null);
+    setServerUnreachable(false);
     clearCachedProfile();
-  };
+  }, []);
 
-  const hasRole = (role: UserRole | UserRole[]) => {
+  const hasRole = useCallback((role: UserRole | UserRole[]) => {
     if (!user) return false;
     const roles = Array.isArray(role) ? role : [role];
     return roles.includes(user.role);
-  };
+  }, [user]);
+
+  const retryAuth = useCallback(() => retryRef.current(), []);
+
+  // Memoized so consumers re-render only when something here really changes.
+  const value = useMemo(
+    () => ({ user, isLoading, isRestoring, authError, serverUnreachable, retryAuth, sendMagicLink, signOut, hasRole }),
+    [user, isLoading, isRestoring, authError, serverUnreachable, retryAuth, sendMagicLink, signOut, hasRole],
+  );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, isRestoring, authError, sendMagicLink, signOut, hasRole }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

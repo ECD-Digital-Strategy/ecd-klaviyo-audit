@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useEffect, useMemo, useState } from 'react';
 import AppPreloader from '../ui/AppPreloader';
+import ErrorBoundary from '../ui/ErrorBoundary';
 import WhatsNewModal from './WhatsNewModal';
 import { AppRail } from './AppRail';
 
@@ -48,9 +49,12 @@ export default function AppShell() {
         } flex flex-col min-h-screen transition-[margin] duration-300`}
       >
         <main className="flex flex-1 flex-col min-h-[100dvh]">
-          <Suspense fallback={<AppPreloader compact />}>
-            <Outlet />
-          </Suspense>
+          {/* A crashing page keeps the menu; moving to another page clears it. */}
+          <ErrorBoundary compact resetKey={location.pathname}>
+            <Suspense fallback={<AppPreloader compact />}>
+              <Outlet />
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </div>

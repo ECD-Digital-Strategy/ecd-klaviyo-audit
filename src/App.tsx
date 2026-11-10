@@ -3,13 +3,17 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { getZoneRedirectOrigin } from './lib/route-zones';
 import { canAccessArea } from './lib/access';
-import AppShell from './components/layout/AppShell';
-import Login from './pages/Login';
 import Modal from './components/ui/Modal';
 import AppPreloader from './components/ui/AppPreloader';
 import { ToastProvider } from './components/ui/Toast';
 import { PlatformSettingsProvider } from './contexts/PlatformSettingsContext';
 import { canUseOutreach } from './lib/outreach-access';
+import { safeInternalPath } from './lib/safe-redirect';
+import ErrorBoundary from './components/ui/ErrorBoundary';
+// Lazy so public link visitors (report, proposal, document) never download the
+// staff shell or the login page.
+const AppShell = lazy(() => import('./components/layout/AppShell'));
+const Login = lazy(() => import('./pages/Login'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Clients = lazy(() => import('./pages/Clients'));
 const ClientDetail = lazy(() => import('./pages/ClientDetail'));
@@ -62,19 +66,42 @@ function ViewerLanding() {
   );
 }
 
+function ServerUnreachable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="min-h-screen bg-[#f9f9f9] flex items-center justify-center p-6">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center">
+        <h1 className="text-lg font-bold text-gray-900 mb-2">Can&apos;t reach the server</h1>
+        <p className="text-sm text-gray-500 leading-relaxed">
+          You are signed in, but we couldn&apos;t load your account just now. Check your connection and try again.
+        </p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-5 rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:bg-brand-primary-dark"
+        >
+          Retry
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AppRoutes() {
-  const { user, isLoading, isRestoring, hasRole } = useAuth();
+  const { user, isLoading, isRestoring, hasRole, serverUnreachable, retryAuth } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const state = location.state as any;
   const backgroundLocation = state?.backgroundLocation as ReturnType<typeof useLocation> | undefined;
   const isPublicReportRoute =
-    location.pathname.startsWith('/report/') || location.pathname.startsWith('/proposal/');
+    location.pathname.startsWith('/report/') ||
+    location.pathname.startsWith('/proposal/') ||
+    location.pathname.startsWith('/document/');
   // Set when an unauthenticated visit got bounced to /login (see the `!user` branch
   // below). If auth resolves while still sitting on /login or another unmatched route
   // (e.g. the session-hydration race where isLoading clears before `user` does), send
   // them back to the page they actually clicked instead of defaulting to "/".
-  const deepLinkFrom = typeof state?.from === 'string' ? state.from : null;
+  // Only a path on this site: "//other.site" would leave the app.
+  const deepLinkFrom = safeInternalPath(state?.from);
 
   // Back from Shopify's install page, which is a full page load: the new-audit
   // wizard would render as a bare page because the popup only exists while a
@@ -107,6 +134,11 @@ function AppRoutes() {
 
   if (isLoading && !isPublicReportRoute) {
     return <AppPreloader message={isRestoring ? 'Signing you in…' : undefined} />;
+  }
+
+  // Signed in, but the profile read failed or timed out: not the login form.
+  if (!user && serverUnreachable && !isPublicReportRoute) {
+    return <ServerUnreachable onRetry={retryAuth} />;
   }
 
   // Viewer means the read-only role, explicitly. This used to be "anyone who is
@@ -240,14 +272,16 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <ToastProvider>
-          <PlatformSettingsProvider>
-            <AppRoutes />
-          </PlatformSettingsProvider>
-        </ToastProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AuthProvider>
+          <ToastProvider>
+            <PlatformSettingsProvider>
+              <AppRoutes />
+            </PlatformSettingsProvider>
+          </ToastProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

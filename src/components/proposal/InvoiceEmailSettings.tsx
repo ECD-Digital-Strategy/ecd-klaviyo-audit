@@ -18,6 +18,7 @@ import {
 } from '../../lib/invoice-sending';
 import type { InvoicingSettings } from '../../lib/types';
 import { useFocusTarget } from '../../lib/use-focus-target';
+import { businessDate } from '../../lib/valid-until';
 
 // Proposal settings: invoices emailed to the client from a person's own Gmail
 // (Emil + Isa, 2026-11-02; see src/lib/invoice-sending.ts). Everyone who may send
@@ -308,7 +309,7 @@ description="When a client signs, the email with their implementation invoice (P
             onChange={v => set({
               overdue_nudges: v,
               // Only invoices from now on: switching it on never sends a pile of reminders about old ones.
-              nudges_since: v ? (value.nudges_since ?? new Date().toISOString().slice(0, 10)) : value.nudges_since,
+              nudges_since: v ? (value.nudges_since ?? businessDate()) : value.nudges_since,
             })}
           >
             <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">

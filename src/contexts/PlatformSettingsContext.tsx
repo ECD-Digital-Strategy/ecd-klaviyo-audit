@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { getPlatformSettings } from '../lib/db';
+import { getPlatformSettings } from '../lib/platform-settings-db';
 import {
   applyEntityHighlightStyle,
   entityHighlightsEnabled,
