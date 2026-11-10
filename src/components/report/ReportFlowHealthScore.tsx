@@ -23,18 +23,22 @@ interface Props {
 
 interface Category {
   name: string;
-  score: number;
+  /** null: not enough data to score; left out of the total. */
+  score: number | null;
   maxScore: number;
   assessment: string;
 }
 
 const ESSENTIAL_FLOW_PATTERNS = [
   { label: 'Welcome', patterns: ['welcome', 'onboard'] },
-  { label: 'Abandoned Cart', patterns: ['abandon', 'cart'] },
+  // Cart or checkout abandonment only; "Browse Abandonment" must not count here.
+  { label: 'Abandoned Cart', patterns: ['\\bcart', 'checkout'] },
   { label: 'Browse Abandonment', patterns: ['browse'] },
   { label: 'Post-Purchase', patterns: ['post.?purchase', 'thank', 'order.?confirm', 'post.?buy'] },
   { label: 'Winback', patterns: ['winback', 'win.?back', 're.?engage', 'sunset', 'lapsed'] },
 ];
+
+const NOT_ENOUGH_DATA = 'Not enough data';
 
 function flowNameMatchesAny(name: string, patterns: string[]): boolean {
   const lower = name.toLowerCase();
@@ -69,24 +73,31 @@ function computeCategories(
   const totalRevenue = revenueFlows.reduce((s, f) => s + f.monthly_revenue_current, 0);
   const annualRevenue = totalRevenue * 12;
 
-  const weightedOpen = totalRecipients > 0
+  // No recipients means no measured rates: those pillars show "not enough data".
+  const hasRateData = totalRecipients > 0;
+  const weightedOpen = hasRateData
     ? performance.reduce((s, f) => s + (f.actual_open_rate ?? 0) * f.recipients_per_month, 0) / totalRecipients : 0;
-  const weightedClick = totalRecipients > 0
+  const weightedClick = hasRateData
     ? performance.reduce((s, f) => s + (f.actual_click_rate ?? 0) * f.recipients_per_month, 0) / totalRecipients : 0;
   const revFlowRecipients = revenueFlows.reduce((s, f) => s + f.recipients_per_month, 0);
-  const weightedConv = revFlowRecipients > 0
+  const hasConvData = revFlowRecipients > 0;
+  const weightedConv = hasConvData
     ? revenueFlows.reduce((s, f) => s + (f.actual_conv_rate ?? 0) * f.recipients_per_month, 0) / revFlowRecipients : 0;
 
   const allNames = snapshots.map(f => f.name);
+  // Coverage counts live flows only; drafts and paused flows send nothing.
+  const liveNames = snapshots.filter(f => f.status?.toLowerCase() === 'live').map(f => f.name);
   const essentialPresent = ESSENTIAL_FLOW_PATTERNS.filter(e =>
-    allNames.some(n => flowNameMatchesAny(n, e.patterns))
+    liveNames.some(n => flowNameMatchesAny(n, e.patterns))
   );
 
   const total = snapshots.length;
   const inactive = snapshots.filter(f => ['draft', 'paused'].includes(f.status?.toLowerCase())).length;
   const inactiveRatio = total > 0 ? inactive / total : 0;
 
-  const hasPostPurchase = allNames.some(n => flowNameMatchesAny(n, ['post.?purchase', 'thank', 'order.?confirm', 'post.?buy', 'replenish']));
+  const postPurchasePatterns = ['post.?purchase', 'thank', 'order.?confirm', 'post.?buy', 'replenish'];
+  const hasLivePostPurchase = liveNames.some(n => flowNameMatchesAny(n, postPurchasePatterns));
+  const hasInactivePostPurchase = !hasLivePostPurchase && allNames.some(n => flowNameMatchesAny(n, postPurchasePatterns));
 
   const categories: Category[] = [];
 
@@ -100,8 +111,10 @@ function computeCategories(
   const weakThreshold = tiersSorted[Math.min(3, tiersSorted.length - 1)]?.min ?? 100_000;
   categories.push({
     name: 'Revenue Generation',
-    score: revScore, maxScore: 10,
-    assessment: matchedTier?.label
+    score: hasRateData ? revScore : null, maxScore: 10,
+    assessment: !hasRateData
+      ? NOT_ENOUGH_DATA
+      : matchedTier?.label
       ? `${matchedTier.label} flow revenue`
       : `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(annualRevenue)} is ${annualRevenue < weakThreshold ? '20-35%' : '50-70%'} of expected`,
   });
@@ -109,11 +122,11 @@ function computeCategories(
 
   // Flow Coverage (0-10)
   const coverageScore = Math.min(10, Math.round((essentialPresent.length / ESSENTIAL_FLOW_PATTERNS.length) * 10));
-  const missing = ESSENTIAL_FLOW_PATTERNS.filter(e => !allNames.some(n => flowNameMatchesAny(n, e.patterns))).map(e => e.label.toLowerCase());
+  const missing = ESSENTIAL_FLOW_PATTERNS.filter(e => !liveNames.some(n => flowNameMatchesAny(n, e.patterns))).map(e => e.label.toLowerCase());
   categories.push({
     name: 'Flow Coverage',
     score: coverageScore, maxScore: 10,
-    assessment: missing.length === 0 ? 'All essential flows present' : `Missing ${missing.join(', ')}`,
+    assessment: missing.length === 0 ? 'All essential flows live' : `Missing or not live: ${missing.join(', ')}`,
   });
 
   // Conversion Rates (0-10)
@@ -126,8 +139,8 @@ function computeCategories(
   const convStatus = classifyRate(weightedConv, accountConvLow, accountConvHigh);
   categories.push({
     name: 'Conversion Rates',
-    score: convScore, maxScore: 10,
-    assessment: `${formatPctDecimal(weightedConv)} overall · ${formatHealthyBenchmarkRange(accountConvLow, accountConvHigh)} · ${formatStatusBadgeLabel(convStatus, 'higher')}`,
+    score: hasConvData ? convScore : null, maxScore: 10,
+    assessment: !hasConvData ? NOT_ENOUGH_DATA : `${formatPctDecimal(weightedConv)} overall · ${formatHealthyBenchmarkRange(accountConvLow, accountConvHigh)} · ${formatStatusBadgeLabel(convStatus, 'higher')}`,
   });
 
   const clickLow = benchmarks.clickRateLow;
@@ -141,31 +154,34 @@ function computeCategories(
   const clickStatus = classifyRate(weightedClick, clickLow, clickHigh);
   categories.push({
     name: 'Click-Through Rates',
-    score: clickScore, maxScore: 10,
-    assessment: `${formatPctDecimal(weightedClick)} avg · ${formatHealthyBenchmarkRange(clickLow, clickHigh)} · ${formatStatusBadgeLabel(clickStatus, 'higher')}`,
+    score: hasRateData ? clickScore : null, maxScore: 10,
+    assessment: !hasRateData ? NOT_ENOUGH_DATA : `${formatPctDecimal(weightedClick)} avg · ${formatHealthyBenchmarkRange(clickLow, clickHigh)} · ${formatStatusBadgeLabel(clickStatus, 'higher')}`,
   });
 
   const openLow = benchmarks.openRateLow;
   const openHigh = benchmarks.openRateHigh;
   let openScore = 0;
-  if (weightedOpen >= openHigh + 0.05) openScore = 8;
-  else if (weightedOpen >= openHigh) openScore = 7;
+  if (weightedOpen >= openHigh + 0.05) openScore = 10;
+  else if (weightedOpen >= openHigh) openScore = 8;
   else if (weightedOpen >= openLow) openScore = 6;
   else if (weightedOpen >= openLow - 0.10) openScore = 4;
   else openScore = 2;
-  if (weightedOpen >= openHigh) openScore = Math.min(10, openScore);
   const openStatus = classifyRate(weightedOpen, openLow, openHigh);
   categories.push({
     name: 'Open Rates',
-    score: openScore, maxScore: 10,
-    assessment: weightedOpen >= openHigh
+    score: hasRateData ? openScore : null, maxScore: 10,
+    assessment: !hasRateData
+      ? NOT_ENOUGH_DATA
+      : weightedOpen >= openHigh
       ? `${formatPctDecimal(weightedOpen)} avg · ${formatHealthyBenchmarkRange(openLow, openHigh)} — likely inflated by Apple MPP`
       : `${formatPctDecimal(weightedOpen)} avg · ${formatHealthyBenchmarkRange(openLow, openHigh)} · ${formatStatusBadgeLabel(openStatus, 'higher')}`,
   });
 
   // Flow Hygiene (0-10)
+  // No flows at all is not clean hygiene.
   let hygieneScore = 10;
-  if (inactiveRatio > 0.6) hygieneScore = 1;
+  if (total === 0) hygieneScore = 0;
+  else if (inactiveRatio > 0.6) hygieneScore = 1;
   else if (inactiveRatio > 0.4) hygieneScore = 2;
   else if (inactiveRatio > 0.3) hygieneScore = 4;
   else if (inactiveRatio > 0.2) hygieneScore = 6;
@@ -173,19 +189,25 @@ function computeCategories(
   categories.push({
     name: 'Flow Hygiene',
     score: hygieneScore, maxScore: 10,
-    assessment: inactiveRatio > 0.3 ? `${Math.round(inactiveRatio * 100)}% inactive, dead flows hurting deliverability` : `${Math.round(inactiveRatio * 100)}% inactive, acceptable`,
+    assessment: total === 0
+      ? 'No flows found'
+      : inactiveRatio > 0.3 ? `${Math.round(inactiveRatio * 100)}% inactive, dead flows hurting deliverability` : `${Math.round(inactiveRatio * 100)}% inactive, acceptable`,
   });
 
   // Post-Purchase (0-10)
   categories.push({
     name: 'Post-Purchase',
-    score: hasPostPurchase ? 6 : 0, maxScore: 10,
-    assessment: hasPostPurchase ? 'Flow exists but may need optimization' : 'No active flow at all',
+    score: hasLivePostPurchase ? 10 : hasInactivePostPurchase ? 3 : 0, maxScore: 10,
+    assessment: hasLivePostPurchase
+      ? 'Live post-purchase flow in place'
+      : hasInactivePostPurchase
+        ? 'Flow exists but is not live'
+        : 'No active flow at all',
   });
 
   // Segmentation (0-10)
   let segScore = 0;
-  if (segmentCount >= 20) segScore = 8;
+  if (segmentCount >= 20) segScore = 10;
   else if (segmentCount >= 10) segScore = 6;
   else if (segmentCount >= 5) segScore = 4;
   else if (segmentCount >= 1) segScore = 2;
@@ -198,7 +220,8 @@ function computeCategories(
   return categories;
 }
 
-function scoreColor(score: number, max: number): string {
+function scoreColor(score: number | null, max: number): string {
+  if (score == null) return 'bg-gray-300';
   const pct = score / max;
   if (pct >= 0.7) return 'bg-emerald-500';
   if (pct >= 0.4) return 'bg-amber-400';
@@ -240,8 +263,10 @@ export default function ReportFlowHealthScore({
     platformBenchmarks.accountConvLow,
     platformBenchmarks.accountConvHigh,
   );
-  const totalScore = categories.reduce((s, c) => s + c.score, 0);
-  const maxTotal = categories.reduce((s, c) => s + c.maxScore, 0);
+  // Pillars without data are left out of both the score and the max.
+  const scored = categories.filter(c => c.score != null);
+  const totalScore = scored.reduce((s, c) => s + (c.score ?? 0), 0);
+  const maxTotal = scored.reduce((s, c) => s + c.maxScore, 0);
   const overall = maxTotal > 0 ? Math.round((totalScore / maxTotal) * 100) : 0;
   const label = overallLabel(overall);
 
@@ -294,7 +319,7 @@ export default function ReportFlowHealthScore({
                       <span className="font-medium text-gray-800">{c.name}</span>
                     </div>
                   </td>
-                  <td className="py-2.5 text-center font-semibold text-gray-700">{c.score} / {c.maxScore}</td>
+                  <td className="py-2.5 text-center font-semibold text-gray-700">{c.score == null ? 'n/a' : `${c.score} / ${c.maxScore}`}</td>
                   <td className="py-2.5 text-gray-500 text-xs">{c.assessment}</td>
                 </tr>
               ))}

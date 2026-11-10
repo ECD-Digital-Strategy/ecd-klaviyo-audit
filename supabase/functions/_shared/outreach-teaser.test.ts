@@ -7,34 +7,34 @@ import {
   redactKlaviyoSection,
   redactLayout,
   redactWebSection,
-  repairSplitFindings,
   teaserFindings,
   teaserLockedTotal,
   teaserSections,
   teaserShowCount,
 } from "./outreach-teaser.ts";
 
-// What the report does with key_findings (src/lib/section-key-findings.ts),
-// reduced to the visible strings, so a test can prove redaction changes nothing shown.
+// What the report does with key_findings (src/lib/section-key-findings.ts, since
+// 2026-11-10: stored positions, no merging), reduced to the visible strings, so a
+// test can prove redaction changes nothing shown.
 function visibleKeyFindings(kf: unknown): string[] {
   const o = (kf ?? {}) as { items?: string[]; items_hidden?: boolean[] };
   const items = o.items ?? [];
   if (!items.some((i) => i.trim())) return [];
-  const resolved = repairSplitFindings(items);
-  return resolved.filter((t, i) => !(o.items_hidden ?? [])[i] && t.trim());
+  return items.filter((t, i) => !(o.items_hidden ?? [])[i] && t.trim());
 }
 
 Deno.test("redactKeyFindings: hidden text is gone, visible output is unchanged", () => {
   const kf = {
     items: ["First finding.", "Secret **one** thing", "continued here, after a split.", "Third finding."],
-    items_hidden: [false, true, false],
+    items_hidden: [false, true, false, false],
   };
   const before = visibleKeyFindings(kf);
   const out = redactKeyFindings(kf) as { items: string[]; items_hidden: boolean[] };
   assertEquals(JSON.stringify(out).includes("Secret"), false);
   assertEquals(out.items[1], HIDDEN_ITEM_PLACEHOLDER);
+  assertEquals(out.items.length, 4); // positions kept, so the flags still line up
   assertEquals(visibleKeyFindings(out), before);
-  assertEquals(before, ["First finding.", "Third finding."]);
+  assertEquals(before, ["First finding.", "continued here, after a split.", "Third finding."]);
 });
 
 Deno.test("redactKeyFindings: nothing hidden comes back untouched", () => {

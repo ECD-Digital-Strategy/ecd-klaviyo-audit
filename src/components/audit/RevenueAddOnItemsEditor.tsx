@@ -480,6 +480,8 @@ export default function RevenueAddOnItemsEditor({
   const [regenModalOpen, setRegenModalOpen] = useState(false);
   const [regenRunning, setRegenRunning] = useState(false);
   const saveTimer = useRef<number | null>(null);
+  // The debounced layout write, kept so unmount can flush it and a highlight write can replace it.
+  const pendingSave = useRef<(() => Promise<void>) | null>(null);
   const toast = useToast();
 
   const layout = useMemo(
@@ -509,8 +511,13 @@ export default function RevenueAddOnItemsEditor({
       .catch(() => setTemplates([]));
   }, [audit.audit_type]);
 
+  // Closing the drawer: send the last edit now instead of dropping it.
   useEffect(() => () => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    const save = pendingSave.current;
+    pendingSave.current = null;
+    if (save) void save();
   }, []);
 
   useEffect(() => {
@@ -569,6 +576,12 @@ export default function RevenueAddOnItemsEditor({
     };
     onAuditChange({ ...audit, layout: nextLayout });
 
+    // Any queued debounced write is older than nextLayout, which already holds it:
+    // cancel it so it can't land later and undo this change.
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    pendingSave.current = null;
+
     if (opts?.highlightChanged) {
       void (async () => {
         try {
@@ -584,14 +597,19 @@ export default function RevenueAddOnItemsEditor({
       return;
     }
 
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
+    const save = async () => {
       try {
         await updateAudit(audit.id, { layout: nextLayout });
         scheduleSavedToast(toast);
       } catch {
         toast('Could not save');
       }
+    };
+    pendingSave.current = save;
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null;
+      if (pendingSave.current === save) pendingSave.current = null;
+      void save();
     }, 800) as unknown as number;
   };
 

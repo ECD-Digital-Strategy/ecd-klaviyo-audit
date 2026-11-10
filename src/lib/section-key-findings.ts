@@ -1,5 +1,5 @@
 import { prepareAuditMarkdown } from './audit-markdown';
-import { repairSplitFindings } from './findings-normalize';
+import { trimTrailingBlankItems } from './findings-normalize';
 import type { SectionKeyFindings } from './types';
 
 export const EMPTY_SECTION_KEY_FINDINGS: SectionKeyFindings = {
@@ -21,14 +21,17 @@ export function parseSectionKeyFindings(raw: unknown): SectionKeyFindings {
   return { items, items_hidden };
 }
 
-/** Resolve display/edit items with legacy prose fallback. */
+/**
+ * Resolve display/edit items with legacy prose fallback. Items keep their stored
+ * positions (no merging, blanks kept) so items_hidden[i] matches item i.
+ */
 export function resolveSectionKeyFindings(
   keyFindings: SectionKeyFindings | null | undefined,
   legacyProse?: string | null,
 ): string[] {
   const parsed = keyFindings ?? EMPTY_SECTION_KEY_FINDINGS;
   if (parsed.items.some((item) => item.trim())) {
-    return repairSplitFindings(parsed.items).map(item => prepareAuditMarkdown(item));
+    return parsed.items.map(item => prepareAuditMarkdown(item));
   }
   const legacy = String(legacyProse ?? '').trim();
   return legacy ? [legacy] : [];
@@ -49,13 +52,7 @@ export function normalizeWorkspaceSectionKeyFindings(
   legacyProse?: string | null,
 ): string[] {
   const resolved = resolveSectionKeyFindings(keyFindings, legacyProse);
-  if (resolved.some((item) => item.trim())) {
-    const filled = resolved.filter((item) => item.trim());
-    const raw = keyFindings?.items ?? [];
-    const hasTrailingDraft =
-      raw.length > filled.length && !raw[raw.length - 1]?.trim();
-    return hasTrailingDraft ? [...filled, ''] : filled;
-  }
+  if (resolved.some((item) => item.trim())) return trimTrailingBlankItems(resolved);
   return [];
 }
 

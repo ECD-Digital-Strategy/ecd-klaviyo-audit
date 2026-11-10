@@ -101,62 +101,16 @@ export function teaserSections<T extends Section>(sections: T[]): T[] {
 // positions, so their hidden flags keep lining up.
 // ---------------------------------------------------------------------------
 
-/** Port of src/lib/findings-normalize.ts isFindingContinuation. Keep in sync. */
-function isFindingContinuation(prev: string, next: string): boolean {
-  const p = prev.trim();
-  const n = next.trim();
-  if (!p || !n) return false;
-  if (/^[a-z]{1,8}(\*\*)?[,\s]/.test(n)) return true;
-  const boldCount = (p.match(/\*\*/g) ?? []).length;
-  if (boldCount % 2 === 1 && /^[a-z]/.test(n)) return true;
-  if (/[a-zA-Z]$/.test(p) && !/[.!?]$/.test(p)) {
-    if (/^[a-z]/.test(n)) return true;
-    if (/ [A-Z]$/.test(p)) return true;
-  }
-  return false;
-}
-
-function mergeFindingContinuation(prev: string, next: string): string {
-  const p = prev.trimEnd();
-  const n = next.trimStart();
-  if (/[a-zA-Z]$/.test(p) && /^[a-z]/.test(n)) return p + n;
-  return `${p} ${n}`;
-}
-
-function repairBrokenBoldMarkers(text: string): string {
-  const count = (text.match(/\*\*/g) ?? []).length;
-  return count % 2 === 1 ? `${text}**` : text;
-}
-
-/** Port of src/lib/findings-normalize.ts repairSplitFindings. The report's hidden
- * flags index into THIS list, not the raw one, so redaction works on it too. */
-export function repairSplitFindings(items: string[]): string[] {
-  const raw = items.map((s) => s.trim()).filter(Boolean);
-  const out: string[] = [];
-  for (const item of raw) {
-    if (out.length === 0) {
-      out.push(item);
-      continue;
-    }
-    const prev = out[out.length - 1];
-    if (isFindingContinuation(prev, item)) {
-      out[out.length - 1] = repairBrokenBoldMarkers(mergeFindingContinuation(prev, item));
-    } else {
-      out.push(item);
-    }
-  }
-  return out.map(repairBrokenBoldMarkers);
-}
-
-/** Stands in for a hidden item. Never shown (its hidden flag stays set), not
- * empty (an all-empty list would make the report fall back to legacy prose),
- * and it can neither absorb nor be absorbed by a neighbour in repairSplitFindings. */
+/** Stands in for a hidden item. Never shown (its hidden flag stays set), and not
+ * empty (an all-empty list would make the report fall back to legacy prose). */
 export const HIDDEN_ITEM_PLACEHOLDER = ".";
 
-/** Replace hidden items in a repaired findings list with the placeholder. */
+/** Replace hidden items with the placeholder, at their STORED positions. Since
+ * 2026-11-10 the report no longer merges split findings when it reads them
+ * (src/lib/findings-normalize.ts), so its hidden flags index the stored array as is:
+ * no trimming, no blank filtering, no merging here either. */
 function maskHidden(items: string[], hidden: boolean[]): string[] {
-  const repaired = repairSplitFindings(items);
-  return repaired.map((t, i) => (hidden[i] ? HIDDEN_ITEM_PLACEHOLDER : t));
+  return items.map((t, i) => (hidden[i] ? HIDDEN_ITEM_PLACEHOLDER : t));
 }
 
 /** A section or layout key_findings value ({ items, items_hidden }) with the

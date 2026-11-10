@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -95,6 +96,8 @@ function serializeExecutive(payload: ExecutivePayload, fallbackRaw: string): str
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
+type SaveResult = 'ok' | 'failed' | 'superseded';
+
 type ReportEditContextValue = {
   editMode: boolean;
   /** Public / published report: allow Investment Summary line-item toggles without full edit chrome. */
@@ -139,7 +142,6 @@ type ReportEditContextValue = {
   updateAddOnImageScale: (itemKey: string, scale: number) => void;
   setAddOnTalkTrackForSection: (itemKey: string, sectionKey: AuditSectionKey, enabled: boolean) => void;
   updateAddOnPresenterNote: (itemKey: string, note: string) => void;
-  toggleAddOnHighlighted: (itemKey: string, highlighted: boolean) => void;
   toggleAddOnInvestmentIncluded: (itemKey: string, included: boolean) => void;
   updateAttributionScreenshot: (value: string | null) => void;
   updateAttributionScreenshotScale: (scale: number) => void;
@@ -208,7 +210,6 @@ const ReportEditContext = createContext<ReportEditContextValue>({
   updateAddOnImageScale: () => {},
   setAddOnTalkTrackForSection: () => {},
   updateAddOnPresenterNote: () => {},
-  toggleAddOnHighlighted: () => {},
   toggleAddOnInvestmentIncluded: () => {},
   updateAttributionScreenshot: () => {},
   updateAttributionScreenshotScale: () => {},
@@ -260,31 +261,65 @@ export function ReportEditProvider({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const timers = useRef<Record<string, number>>({});
   // The debounced write for each key, kept so flushSaves() can run them early.
+  // A failed write stays here (after one retry) until it or a newer edit lands.
   const pending = useRef<Record<string, () => Promise<void>>>({});
+  // Writes currently running, so a flush waits for them instead of sending twice.
+  const inFlight = useRef(new Map<() => Promise<void>, Promise<SaveResult>>());
+  // Keys whose last write failed; the status stays "error" while any remain.
+  const failed = useRef<Set<string>>(new Set());
   const toast = useToast();
+
+  const settleStatus = useCallback((anyFailed: boolean, showToast: boolean) => {
+    if (anyFailed || failed.current.size > 0) {
+      setSaveStatus('error');
+      if (anyFailed) toast('Could not save');
+      return;
+    }
+    setSaveStatus('saved');
+    if (showToast) scheduleSavedToast(toast);
+    window.setTimeout(() => setSaveStatus(s => (s === 'saved' ? 'idle' : s)), 2500);
+  }, [toast]);
+
+  /** Run one write, retrying once. Only clears the pending entry it sent. */
+  const runSave = useCallback((key: string, fn: () => Promise<void>): Promise<SaveResult> => {
+    const running = inFlight.current.get(fn);
+    if (running) return running;
+    const run = (async (): Promise<SaveResult> => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // A newer edit for this key replaced this write: don't resend stale data.
+        if (attempt > 0 && pending.current[key] !== fn) return 'superseded';
+        try {
+          await fn();
+          if (pending.current[key] === fn) delete pending.current[key];
+          failed.current.delete(key);
+          return 'ok';
+        } catch {
+          if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 1500));
+        }
+      }
+      failed.current.add(key);
+      return 'failed';
+    })();
+    inFlight.current.set(fn, run);
+    void run.finally(() => inFlight.current.delete(fn));
+    return run;
+  }, []);
 
   const schedule = useCallback((key: string, fn: () => Promise<void>) => {
     if (timers.current[key]) window.clearTimeout(timers.current[key]);
     setSaveStatus('saving');
     pending.current[key] = fn;
     timers.current[key] = window.setTimeout(async () => {
-      try {
-        await fn();
-        delete pending.current[key];
-        setSaveStatus('saved');
-        scheduleSavedToast(toast);
-        window.setTimeout(() => setSaveStatus(s => (s === 'saved' ? 'idle' : s)), 2500);
-      } catch {
-        setSaveStatus('error');
-        toast('Could not save');
-      }
+      delete timers.current[key];
+      const result = await runSave(key, fn);
+      if (result !== 'superseded') settleStatus(result === 'failed', true);
     }, 800) as unknown as number;
-  }, [toast]);
+  }, [runSave, settleStatus]);
 
   /** Run every debounced write now instead of waiting out the timer. */
   const flushSaves = useCallback(async () => {
     const keys = Object.keys(pending.current);
-    if (keys.length === 0) return;
+    if (keys.length === 0 && inFlight.current.size === 0) return;
     for (const key of keys) {
       if (timers.current[key]) {
         window.clearTimeout(timers.current[key]);
@@ -292,20 +327,37 @@ export function ReportEditProvider({
       }
     }
     setSaveStatus('saving');
-    try {
-      // Sequential: several writes can target the same section row.
-      for (const key of keys) {
-        const fn = pending.current[key];
-        delete pending.current[key];
-        if (fn) await fn();
-      }
-      setSaveStatus('saved');
-      window.setTimeout(() => setSaveStatus(s => (s === 'saved' ? 'idle' : s)), 2500);
-    } catch {
-      setSaveStatus('error');
-      toast('Could not save');
+    let anyFailed = false;
+    // Sequential: several writes can target the same section row.
+    for (const key of keys) {
+      const fn = pending.current[key];
+      if (!fn) continue;
+      if ((await runSave(key, fn)) === 'failed') anyFailed = true;
     }
-  }, [toast]);
+    // Wait for writes that were already running when the flush started.
+    await Promise.all([...inFlight.current.values()]);
+    settleStatus(anyFailed, false);
+  }, [runSave, settleStatus]);
+
+  // Closing or leaving the tab: send pending edits now and warn while any are unsaved.
+  useEffect(() => {
+    const hasUnsaved = () => Object.keys(pending.current).length > 0 || inFlight.current.size > 0;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsaved()) return;
+      void flushSaves();
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const onPageHide = () => {
+      if (Object.keys(pending.current).length > 0) void flushSaves();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [flushSaves]);
 
   const getExecPayload = useCallback(
     () => parseExecutiveSummary(audit.executive_summary || ''),
@@ -341,7 +393,8 @@ export function ReportEditProvider({
 
   const addFinding = useCallback(() => {
     const prev = getExecPayload();
-    const findings = getExecutiveFindingsForEdit(prev.findings, prev.concerns).filter((f) => f.trim());
+    // Only trailing blanks are dropped, so hidden flags keep their positions.
+    const findings = getExecutiveFindingsForEdit(prev.findings, prev.concerns);
     while (findings.length > 0 && !findings[findings.length - 1].trim()) findings.pop();
     findings.push('');
     const findingsHidden = materializeFindingsHidden(prev, findings.length);
@@ -523,7 +576,8 @@ export function ReportEditProvider({
 
   const addSectionKeyFinding = useCallback(
     (targetKey: string) => {
-      const items = materializeKeyFindingsItems(targetKey).filter(item => item.trim());
+      // Only trailing blanks are dropped, so hidden flags keep their positions.
+      const items = materializeKeyFindingsItems(targetKey);
       while (items.length > 0 && !items[items.length - 1].trim()) items.pop();
       items.push('');
       const prev = isLayoutKeyFindingsKey(targetKey)
@@ -806,7 +860,11 @@ export function ReportEditProvider({
   );
 
   const patchAddOnItem = useCallback(
-    (itemKey: string, mutator: (item: RevenueOpportunityAddOnItem) => RevenueOpportunityAddOnItem) => {
+    (
+      itemKey: string,
+      mutator: (item: RevenueOpportunityAddOnItem) => RevenueOpportunityAddOnItem,
+      persist = true,
+    ) => {
       const layout = { ...((audit.layout as Record<string, unknown>) ?? {}) };
       const rs = { ...((layout.revenue_summary as Record<string, unknown>) ?? {}) };
       const blocks = { ...((rs.blocks as Record<string, unknown>) ?? {}) };
@@ -820,6 +878,7 @@ export function ReportEditProvider({
       rs.blocks = blocks;
       layout.revenue_summary = rs;
       onAuditChange({ ...audit, layout });
+      if (!persist) return;
       schedule('layout-addons', async () => {
         await updateAudit(audit.id, { layout });
       });
@@ -855,22 +914,19 @@ export function ReportEditProvider({
     [patchAddOnItem],
   );
 
-  // Highlight toggles live in Revenue opportunities drawer only (RevenueAddOnItemsEditor).
-  const toggleAddOnHighlighted = useCallback((_itemKey: string, _highlighted: boolean) => {
-    /* Re-enable if report-card highlight toggle returns:
-    const layout = { ...((audit.layout as Record<string, unknown>) ?? {}) };
-    ...
-    */
-  }, []);
-
   const toggleAddOnInvestmentIncluded = useCallback(
     (itemKey: string, included: boolean) => {
-      patchAddOnItem(itemKey, item => ({
-        ...item,
-        investment_included: included,
-      }));
+      // Outside edit mode (public link) the toggle is local only: never saved.
+      patchAddOnItem(
+        itemKey,
+        item => ({
+          ...item,
+          investment_included: included,
+        }),
+        editMode,
+      );
     },
-    [patchAddOnItem],
+    [patchAddOnItem, editMode],
   );
 
   const updateAttributionScreenshot = useCallback(
@@ -1221,7 +1277,6 @@ export function ReportEditProvider({
       updateAddOnImageScale,
       setAddOnTalkTrackForSection,
       updateAddOnPresenterNote,
-      toggleAddOnHighlighted,
       toggleAddOnInvestmentIncluded,
       updateAttributionScreenshot,
       updateAttributionScreenshotScale,
@@ -1270,7 +1325,6 @@ export function ReportEditProvider({
       updateAddOnImageScale,
       setAddOnTalkTrackForSection,
       updateAddOnPresenterNote,
-      toggleAddOnHighlighted,
       toggleAddOnInvestmentIncluded,
       updateAttributionScreenshot,
       updateAttributionScreenshotScale,

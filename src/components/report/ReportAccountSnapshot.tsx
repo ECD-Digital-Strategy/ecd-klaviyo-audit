@@ -66,14 +66,30 @@ function formatIntWithTruncFlag(n: number | null, truncated: boolean | null | un
   return s;
 }
 
-function calcWeeklySendFrequency(campaigns: KlaviyoCampaignSnapshot[]) {
-  const now = Date.now();
+// Columns the snapshot rows can carry beyond the shared type.
+type CampaignTimingFields = {
+  fetched_at?: string | null;
+  send_time?: string | null;
+  _send_time?: string | null;
+};
+
+function toTime(value: string | null | undefined): number {
+  const t = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Campaigns sent in the 30 days before the data was fetched (not before today,
+ * so an old report keeps its numbers). Uses send_time when the row has it. */
+function calcWeeklySendFrequency(campaigns: KlaviyoCampaignSnapshot[], computedAt?: string | null) {
+  const rows = campaigns as (KlaviyoCampaignSnapshot & CampaignTimingFields)[];
+  const fetchedAt = rows.reduce((max, c) => Math.max(max, toTime(c.fetched_at)), 0);
+  const anchor = fetchedAt || toTime(computedAt) || Date.now();
   const days30 = 30 * 24 * 60 * 60 * 1000;
-  const recentSent = campaigns.filter((c) => {
+  const recentSent = rows.filter((c) => {
     const status = (c.status || '').toLowerCase();
     if (status !== 'sent') return false;
-    const t = c.updated_at_klaviyo ? new Date(c.updated_at_klaviyo).getTime() : 0;
-    return t > 0 && now - t <= days30;
+    const t = toTime(c.send_time ?? c._send_time) || toTime(c.updated_at_klaviyo);
+    return t > 0 && t <= anchor && anchor - t <= days30;
   }).length;
   const perWeek = (recentSent / 30) * 7;
   return { recentSent, perWeek };
@@ -272,7 +288,7 @@ export default function ReportAccountSnapshot({
     : null;
 
   const perfUnavailableReason = normalizeReportingDiagnostic(reportingDiagnostic) || 'not enough reporting data available';
-  const { recentSent, perWeek } = calcWeeklySendFrequency(campaignSnapshots);
+  const { recentSent, perWeek } = calcWeeklySendFrequency(campaignSnapshots, accountSnapshot?.computed_at);
   const deliverabilityWindow = accountSnapshot?.deliverability_campaign_timeframe === 'last_30_days' ? 'last 30 days' : 'last 90 days';
   const deliverabilityContext = `${deliverabilityWindow} · email campaigns (weighted by recipients)`;
 

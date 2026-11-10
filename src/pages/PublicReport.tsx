@@ -42,6 +42,14 @@ export default function PublicReport() {
         <div className="text-center max-w-md">
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Couldn&apos;t load report</h1>
           <p className="text-gray-500">{loadError}</p>
+          {/* A failed load is usually a momentary slowdown, not a dead link. */}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 rounded-lg gradient-bg px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+          >
+            Try again
+          </button>
         </div>
       </div>
     );

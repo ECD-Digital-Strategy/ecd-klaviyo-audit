@@ -1,3 +1,5 @@
+import { SPAM_BENCHMARK } from './benchmarks';
+
 export type DeliverabilitySnapshot = {
   timeframe: 'last_30_days';
   open_rate: number | null;
@@ -68,9 +70,10 @@ export const KLAVIYO_DELIVERABILITY_THRESHOLDS: DeliverabilityThreshold[] = [
     key: 'spam_complaint_rate',
     label: 'Spam complaint rate',
     direction: 'lower',
-    recommended: 0.0001,
-    recommendedLabel: 'less than 0.01%',
-    bad: 0.001,
+    // Same bands as the platform spam benchmark: 0.1% target, 0.3% Google/Yahoo max.
+    recommended: SPAM_BENCHMARK.healthyMax,
+    recommendedLabel: 'less than 0.10%',
+    bad: SPAM_BENCHMARK.warningMax,
     weight: 0.25,
   },
 ];

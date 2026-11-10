@@ -9,6 +9,7 @@ import {
   normalizeWorkspaceKeyFindings,
   repairSplitFindings,
   resolveExecutiveFindings,
+  trimTrailingBlankItems,
 } from './findings-normalize';
 
 describe('findings-normalize', () => {
@@ -43,18 +44,40 @@ describe('findings-normalize', () => {
     expect(normalizeWorkspaceKeyFindings(['Only'], [])).toEqual(['Only']);
   });
 
-  it('resolveExecutiveFindings prefers findings then falls back to concerns', () => {
+  it('resolveExecutiveFindings prefers findings then falls back to concerns, without merging', () => {
     const concerns = [
       '**First concern part A',
       'part B**, with more detail.',
       '**Second concern**, detail.',
-      '**Third**, detail.',
-      '**Fourth**, detail.',
-      '**Fifth**, detail.',
     ];
     const resolved = resolveExecutiveFindings([], concerns);
-    expect(resolved[0]).toBe('**First concern part Apart B**, with more detail.');
-    expect(resolved).toHaveLength(5);
+    expect(resolved).toHaveLength(3);
+    expect(resolved[1].startsWith('part B')).toBe(true);
+    expect(resolveExecutiveFindings(['A.', 'B.'], concerns)).toEqual(['A.', 'B.']);
+  });
+
+  it('never merges a user bullet that starts lowercase into the previous one', () => {
+    const stored = ['**First finding** without a full stop', 'new bullet typed by the user'];
+    expect(resolveExecutiveFindings(stored, [])).toHaveLength(2);
+    expect(normalizeWorkspaceKeyFindings(stored, [])).toEqual(stored);
+  });
+
+  it('keeps stored positions so hidden flags line up', () => {
+    const stored = ['One.', '', 'three lowercase', 'Four'];
+    const resolved = resolveExecutiveFindings(stored, []);
+    expect(resolved).toEqual(stored);
+    expect(normalizeWorkspaceKeyFindings(stored, [])).toEqual(stored);
+  });
+
+  it('trimTrailingBlankItems drops padded blanks and keeps one draft row', () => {
+    expect(trimTrailingBlankItems(['A', '', '', ''])).toEqual(['A', '']);
+    expect(trimTrailingBlankItems(['A', '', 'B'])).toEqual(['A', '', 'B']);
+    expect(trimTrailingBlankItems(['A', ''], false)).toEqual(['A']);
+    expect(trimTrailingBlankItems(['', ''])).toEqual([]);
+  });
+
+  it('getExecutiveFindingsForEdit uses concerns as stored when findings are blank', () => {
+    expect(getExecutiveFindingsForEdit(['', ''], ['c1', 'part two'])).toEqual(['c1', 'part two']);
   });
 
   it('detects mid-word continuation', () => {

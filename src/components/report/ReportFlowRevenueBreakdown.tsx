@@ -152,7 +152,7 @@ export default function ReportFlowRevenueBreakdown({ performance, title, revenue
               'text-gray-700',
             )}
             <div className="min-w-0 whitespace-nowrap text-left text-sm tabular-nums text-gray-500">
-              {((restRevenue / totalRevenue) * 100).toFixed(1)}%
+              {(totalRevenue > 0 ? (restRevenue / totalRevenue) * 100 : 0).toFixed(1)}%
             </div>
           </>
         )}

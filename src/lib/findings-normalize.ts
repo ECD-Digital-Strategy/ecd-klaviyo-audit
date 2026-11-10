@@ -35,7 +35,12 @@ export function repairBrokenBoldMarkers(text: string): string {
   return text;
 }
 
-/** Merge array items that were split mid-sentence by AI schema length limits. */
+/**
+ * Merge array items that were split mid-sentence by AI schema length limits.
+ * Only for fresh AI output, before it is stored. Never run it on stored or
+ * edited findings: it can merge a real bullet into the one above it, and the
+ * hidden flags index into the stored array.
+ */
 export function repairSplitFindings(items: string[]): string[] {
   const raw = items.map((s) => s.trim()).filter(Boolean);
   const out: string[] = [];
@@ -56,42 +61,61 @@ export function repairSplitFindings(items: string[]): string[] {
   return out.map(repairBrokenBoldMarkers);
 }
 
+/**
+ * Drop trailing blank rows (padded slots), keeping one empty draft row when the
+ * list ended in a blank. Positions of the remaining items never change, so
+ * hidden flags stay aligned.
+ */
+export function trimTrailingBlankItems(items: string[], keepDraft = true): string[] {
+  const out = items.map((item) => String(item ?? ''));
+  let end = out.length;
+  while (end > 0 && !out[end - 1].trim()) end--;
+  const kept = out.slice(0, end);
+  return keepDraft && end > 0 && end < out.length ? [...kept, ''] : kept;
+}
+
 /** Raw findings for workspace mutations (concerns fallback when no stored findings). */
 export function getExecutiveFindingsForEdit(
   findings?: string[],
   concerns?: string[],
 ): string[] {
-  if (Array.isArray(findings)) return [...findings];
-  if (Array.isArray(concerns) && concerns.some((c) => c.trim())) {
-    return repairSplitFindings(concerns);
+  // Same choice as the display, so positions match what the editor shows.
+  if (Array.isArray(findings) && findings.some((f) => String(f ?? '').trim())) return [...findings];
+  if (Array.isArray(concerns) && concerns.some((c) => String(c ?? '').trim())) {
+    return [...concerns];
   }
-  return [];
+  return Array.isArray(findings) ? [...findings] : [];
 }
 
 /**
- * Findings shown in the workspace editor — real copy only, plus at most one trailing
- * empty row after "Add finding" (no padded blank slots).
+ * Findings shown in the workspace editor: the stored items as they are, minus
+ * trailing padded blanks, plus at most one trailing draft row after "Add finding".
+ * No merging, so typing never touches another bullet.
  */
 export function normalizeWorkspaceKeyFindings(
   findings?: string[],
   concerns?: string[],
 ): string[] {
-  if (Array.isArray(findings) && findings.some((f) => f.trim())) {
-    const filled = findings.filter((f) => f.trim());
-    const hasTrailingDraft =
-      findings.length > filled.length && !findings[findings.length - 1]?.trim();
-    return hasTrailingDraft ? [...filled, ''] : filled;
+  if (Array.isArray(findings) && findings.some((f) => String(f ?? '').trim())) {
+    return trimTrailingBlankItems(findings);
   }
-  return resolveExecutiveFindings(findings, concerns);
+  if (Array.isArray(concerns) && concerns.some((c) => String(c ?? '').trim())) {
+    return trimTrailingBlankItems(concerns, false);
+  }
+  return [];
 }
 
-/** Resolve numbered findings for display or save (findings preferred, concerns fallback). */
+/**
+ * Findings for display (findings preferred, concerns fallback). Same positions
+ * as the stored array, so findingsHidden[i] matches item i. Blank items are
+ * kept; the renderer skips them.
+ */
 export function resolveExecutiveFindings(findings?: string[], concerns?: string[]): string[] {
   const base =
-    Array.isArray(findings) && findings.some((f) => f.trim())
+    Array.isArray(findings) && findings.some((f) => String(f ?? '').trim())
       ? findings
       : Array.isArray(concerns)
         ? concerns
         : [];
-  return repairSplitFindings(base);
+  return base.map((item) => repairBrokenBoldMarkers(String(item ?? '')));
 }
