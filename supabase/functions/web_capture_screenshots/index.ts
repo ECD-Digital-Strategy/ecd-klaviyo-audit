@@ -2,8 +2,13 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { hasCronSecret, isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { getScreenshotProvider } from "../_shared/screenshot-provider.ts";
-import { browserlessEnabled, captureWithBrowserless, type CapturedElement, type CapturedPhoto, type CapturedTextLock } from "../_shared/browserless.ts";
-import { DOM_OUTLINE_PROBE, isUsableOutline } from "../_shared/html-after.ts";
+import {
+  browserlessEnabled,
+  captureWithBrowserless,
+  classifyCaptureFailure,
+  type CapturedElement,
+  type CapturedPhoto,
+} from "../_shared/browserless.ts";
 import { BELOW_FOLD_PROBE, composeProbes, isBelowFoldReport } from "../_shared/below-fold-probe.ts";
 import { afterImagesEnabled } from "../_shared/after-images-enabled.ts";
 import { decryptString } from "../_shared/crypto.ts";
@@ -120,7 +125,13 @@ async function detectFromShopify(
   try {
     // Full product objects (not just handle) so we can also grab a variant id
     // for the add-to-cart permalink used by the cart capture.
-    const res = await shopifyRest(creds.shopDomain, creds.token, "/products.json?limit=5&status=active");
+    // Active is not enough: an active product can still be unpublished from the
+    // online store, and its page would 404 for a shopper.
+    const res = await shopifyRest(
+      creds.shopDomain,
+      creds.token,
+      "/products.json?limit=5&status=active&published_status=published",
+    );
     const prod = res.ok ? res.body?.products?.find((p: { handle?: string }) => p?.handle) : null;
     if (prod?.handle) out.product = `${origin}/products/${prod.handle}`;
     const variantId = prod?.variants?.find((v: { id?: number | string }) => v?.id)?.id;
@@ -389,7 +400,10 @@ async function seed(
         screenshot_path: null,
         elements: null,
         error_message: null,
-        fetched_at: null,
+        // fetched_at is NOT NULL in the live table, so "start again" is now (a null
+        // made every re-capture of an existing audit fail). The stall nudge reads the
+        // newest fetched_at, so a fresh run also gets its full grace period.
+        fetched_at: new Date().toISOString(),
       })
       .eq("id", id);
     if (updErr) throw updErr;
@@ -413,20 +427,20 @@ async function seed(
   };
 }
 
-async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: string, clientId: string) {
-  // Prefer rows we haven't touched yet (fetched_at null) over ones we requeued
-  // after a rate-limit, so a stuck store doesn't block the others.
-  const { data: row, error: rowErr } = await sb
-    .from("web_page_snapshots")
-    .select("id, page_type, viewport, variant, url, raw")
-    .eq("audit_id", auditId)
-    .eq("status", "pending")
-    .order("fetched_at", { ascending: true, nullsFirst: true })
-    .order("page_type", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (rowErr) throw rowErr;
+/** Hard ceiling on capture passes for one row, counted when a pass STARTS. The
+ * per-cause budgets below normally end a row well before this; the ceiling is
+ * for passes that never got to write anything (killed at the wall clock), which
+ * used to retry every five minutes for a whole day. */
+const MAX_CAPTURE_PASSES = 8;
+/** A claim older than this belongs to a dead invocation (the edge wall clock is
+ * 150s), so another chain may take the row. */
+const CLAIM_STALE_MS = 3 * 60 * 1000;
 
+async function captureOne(
+  sb: ReturnType<typeof assertServiceClient>,
+  auditId: string,
+  clientId: string,
+): Promise<{ processed: number; remaining: number; requeued?: boolean; busy?: boolean }> {
   const countRemaining = async () => {
     const { count } = await sb
       .from("web_page_snapshots")
@@ -436,7 +450,64 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
     return count ?? 0;
   };
 
-  if (!row) return { processed: 0, remaining: await countRemaining() };
+  // Only rows nobody is working on: unclaimed, or claimed by a dead invocation.
+  const staleIso = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
+  const claimable = `raw->>claimed_at.is.null,raw->>claimed_at.lt."${staleIso}"`;
+
+  // Prefer rows we haven't touched yet over ones we requeued after a
+  // rate-limit, so a stuck store doesn't block the others.
+  const { data: candidate, error: rowErr } = await sb
+    .from("web_page_snapshots")
+    .select("id, page_type, viewport, variant, url, raw")
+    .eq("audit_id", auditId)
+    .eq("status", "pending")
+    .or(claimable)
+    .order("fetched_at", { ascending: true, nullsFirst: true })
+    .order("page_type", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (rowErr) throw rowErr;
+
+  if (!candidate) {
+    const remaining = await countRemaining();
+    // Rows still pending but all claimed: another chain is on them.
+    return { processed: 0, remaining, busy: remaining > 0 };
+  }
+
+  const raw0 = ((candidate as { raw?: Record<string, unknown> }).raw ?? {}) as Record<string, unknown>;
+  const passes = Number(raw0.pass_attempts ?? 0);
+  if (passes >= MAX_CAPTURE_PASSES) {
+    const last = String(raw0.capture_note ?? "").slice(0, 300);
+    await sb.from("web_page_snapshots").update({
+      status: "error",
+      error_message: `capture_gave_up: ${passes} passes without a usable shot${last ? `; last: ${last}` : ""}`.slice(0, 500),
+      fetched_at: new Date().toISOString(),
+    }).eq("id", candidate.id).eq("status", "pending");
+    return { processed: 1, remaining: await countRemaining() };
+  }
+
+  // Claim the row atomically. Postgres re-checks the WHERE after taking the row
+  // lock, so of two chains reaching for the same row only one gets it back.
+  // The pass is counted HERE, before the capture, so a pass the runtime kills
+  // still counts. fetched_at is stamped so the stall nudge sees a live chain.
+  const claimedAt = new Date().toISOString();
+  const { data: claimed, error: claimErr } = await sb
+    .from("web_page_snapshots")
+    .update({
+      raw: { ...raw0, pass_attempts: passes + 1, claimed_at: claimedAt },
+      fetched_at: claimedAt,
+    })
+    .eq("id", candidate.id)
+    .eq("status", "pending")
+    .or(claimable)
+    .select("id");
+  if (claimErr) throw claimErr;
+  if (!Array.isArray(claimed) || claimed.length === 0) {
+    return { processed: 0, remaining: await countRemaining(), busy: true };
+  }
+  // Every later write spreads this raw, which has no claimed_at, so a requeue
+  // releases the claim for this chain's next pass.
+  const row = { ...candidate, raw: { ...raw0, pass_attempts: passes + 1 } };
 
   // Only click the slide-drawer when the cart capture targets a non-/cart page
   // (the homepage fallback). A /cart permalink already lands on a populated
@@ -458,8 +529,6 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
   // can restore the client's own photos rather than trusting the model to
   // reproduce them. Browserless-only: the ScreenshotOne fallback cannot probe.
   let photos: CapturedPhoto[] = [];
-  // Must-not-change text (titles, prices, ratings, brand mark): same treatment.
-  let textLocks: CapturedTextLock[] = [];
   let captureError = "";
   let browserlessError = ""; // kept separate so the fallback's error doesn't hide it
   let usedBrowserless = false;
@@ -470,7 +539,6 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
   // which is the difference between the tiering saving money and only looking
   // like it does.
   let proxyUsed: string | null = null;
-  let domOutline: unknown = null;
   let belowFold: unknown = null;
   // Null while the capture has not looked, [] when it looked and saw none. The
   // difference decides whether the audit may talk about popups at all.
@@ -547,16 +615,17 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
       cartAdd,
       proxyTier,
       // The cart flow chains up to five navigations; 90s aborted it mid-flow on
-      // slower stores even over a healthy residential connection.
-      timeoutMs: isCart ? 150_000 : undefined,
-      // Two read-only probes of the settled page, in the SAME load as the
-      // screenshot. The outline describes exactly the page the client sees in
-      // the Before, and saves the after pass a whole extra page load. The
-      // below-fold report is what the screenshot cannot show: the crop stops at
-      // the first screen, so without it the audit was guessing about reviews,
-      // cross-sells, the FAQ and the footer. Both are free here; a second
-      // screenshot would not be.
-      probeScript: isViewport ? composeProbes(DOM_OUTLINE_PROBE, BELOW_FOLD_PROBE) : undefined,
+      // slower stores even over a healthy residential connection. 120s leaves
+      // room under the 150s edge wall clock to record the outcome, so a slow
+      // cart ends as a counted miss instead of a silent kill.
+      timeoutMs: isCart ? 120_000 : undefined,
+      // A read-only probe of the settled page, in the SAME load as the
+      // screenshot. The below-fold report is what the screenshot cannot show:
+      // the crop stops at the first screen, so without it the audit was guessing
+      // about reviews, cross-sells, the FAQ and the footer. The DOM outline that
+      // used to share this slot fed only the retired HTML after engine, so it no
+      // longer runs; an empty first probe keeps the { below_fold } result shape.
+      probeScript: isViewport ? composeProbes("return null;", BELOW_FOLD_PROBE) : undefined,
     };
     // One attempt per invocation — retries happen across requeue passes below,
     // so a single capture_one never risks the edge runtime's wall-clock limit.
@@ -567,9 +636,7 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
       pngFold2 = bl.png2 ?? null;
       elements = bl.elements;
       photos = bl.photos ?? [];
-      textLocks = bl.textLocks ?? [];
       hoverProbe = bl.hover ?? null;
-      if (isUsableOutline(bl.probe)) domOutline = bl.probe;
       const bf = (bl.probe as { below_fold?: unknown } | null)?.below_fold;
       if (isBelowFoldReport(bf)) belowFold = bf;
       popups = Array.isArray(bl.popups) ? bl.popups : [];
@@ -589,13 +656,26 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
   // succeeds on Browserless (no rate-limit, no fallback).
   // A quota/auth failure (out of Browserless units, bad token) won't fix itself
   // on retry, so don't waste passes, fall straight to the ScreenshotOne fallback.
-  const blHopeless = /http_401|http_402|http_403|units usage|quota|unauthorized|forbidden/i.test(browserlessError);
+  const failKind = !png && browserlessError ? classifyCaptureFailure(browserlessError) : null;
+  // A page that does not exist, or a store behind its password page, will look
+  // the same on every pass, and the fallback would only photograph the error
+  // page and call it a success. End the row here.
+  if (failKind === "page_missing" || failKind === "store_password_protected") {
+    await sb.from("web_page_snapshots").update({
+      status: "error",
+      error_message: browserlessError.slice(0, 500),
+      fetched_at: new Date().toISOString(),
+    }).eq("id", row.id);
+    return { processed: 1, remaining: await countRemaining() };
+  }
+  const blHopeless = failKind === "hopeless";
   if (!png && browserlessEnabled() && !blHopeless) {
     const rawObj = ((row as { raw?: Record<string, unknown> }).raw ?? {}) as Record<string, unknown>;
     const blAttempts = Number(rawObj.bl_attempts ?? 0);
     // Storefront rate-limits / bot-challenges clear on a later pass (and a fresh
-    // residential IP), so give them more passes than a plain transient miss.
-    const blBudget = /rate.?limited|blocked|verif|challenge|captcha/i.test(browserlessError) ? 6 : 3;
+    // residential IP), so give them more passes than a plain transient miss. A
+    // plain server error is a transient miss, not a block.
+    const blBudget = failKind === "blocked" ? 6 : 3;
     if (blAttempts < blBudget) {
       await sb.from("web_page_snapshots").update({
         raw: { ...rawObj, bl_attempts: blAttempts + 1, capture_note: `browserless_retry_${blAttempts + 1}: ${browserlessError}`.slice(0, 300) },
@@ -620,7 +700,21 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
     return { processed: 1, remaining: await countRemaining() };
   }
   if (!png) {
-    const provider = getScreenshotProvider();
+    // An unconfigured fallback throws. Uncaught, that ended the chain with the
+    // row still pending, and the stall nudge retried it every five minutes.
+    let provider: ReturnType<typeof getScreenshotProvider>;
+    try {
+      provider = getScreenshotProvider();
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      await sb.from("web_page_snapshots").update({
+        status: "error",
+        error_message: `capture_failed: no fallback provider (${why})${browserlessError ? ` | browserless: ${browserlessError}` : ""}`
+          .slice(0, 500),
+        fetched_at: new Date().toISOString(),
+      }).eq("id", row.id);
+      return { processed: 1, remaining: await countRemaining() };
+    }
     const captureInput = {
       url: row.url,
       viewport: row.viewport as "desktop" | "mobile",
@@ -714,11 +808,8 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
         ? { ...baseRaw, cart_count: cartCount }
         : baseRaw;
       const withFold = fold2Url ? { ...withCart, fold2_url: fold2Url } : withCart;
-      // Stored per snapshot: the "after" engine reuses it instead of reloading
-      // the page, and it is the record of what the page looked like when shot.
-      const withOutline = domOutline ? { ...withFold, dom_outline: domOutline } : withFold;
       // What the crop cut off, so the analysis can stop guessing about it.
-      const withBelow = belowFold ? { ...withOutline, below_fold: belowFold } : withOutline;
+      const withBelow = belowFold ? { ...withFold, below_fold: belowFold } : withFold;
       // And what the sweep removed. Recorded even when empty: "looked, saw
       // none" and "never looked" lead to different sentences in the report.
       const withPopups = popups ? { ...withBelow, popups, popups_observed: true } : withBelow;
@@ -726,13 +817,11 @@ async function captureOne(sb: ReturnType<typeof assertServiceClient>, auditId: s
       // the page had any, so a thin-looking shot can be explained afterwards.
       const withWait = contentWait ? { ...withPopups, content_wait: contentWait } : withPopups;
       const withDrawer = cartDrawerInfo ? { ...withWait, cart_drawer: cartDrawerInfo } : withWait;
-      // Every photo painted in this shot, for the after-image compositor.
+      // Every photo painted in this shot (the analysis reads it too).
       const withPhotos = photos.length ? { ...withDrawer, photos } : withDrawer;
-      // And the text that must never change (titles, prices, ratings, brand).
-      const withText = textLocks.length ? { ...withPhotos, text_locks: textLocks } : withPhotos;
       // Which proxy pool served this capture, so the datacenter-vs-residential
       // savings are verifiable from the rows rather than guessed.
-      const withHover = hoverProbe ? { ...withText, hover: hoverProbe } : withText;
+      const withHover = hoverProbe ? { ...withPhotos, hover: hoverProbe } : withPhotos;
       const raw = proxyTierUsed && usedBrowserless
         ? { ...withHover, proxy_tier: proxyTierUsed, proxy_used: proxyUsed ?? "none" }
         : withHover;
@@ -867,13 +956,18 @@ serve(async (req) => {
     // capture_one, or "run": the same single capture, but the server carries the
     // sequence forward itself instead of relying on the browser to ask again.
     // That is what makes closing the tab safe.
-    const { processed, remaining } = await captureOne(sb, auditId, clientId);
+    const { processed, remaining, busy } = await captureOne(sb, auditId, clientId);
     if (action === "run") {
       // Per-row attempt budgets already bound the work (a row ends as success or
       // error), so this is a backstop against a bug in those budgets rather than
       // the primary limit: 8 rows at ~6 passes each is well under the cap.
       const depth = Number(input.depth ?? 0);
-      if (remaining > 0 && depth < 80) {
+      if (busy) {
+        // Every pending row is claimed by another live chain. That chain carries
+        // the run to the end (and kicks analysis), so this one stops rather than
+        // running a second chain alongside it. If it dies, its claims go stale
+        // and the stall nudge restarts the run.
+      } else if (remaining > 0 && depth < 80) {
         await kick("web_capture_screenshots", {
           action: "run",
           audit_id: auditId,

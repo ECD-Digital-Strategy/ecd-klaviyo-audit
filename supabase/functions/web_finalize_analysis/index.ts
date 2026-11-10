@@ -1144,12 +1144,17 @@ async function runPipeline(auditId: string, correlationId: string, mode?: string
     await triggerAfterGeneration(auditId);
     return json({ ok: true, correlationId, status: "complete" });
   } else if (job.status === "failed") {
+    // Resume where it stopped: step_index is kept, so the steps that already
+    // wrote their sections are not paid for again. A full restart is
+    // mode=regenerate. Conditional on still being failed, so two resume
+    // clicks cannot both reset the row.
     const { data: reset } = await sb
       .from("audit_analysis_jobs")
-      .update({ status: "pending", step_index: 0, error_message: null, updated_at: new Date().toISOString() })
+      .update({ status: "pending", error_message: null, updated_at: new Date().toISOString() })
       .eq("audit_id", auditId)
+      .eq("status", "failed")
       .select("*")
-      .single();
+      .maybeSingle();
     job = reset ?? job;
   }
 

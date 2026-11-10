@@ -89,7 +89,9 @@ async function fetchCaptureProgress(auditId: string): Promise<
     .eq('audit_id', auditId);
   const rows = data ?? [];
   if (rows.length === 0) return null;
-  const done = rows.filter(r => r.status === 'success' || r.status === 'failed').length;
+  // The server writes 'error' for a shot that gave up; 'failed' is kept for any
+  // older rows.
+  const done = rows.filter(r => r.status === 'success' || r.status === 'error' || r.status === 'failed').length;
   const times = rows
     .map(r => (r.fetched_at ? new Date(r.fetched_at).getTime() : 0))
     .filter(t => t > 0);

@@ -155,6 +155,24 @@ const DIMENSIONS = {
   mobile: { width: 390, height: 844 },
 } as const;
 
+/** What a failed capture means for the next step.
+ *  - page_missing / store_password_protected: terminal, no retry, no fallback.
+ *  - hopeless: Browserless itself refused (quota, auth); go straight to the fallback.
+ *  - blocked: the storefront pushed back; worth the larger residential budget.
+ *  - transient: anything else, including a plain 5xx; the normal budget. */
+export type CaptureFailureKind = "page_missing" | "store_password_protected" | "hopeless" | "blocked" | "transient";
+
+export function classifyCaptureFailure(error: string): CaptureFailureKind {
+  const e = String(error ?? "");
+  if (/^store_password_protected/i.test(e)) return "store_password_protected";
+  if (/^page_missing/i.test(e)) return "page_missing";
+  // Checked before the word lists below: a 5xx body can mention anything.
+  if (/^storefront_http_5\d\d/i.test(e)) return "transient";
+  if (/http_401|http_402|http_403|units usage|quota|unauthorized|forbidden/i.test(e)) return "hopeless";
+  if (/rate.?limited|blocked|verif|challenge|captcha/i.test(e)) return "blocked";
+  return "transient";
+}
+
 export function browserlessEnabled(): boolean {
   return Boolean((Deno.env.get("BROWSERLESS_TOKEN") ?? "").trim());
 }
@@ -231,6 +249,21 @@ export default async ({ page, context }) => {
   const looksLikeErrorPage =
     bodyText.length < 280 &&
     /local_rate_limited|too many requests|rate.?limited|access denied|error 10\\d\\d|connection needs to be verified|verify you are human|checking your browser|just a moment|attention required|enable javascript and cookies|captcha/i.test(bodyText);
+  // Not every failure is a bot block. A store behind its password page, a page
+  // that does not exist, and a server error each get their own code, so the
+  // caller neither retries the hopeless ones nor spends the bot-block budget on them.
+  let finalPath = "";
+  try { finalPath = new URL(page.url()).pathname; } catch (e) {}
+  if (/\\/password\\/?$/i.test(finalPath)) {
+    return { data: { error: "store_password_protected (" + page.url().slice(0, 120) + ")" }, type: "application/json" };
+  }
+  if (httpStatus === 404 || httpStatus === 410) {
+    return { data: { error: "page_missing (http " + httpStatus + ")" }, type: "application/json" };
+  }
+  // A challenge page can come back as a 503, so only a plain 5xx counts here.
+  if (httpStatus >= 500 && !looksLikeErrorPage) {
+    return { data: { error: "storefront_http_" + httpStatus + " (" + bodyText.slice(0, 90) + ")" }, type: "application/json" };
+  }
   if (httpStatus >= 400 || looksLikeErrorPage) {
     return { data: { error: "storefront_blocked (http " + httpStatus + ": " + bodyText.slice(0, 90) + ")" }, type: "application/json" };
   }

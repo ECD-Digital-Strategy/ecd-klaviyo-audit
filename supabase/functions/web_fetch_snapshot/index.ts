@@ -7,6 +7,7 @@ import { normalizeShopDomain, shopifyRest, shopifyGraphql, mapShopifyErrorCode, 
 import {
   BULK_WINDOW_DAYS, currentBulk, ingestBulkOrders, pollBulk, startBulkOrders, type BulkOrderRow } from "../_shared/shopify-bulk.ts";
 import { computeRepeat, repeatHistory, repeatRate } from "../_shared/repeat-rate.ts";
+import { isCustomerAccessError } from "./customer-access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -150,7 +151,7 @@ export function channelLabel(sourceName: unknown, appName?: unknown): string {
   if (app) return app;
   if (!src) return "Unknown";
   // An id, not a name. Never show it.
-  if (/^d+$/.test(src)) return "Other app";
+  if (/^\d+$/.test(src)) return "Other app";
   return src.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 }
 
@@ -596,8 +597,13 @@ async function fetchOrdersRollup(
   try {
     agg = await aggregateOrders(shopDomain, token, priorSince, currentSinceMs, true, priorStartMs);
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    // Only a customer-field failure is fixed by dropping the field. Anything
+    // else (throttling, a timeout) used to be mislabelled as missing customer
+    // access; now it surfaces as itself.
+    if (!isCustomerAccessError(message)) throw e;
     customerDataUnavailable = true;
-    customerDataError = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    customerDataError = message.slice(0, 300);
     agg = await aggregateOrders(shopDomain, token, priorSince, currentSinceMs, false, priorStartMs);
   }
   let { current, previous, channels, currency, truncated, orders } = agg;
