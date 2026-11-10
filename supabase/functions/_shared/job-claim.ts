@@ -19,6 +19,7 @@
 // that has lost the step can no longer overwrite the one that holds it.
 
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { attemptsForStep, decideStepFailure } from "./klaviyo-audit-logic.ts";
 
 type Sb = SupabaseClient;
 type JobRow = Record<string, unknown>;
@@ -71,6 +72,41 @@ export async function releaseStaleRun(sb: Sb, auditId: string, staleBeforeIso: s
     .eq("status", "running")
     .lt("updated_at", staleBeforeIso);
   if (error) throw error;
+}
+
+/** Like releaseStaleRun, but a dead run counts as a timed-out attempt at its
+ * step: the step goes back to pending until it has used its attempts, then
+ * the job is marked failed so nothing keeps paying for it. Used for Klaviyo
+ * analysis jobs only. Returns what happened, or "noop" when the row was no
+ * longer that stale run. */
+export async function releaseStaleRunWithBudget(
+  sb: Sb,
+  auditId: string,
+  job: JobRow,
+  staleBeforeIso: string,
+): Promise<"released" | "failed" | "noop"> {
+  const partial = (job.partial_state ?? {}) as Record<string, unknown>;
+  const step = Number(job.step_index) || 0;
+  const decision = decideStepFailure("timeout", attemptsForStep(partial, step));
+  const nextPartial: Record<string, unknown> = { ...partial, stepAttempts: { step, count: decision.attempts } };
+  const patch = decision.action === "fail"
+    ? {
+      status: "failed",
+      error_message:
+        `Step ${step} did not finish within the edge time limit after ${decision.attempts} attempts. Resume to try again.`,
+      partial_state: { ...nextPartial, attemptCapReached: true },
+    }
+    : { status: "pending", partial_state: nextPartial };
+  const { data, error } = await sb
+    .from("audit_analysis_jobs")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("audit_id", auditId)
+    .eq("status", "running")
+    .lt("updated_at", staleBeforeIso)
+    .select("audit_id");
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length === 0) return "noop";
+  return decision.action === "fail" ? "failed" : "released";
 }
 
 /** Read the job row, creating it if there is none. Two first kicks racing to

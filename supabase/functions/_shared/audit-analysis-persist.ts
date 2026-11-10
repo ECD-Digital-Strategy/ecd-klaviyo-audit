@@ -10,6 +10,25 @@ import {
   applyCoreFlowRecommendationsToSectionDetails,
   fetchCoreFlowRecommendations,
 } from "./core-flow-recommendations.ts";
+import { carryHiddenFlags } from "./klaviyo-audit-logic.ts";
+
+type StoredExecutivePayload = {
+  findings?: unknown[];
+  strengths?: unknown[];
+  timeline?: unknown[];
+  findingsHidden?: unknown[];
+  strengthsHidden?: unknown[];
+  timelineHidden?: unknown[];
+};
+
+function parseExecutivePayload(raw: unknown): StoredExecutivePayload {
+  try {
+    const parsed = JSON.parse(String(raw ?? ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as StoredExecutivePayload : {};
+  } catch {
+    return {};
+  }
+}
 
 // MUST match computeAuditTotalRevenueOpportunity in src/lib/revenue-calculator.ts.
 // This copy writes audits.total_revenue_opportunity; that one is what every
@@ -149,20 +168,27 @@ export async function persistAuditAnalysisResults(
 
   const { data: sectionRows, error: sectionsErr } = await sb
     .from("audit_sections")
-    .select("id, section_key, revenue_opportunity, section_config")
+    .select("id, section_key, revenue_opportunity, section_config, key_findings")
     .eq("audit_id", auditId);
   if (sectionsErr) throw sectionsErr;
 
+  const storedKfByKey = new Map(
+    (sectionRows ?? []).map((s) => [String(s.section_key), (s.key_findings ?? null) as { items?: unknown[]; items_hidden?: unknown[] } | null]),
+  );
   const recommendations = await fetchCoreFlowRecommendations(sb);
   const patches = (partial.sections ?? []).map((patch) => {
     let next: Record<string, unknown> = { ...patch };
     const rawKf = (patch as { key_findings?: { items?: string[] } }).key_findings;
     if (rawKf?.items?.length) {
+      const items = rawKf.items.map((item) => String(item).trim()).filter(Boolean);
+      // Keep what the editor hid: an unchanged item keeps its flag (or by
+      // position when the count matches). This used to reset every flag.
+      const stored = storedKfByKey.get(String(patch.section_key));
       next = {
         ...next,
         key_findings: {
-          items: rawKf.items.map((item) => String(item).trim()).filter(Boolean),
-          items_hidden: rawKf.items.map(() => false),
+          items,
+          items_hidden: carryHiddenFlags(stored?.items, stored?.items_hidden, items),
         },
       };
     }
@@ -176,16 +202,17 @@ export async function persistAuditAnalysisResults(
     };
   });
   const patchByKey = new Map(patches.map((p) => [String(p.section_key), p]));
-  const patchOnly = options?.patchOnlySectionKeys?.length
-    ? new Set(options.patchOnlySectionKeys)
-    : null;
+  // A provided list (even an empty one) means patch only those sections; a
+  // highlight regen with no placements must not rewrite every section.
+  const patchOnly = options?.patchOnlySectionKeys ? new Set(options.patchOnlySectionKeys) : null;
 
   for (const section of sectionRows ?? []) {
     const patch = patchByKey.get(section.section_key);
     if (!patch || section.section_key === "email_design") continue;
     if (patchOnly && !patchOnly.has(section.section_key)) continue;
     const { section_key: _sk, ...rest } = patch;
-    await sb.from("audit_sections").update(rest).eq("id", section.id);
+    const { error: updErr } = await sb.from("audit_sections").update(rest).eq("id", section.id);
+    if (updErr) throw new Error(`update audit_sections ${section.section_key} failed: ${updErr.message}`);
   }
 
   const mergedSections = (sectionRows ?? []).map((section) => {
@@ -210,7 +237,10 @@ export async function persistAuditAnalysisResults(
       ? aiEmailRevenue
       : defaultEmailDesignRevenue(opportunityBaseBeforeEmail);
     const { section_key: _sk, ...rest } = emailPatch;
-    await sb.from("audit_sections").update({ ...rest, revenue_opportunity: emailRevenue }).eq("id", emailSection.id);
+    const { error: emailErr } = await sb.from("audit_sections")
+      .update({ ...rest, revenue_opportunity: emailRevenue })
+      .eq("id", emailSection.id);
+    if (emailErr) throw new Error(`update audit_sections email_design failed: ${emailErr.message}`);
   }
 
   const patchedSections = mergedSections.map((section) => {
@@ -261,26 +291,49 @@ export async function persistAuditAnalysisResults(
     // non-critical
   }
 
-  const execPayload = (strengthsForExec.length || findingsForExec.length || partial.implementationTimeline?.length)
+  // What the editor hid in the summary blocks survives a regeneration: flags
+  // follow unchanged items (or position when the count matches).
+  const prevExec = parseExecutivePayload(audit.executive_summary);
+  const timelineForExec = partial.implementationTimeline ?? [];
+  const hiddenCarry: Record<string, boolean[]> = {};
+  const findingsHidden = carryHiddenFlags(prevExec.findings, prevExec.findingsHidden, findingsForExec);
+  const strengthsHidden = carryHiddenFlags(prevExec.strengths, prevExec.strengthsHidden, strengthsForExec);
+  const timelineHidden = carryHiddenFlags(prevExec.timeline, prevExec.timelineHidden, timelineForExec);
+  if (findingsHidden.some(Boolean)) hiddenCarry.findingsHidden = findingsHidden;
+  if (strengthsHidden.some(Boolean)) hiddenCarry.strengthsHidden = strengthsHidden;
+  if (timelineHidden.some(Boolean)) hiddenCarry.timelineHidden = timelineHidden;
+
+  const execPayload = (strengthsForExec.length || findingsForExec.length || timelineForExec.length)
     ? JSON.stringify({
       text: partial.executiveSummary ?? "",
       findings: findingsForExec,
       strengths: strengthsForExec,
-      timeline: partial.implementationTimeline ?? [],
+      timeline: timelineForExec,
+      ...hiddenCarry,
     })
     : (partial.executiveSummary ?? "");
 
-  await sb.from("audits").update({
+  const { error: auditUpdErr } = await sb.from("audits").update({
     executive_summary: execPayload,
     layout: mergedLayout,
     total_revenue_opportunity: totalOpportunity,
     updated_at: new Date().toISOString(),
   }).eq("id", auditId);
+  if (auditUpdErr) throw new Error(`update audits analysis failed: ${auditUpdErr.message}`);
 
   try {
     const { data: client } = await sb.from("clients").select("industry").eq("id", audit.client_id).maybeSingle();
     const industry = (client?.industry ?? "").trim();
-    if (industry && !patchOnly) {
+    // Only on a full analysis. A highlight regen (patchOnly) must not reset the
+    // chosen industry example or insert the default annotations again.
+    // An example already chosen (by a person or an earlier run) is kept, and
+    // with it the annotations, so a re-run never duplicates them.
+    const { data: existingDesign } = await sb
+      .from("audit_email_design")
+      .select("ecd_example_id")
+      .eq("audit_id", auditId)
+      .maybeSingle();
+    if (industry && !patchOnly && !existingDesign?.ecd_example_id) {
       const { data: ecdExample } = await sb
         .from("industry_email_library")
         .select("id, default_annotations")

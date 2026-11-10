@@ -30,6 +30,27 @@ type KlaviyoRunRow = {
   created_at: string;
 };
 
+/** Matches REPORTING_NUDGE_AFTER_MS / REPORTING_CLAIM_TTL_MS in
+ * supabase/functions/_shared/klaviyo-audit-logic.ts. */
+const REPORTING_NUDGE_AFTER_MS = 6 * 60 * 1000;
+const REPORTING_CLAIM_TTL_MS = 10 * 60 * 1000;
+
+/** True while the server's reporting run for this audit holds its claim. */
+async function reportingRunIsLive(auditId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('klaviyo_reporting_rollups')
+    .select('reporting_started_at')
+    .eq('audit_id', auditId)
+    .eq('timeframe_key', 'last_30_days')
+    .maybeSingle();
+  // Unknown (e.g. column not there yet): let the server decide, it refuses a
+  // second run on its own.
+  if (error || !data) return false;
+  const started = (data as { reporting_started_at?: string | null }).reporting_started_at;
+  const ms = started ? new Date(started).getTime() : NaN;
+  return Number.isFinite(ms) && Date.now() - ms < REPORTING_CLAIM_TTL_MS;
+}
+
 async function waitForReportingStage(auditId: string): Promise<'success' | 'partial' | 'error' | 'timed_out'> {
   const maxMs = 10 * 60 * 1000;
   const t0 = Date.now();
@@ -45,7 +66,16 @@ async function waitForReportingStage(auditId: string): Promise<'success' | 'part
     const latest = (data?.[0] ?? null) as KlaviyoRunRow | null;
     if (latest?.status === 'success' || latest?.status === 'partial') return latest.status as 'success' | 'partial';
     if (latest?.status === 'error' || latest?.status === 'timeout') return 'error';
-    if (!latest && Date.now() - t0 > 120_000 && Date.now() - lastNudge > 90_000) {
+    // The stage takes 90s+ and logs only at the end, so re-kicking it at 120s
+    // started a second run that doubled flow_performance. Only re-kick after a
+    // long silence, and only when the server holds no live reporting claim
+    // (the server also refuses a second run itself).
+    if (
+      !latest &&
+      Date.now() - t0 > REPORTING_NUDGE_AFTER_MS &&
+      Date.now() - lastNudge > REPORTING_NUDGE_AFTER_MS &&
+      !(await reportingRunIsLive(auditId))
+    ) {
       lastNudge = Date.now();
       invokeKlaviyoSnapshot({ stage: 'reporting', audit_id: auditId }).catch(() => {});
     }

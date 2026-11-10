@@ -6,6 +6,8 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { hasCronSecret, isServiceRoleAuthorization } from "../_shared/auth.ts";
 import { isTransientError } from "../_shared/transient-errors.ts";
+import { releaseStaleRunWithBudget } from "../_shared/job-claim.ts";
+import { attemptCapReached, isRunningClaimStale, PROFILE_SCAN_STALE_MS } from "../_shared/klaviyo-audit-logic.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -109,8 +111,8 @@ serve(async (req) => {
   let aiResumed = 0;
 
   for (const job of profileJobs ?? []) {
-    const updatedMs = job.updated_at ? Date.parse(String(job.updated_at)) : 0;
-    const stale = !updatedMs || now - updatedMs >= STALE_AFTER_MS;
+    // A live scan heartbeats every 20s, so only a dead one gets this old.
+    const stale = isRunningClaimStale(job.updated_at as string | null, now, PROFILE_SCAN_STALE_MS);
     if (!stale) continue;
 
     // A FAILED scan with a cursor and a transient-looking error is four hours
@@ -158,10 +160,16 @@ serve(async (req) => {
     }
 
     if (job.status === "running") {
-      await sb.from("klaviyo_profile_scan_jobs").update({
+      // Only if it is still that same stale run; a scanner that claimed it
+      // (or heartbeated) since our read is left alone.
+      const { data: freed } = await sb.from("klaviyo_profile_scan_jobs").update({
         status: "pending",
         updated_at: new Date().toISOString(),
-      }).eq("audit_id", job.audit_id);
+      }).eq("audit_id", job.audit_id)
+        .eq("status", "running")
+        .lt("updated_at", new Date(now - PROFILE_SCAN_STALE_MS).toISOString())
+        .select("audit_id");
+      if (!freed?.length) continue;
       profileReset += 1;
     }
 
@@ -169,9 +177,23 @@ serve(async (req) => {
     profileResumed += 1;
   }
 
+  // The attempt budget applies to Klaviyo analyses (audit_type klaviyo or
+  // unset); web analyses share this table and keep their own behaviour.
+  const aiAuditIds = (aiJobs ?? []).map((j) => String(j.audit_id));
+  const klaviyoAuditIds = new Set<string>();
+  if (aiAuditIds.length) {
+    const { data: auditTypes } = await sb.from("audits").select("id, audit_type").in("id", aiAuditIds);
+    for (const a of auditTypes ?? []) {
+      if (!a.audit_type || a.audit_type === "klaviyo") klaviyoAuditIds.add(String(a.id));
+    }
+  }
+
   for (const job of aiJobs ?? []) {
     const partial = (job.partial_state ?? {}) as Record<string, unknown>;
     const isHighlightRegen = partial.highlightRegen === true;
+    const isKlaviyo = klaviyoAuditIds.has(String(job.audit_id));
+    // A step that used up its attempts stays failed until a person resumes it.
+    if (isKlaviyo && job.status === "failed" && attemptCapReached(partial)) continue;
 
     // A FAILED analysis whose error is transient should resume itself. The step
     // machine already restarts from step_index, so a resume costs one step, not
@@ -200,7 +222,19 @@ serve(async (req) => {
     const stale = !updatedMs || now - updatedMs >= staleAfterMs;
     if (!stale) continue;
 
-    if (job.status === "running") {
+    if (job.status === "running" && isKlaviyo) {
+      // The dead run counts as a timed-out attempt; past the cap the job is
+      // marked failed instead of being re-kicked forever.
+      const outcome = await releaseStaleRunWithBudget(
+        sb,
+        String(job.audit_id),
+        job as Record<string, unknown>,
+        new Date(now - staleAfterMs).toISOString(),
+      );
+      if (outcome === "noop") continue;
+      aiReset += 1;
+      if (outcome === "failed") continue;
+    } else if (job.status === "running") {
       await sb.from("audit_analysis_jobs").update({
         status: "pending",
         updated_at: new Date().toISOString(),

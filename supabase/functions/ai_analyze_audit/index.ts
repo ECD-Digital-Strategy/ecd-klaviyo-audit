@@ -30,10 +30,11 @@ const KMS_ENCRYPTION_KEY = Deno.env.get("KMS_ENCRYPTION_KEY") ?? "";
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
 const PRIMARY_MODEL = "gpt-5.4";
-// Supabase Edge Functions support up to 150s — stay under that including DB + JSON work.
-// With scoped prompts the payload is much smaller per call, so 120s is generous.
-const MAX_ATTEMPTS = 2;
-const REQUEST_TIMEOUT_MS = 120_000;
+// One attempt that fits the 150s edge wall clock with room for DB and JSON
+// work. Two 120s attempts could never finish inside it. A timed-out step is
+// retried by audit_finalize_analysis in a fresh invocation, with a budget.
+const MAX_ATTEMPTS = 1;
+const REQUEST_TIMEOUT_MS = 110_000;
 
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -231,7 +232,10 @@ async function fetchKlaviyoContext(auditId: string, clientId: string): Promise<K
   const [connRes, flowsRes, campaignsRes, segmentsRes, formsRes, perfRes, rollupsRes] = await Promise.all([
     sb.from("klaviyo_connections").select("account_name, timezone, website_url").eq("client_id", clientId).maybeSingle(),
     sb.from("klaviyo_flow_snapshots").select("name, status, trigger_type").eq("audit_id", auditId),
-    sb.from("klaviyo_campaign_snapshots").select("name, status, send_channel, created_at_klaviyo, updated_at_klaviyo").eq("audit_id", auditId),
+    sb.from("klaviyo_campaign_snapshots")
+      .select("name, status, send_channel, created_at_klaviyo, updated_at_klaviyo, send_time:raw->attributes->>send_time")
+      .eq("audit_id", auditId)
+      .order("updated_at_klaviyo", { ascending: false, nullsFirst: false }),
     sb.from("klaviyo_segment_snapshots").select("name, created_at_klaviyo, updated_at_klaviyo").eq("audit_id", auditId),
     sb.from("klaviyo_form_snapshots").select("name, status").eq("audit_id", auditId),
     sb.from("flow_performance").select("flow_name, flow_status, recipients_per_month, actual_open_rate, actual_click_rate, actual_conv_rate, benchmark_open_rate_low, benchmark_open_rate_high, benchmark_click_rate_low, benchmark_click_rate_high, benchmark_conv_rate_low, benchmark_conv_rate_high, monthly_revenue_current, email_message_count").eq("audit_id", auditId),
@@ -246,6 +250,9 @@ async function fetchKlaviyoContext(auditId: string, clientId: string): Promise<K
   const rollupComputed = rollupsRes.data?.computed as {
     account_snapshot?: {
       campaigns_truncated?: boolean;
+      bounce_rate_90d?: number | null;
+      spam_rate_90d?: number | null;
+      deliverability?: Omit<NonNullable<KlaviyoContext["deliverability"]>, "bounce_rate_90d" | "spam_rate_90d"> | null;
       revenue_breakdown?: KlaviyoContext["revenueBreakdown"];
       competing_sms_scan?: KlaviyoContext["competingSmsScan"] & {
         detected_platforms?: Array<{ id: string; name: string; markers?: string[] }>;
@@ -271,7 +278,7 @@ async function fetchKlaviyoContext(auditId: string, clientId: string): Promise<K
   return {
     account: connRes.data ? { name: connRes.data.account_name, timezone: connRes.data.timezone, website_url: connRes.data.website_url } : undefined,
     flows: (flowsRes.data ?? []).map((f: any) => ({ name: f.name, status: f.status, trigger_type: f.trigger_type })),
-    campaigns: (campaignsRes.data ?? []).map((c: any) => ({ name: c.name, status: c.status, send_channel: c.send_channel, created_at: c.created_at_klaviyo, updated_at: c.updated_at_klaviyo })),
+    campaigns: (campaignsRes.data ?? []).map((c: any) => ({ name: c.name, status: c.status, send_channel: c.send_channel, created_at: c.created_at_klaviyo, updated_at: c.updated_at_klaviyo, send_time: c.send_time ?? undefined })),
     campaigns_truncated: campaignsTruncated,
     segments: (segmentsRes.data ?? []).map((s: any) => ({ name: s.name, created: s.created_at_klaviyo, updated: s.updated_at_klaviyo })),
     forms: (formsRes.data ?? []).map((f: any) => ({ name: f.name, status: f.status })),
@@ -284,6 +291,29 @@ async function fetchKlaviyoContext(auditId: string, clientId: string): Promise<K
     })),
     revenueBreakdown,
     competingSmsScan,
+    deliverability: buildDeliverabilityContext(rollupComputed?.account_snapshot),
+  };
+}
+
+/** Deliverability already in the rollup (written by the reporting stage). */
+function buildDeliverabilityContext(
+  snap: { bounce_rate_90d?: number | null; spam_rate_90d?: number | null; deliverability?: Record<string, unknown> | null } | undefined,
+): KlaviyoContext["deliverability"] {
+  if (!snap) return null;
+  const d = (snap.deliverability ?? null) as Record<string, unknown> | null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const bounce90 = num(snap.bounce_rate_90d);
+  const spam90 = num(snap.spam_rate_90d);
+  if (!d && bounce90 == null && spam90 == null) return null;
+  return {
+    timeframe: String(d?.timeframe ?? "last_30_days"),
+    open_rate: num(d?.open_rate),
+    click_rate: num(d?.click_rate),
+    bounce_rate: num(d?.bounce_rate),
+    spam_complaint_rate: num(d?.spam_complaint_rate),
+    unsubscribe_rate: num(d?.unsubscribe_rate),
+    bounce_rate_90d: bounce90,
+    spam_rate_90d: spam90,
   };
 }
 

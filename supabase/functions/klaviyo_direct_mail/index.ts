@@ -419,8 +419,14 @@ async function upsertSection(sb: Sb, auditId: string, plan: DirectMailPlan, narr
 /** Put the PostPilot add-on on the audit, highlighted, or take our own copy
  * off again if the audit no longer qualifies. An item the strategist added by
  * hand (no auto_added flag) is never touched. */
-async function syncAddOn(sb: Sb, auditId: string, layout: Record<string, unknown>, template: Record<string, unknown> | null, plan: DirectMailPlan) {
+async function syncAddOn(sb: Sb, auditId: string, template: Record<string, unknown> | null, plan: DirectMailPlan) {
   if (!template) return { changed: false, reason: "no_template" };
+  // Read the layout fresh, right before patching it. The copy read at the
+  // start of this invocation is a model call old, and writing it back lost
+  // whatever the editor saved in the meantime. Only the add-on item changes.
+  const { data: fresh, error: readErr } = await sb.from("audits").select("layout").eq("id", auditId).single();
+  if (readErr) throw readErr;
+  const layout = ((fresh?.layout as Record<string, unknown> | null) ?? {});
   const revenueSummary = { ...((layout.revenue_summary as Record<string, unknown> | undefined) ?? {}) };
   const blocks = { ...((revenueSummary.blocks as Record<string, unknown> | undefined) ?? {}) };
   const addOns = { ...((blocks.addOns as Record<string, unknown> | undefined) ?? {}) };
@@ -542,7 +548,7 @@ serve(async (req) => {
     }
 
     const sectionId = await upsertSection(sb, auditId, plan, narrative);
-    const addOn = await syncAddOn(sb, auditId, (audit.layout as Record<string, unknown> | null) ?? {}, template, plan);
+    const addOn = await syncAddOn(sb, auditId, template, plan);
 
     return json({
       ok: true,

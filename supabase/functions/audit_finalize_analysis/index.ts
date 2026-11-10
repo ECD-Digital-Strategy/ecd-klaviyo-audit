@@ -3,7 +3,12 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { persistAuditAnalysisResults } from "../_shared/audit-analysis-persist.ts";
 import { autoPublishAudit } from "../_shared/auto-publish.ts";
-import { claimJobStep, ensureJobRow, releaseStaleRun, writeClaimedStep } from "../_shared/job-claim.ts";
+import { claimJobStep, ensureJobRow, releaseStaleRunWithBudget, writeClaimedStep } from "../_shared/job-claim.ts";
+import { attemptsForStep, classifyStepFailure, decideStepFailure } from "../_shared/klaviyo-audit-logic.ts";
+
+/** The AI call is aborted this long after the invocation started, leaving room
+ * inside the 150s wall clock to record the attempt and chain a retry. */
+const AI_CALL_DEADLINE_MS = 135_000;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -143,38 +148,45 @@ async function kickDirectMail(auditId: string) {
   }
 }
 
-async function invokeAiAnalyze(body: Record<string, unknown>) {
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/ai_analyze_audit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!data?.ok) {
-    const msg = data?.error?.message ?? `AI request failed (${res.status})`;
-    throw new Error(msg);
+/** An AI step failure with the callee's error code, used to decide on a retry. */
+class AiStepError extends Error {
+  code: string | null;
+  constructor(message: string, code: string | null) {
+    super(message);
+    this.code = code;
   }
-  return data;
 }
 
-async function invokeAiWithRetry(body: Record<string, unknown>, label: string) {
-  let last: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await invokeAiAnalyze(body);
-    } catch (e) {
-      last = e;
-      const msg = e instanceof Error ? e.message : String(e);
-      const retryable = /timeout|504|546|502|503|429|Failed to send/i.test(msg);
-      if (!retryable || attempt === 3) break;
-      await sleep(1500 + attempt * 1000);
+/** One AI call, aborted at `deadlineAtMs`. Retries no longer happen inside the
+ * invocation (three 120s tries could never fit in 150s); a failed attempt is
+ * recorded on the job and retried by a fresh invocation. */
+async function invokeAiAnalyze(body: Record<string, unknown>, deadlineAtMs: number, label: string) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), Math.max(20_000, deadlineAtMs - Date.now()));
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/ai_analyze_audit`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!data?.ok) {
+      const msg = data?.error?.message ?? `AI request failed (${res.status})`;
+      throw new AiStepError(`${label}: ${msg}`, data?.error?.code ?? null);
     }
+    return data;
+  } catch (e) {
+    if (e instanceof AiStepError) throw e;
+    if (ctrl.signal.aborted) throw new AiStepError(`${label}: AI call timed out`, "timeout");
+    throw new AiStepError(`${label}: ${e instanceof Error ? e.message : String(e)}`, null);
+  } finally {
+    clearTimeout(t);
   }
-  throw last instanceof Error ? last : new Error(`${label} failed`);
 }
 
 async function seedPartialFromAudit(sb: ReturnType<typeof assertServiceClient>, auditId: string) {
@@ -265,7 +277,8 @@ async function buildWizardData(sb: ReturnType<typeof assertServiceClient>, audit
       espPlatform: client.esp_platform || "Klaviyo",
       websiteUrl: client.website_url || "",
       listSize: Math.round(Number(audit.list_size) || 0),
-      aov: Math.round(Number(audit.aov) || 0),
+      // audits.aov holds flow revenue per recipient (often under $1), so keep cents.
+      aov: Math.round((Number(audit.aov) || 0) * 100) / 100,
       monthlyTraffic: Math.round(Number(audit.monthly_traffic) || 0),
       notes: client.notes || "",
       auditMethod: "api",
@@ -290,6 +303,7 @@ async function runPipeline(
 ): Promise<Response> {
   const sb = assertServiceClient();
   const highlightRegen = options?.mode === "highlight_regen";
+  const aiDeadlineAtMs = Date.now() + AI_CALL_DEADLINE_MS;
 
   const { data: audit, error: auditErr } = await sb
     .from("audits")
@@ -373,20 +387,31 @@ async function runPipeline(
     job = initialJob;
   }
   if (job.status === "failed") {
+    // Resume where it failed: keep step_index and the work in partial_state,
+    // and give the failed step a fresh attempt budget. This used to restart at
+    // step 0 with nothing, paying again for every step already done.
+    const {
+      stepAttempts: _attempts,
+      attemptCapReached: _cap,
+      ...keptPartial
+    } = (job.partial_state ?? {}) as Record<string, unknown>;
     const { data: reset, error: resetErr } = await sb
       .from("audit_analysis_jobs")
       .update({
         status: "pending",
-        step_index: 0,
-        partial_state: {},
+        partial_state: keptPartial,
         error_message: null,
         updated_at: new Date().toISOString(),
       })
       .eq("audit_id", auditId)
+      .eq("status", "failed")
       .select("*")
-      .single();
+      .maybeSingle();
     if (resetErr) throw resetErr;
-    job = reset!;
+    if (!reset) {
+      return json({ ok: true, correlationId, status: "in_progress", reason: "resumed_elsewhere" });
+    }
+    job = reset;
   }
   if (job.status === "complete" && !highlightRegen) {
     return json({ ok: true, correlationId, status: "complete" });
@@ -404,14 +429,23 @@ async function runPipeline(
     return json({ ok: true, correlationId, status: "in_progress", reason: "already_running" });
   }
   if (jobStale) {
-    await releaseStaleRun(sb, auditId, new Date(Date.now() - 160_000).toISOString());
-    job = { ...job, status: "pending" };
+    // The dead run counts as a timed-out attempt at its step, so a step that
+    // keeps dying on the wall clock stops after the cap instead of looping.
+    const released = await releaseStaleRunWithBudget(sb, auditId, job, new Date(Date.now() - 160_000).toISOString());
+    if (released === "failed") {
+      return json({ ok: false, correlationId, status: "failed", error: "step attempts exhausted" }, { status: 200 });
+    }
+    const { data: fresh, error: freshErr } = await sb.from("audit_analysis_jobs").select("*").eq("audit_id", auditId).maybeSingle();
+    if (freshErr) throw freshErr;
+    if (!fresh || fresh.status !== "pending") {
+      return json({ ok: true, correlationId, status: "in_progress", reason: "already_running" });
+    }
+    job = fresh;
   }
 
   const { wizard, hasRefine } = await buildWizardData(sb, auditId);
   const steps = buildStepPlan(hasRefine, highlightRegen);
   let stepIndex = Number(job.step_index) || 0;
-  const patchOnlySectionKeys = new Set<string>();
 
   if (stepIndex >= steps.length) {
     if (highlightRegen) {
@@ -449,11 +483,13 @@ async function runPipeline(
   }
   // Read state as of the claim, not as of the select at the top.
   const partial = (claim.row.partial_state ?? {}) as Record<string, unknown>;
+  // Untouched copy for a failed attempt, so a half-applied step is not saved.
+  const partialAtClaim = { ...partial };
   const step = steps[stepIndex];
 
   try {
     if (step.kind === "top_level") {
-      const result = await invokeAiWithRetry({ ...wizard, requestedSectionKeys: [], aiMode: "top_level_only" }, "top-level");
+      const result = await invokeAiAnalyze({ ...wizard, requestedSectionKeys: [], aiMode: "top_level_only" }, aiDeadlineAtMs, "top-level");
       partial.executiveSummary = result.executiveSummary;
       partial.findings = result.findings ?? [];
       partial.implementationTimeline = result.implementationTimeline ?? [];
@@ -478,30 +514,33 @@ async function runPipeline(
         ),
       ];
       if (keys.length > 0) {
-        const result = await invokeAiWithRetry({
+        const result = await invokeAiAnalyze({
           ...wizard,
           requestedSectionKeys: keys,
           aiMode: "sections_only",
-        }, `highlight sections ${keys.join(",")}`);
+        }, aiDeadlineAtMs, `highlight sections ${keys.join(",")}`);
         const existing = Array.isArray(partial.sections)
           ? partial.sections as Array<Record<string, unknown>>
           : [];
         const regenKeys = new Set(keys);
         const kept = existing.filter((s) => !regenKeys.has(String(s.section_key ?? "")));
         partial.sections = [...kept, ...(result.sections ?? [])];
-        for (const k of keys) patchOnlySectionKeys.add(k);
       }
+      // Persist runs in a later invocation, so the keys must travel in
+      // partial_state. An in-memory set here was always empty by then, which
+      // made a highlight regen rewrite every section.
+      partial.patchOnlySectionKeys = keys;
     } else if (step.kind === "section" && step.keys) {
-      const result = await invokeAiWithRetry({
+      const result = await invokeAiAnalyze({
         ...wizard,
         requestedSectionKeys: step.keys,
         aiMode: "sections_only",
-      }, `section ${step.keys.join(",")}`);
+      }, aiDeadlineAtMs, `section ${step.keys.join(",")}`);
       const existing = Array.isArray(partial.sections) ? partial.sections as Array<Record<string, unknown>> : [];
       partial.sections = [...existing, ...(result.sections ?? [])];
     } else if (step.kind === "refine") {
       const sections = Array.isArray(partial.sections) ? partial.sections : [];
-      const result = await invokeAiWithRetry({
+      const result = await invokeAiAnalyze({
         ...wizard,
         aiMode: "refine",
         refineBaseline: {
@@ -514,7 +553,7 @@ async function runPipeline(
           sections,
         },
         auditContext: wizard.auditContext,
-      }, "refine");
+      }, aiDeadlineAtMs, "refine");
       partial.executiveSummary = result.executiveSummary;
       partial.findings = result.findings ?? partial.findings;
       partial.strengths = result.strengths ?? partial.strengths;
@@ -542,11 +581,15 @@ async function runPipeline(
         },
         highlightRegen
           ? {
-            patchOnlySectionKeys: [...patchOnlySectionKeys],
+            // Empty means patch no section (no add-on landed on one).
+            patchOnlySectionKeys: Array.isArray(partial.patchOnlySectionKeys)
+              ? (partial.patchOnlySectionKeys as unknown[]).map(String)
+              : [],
             preserveStrengthsFromAudit: true,
           }
           : undefined,
       );
+      delete partial.stepAttempts;
       await writeClaimedStep(sb, auditId, claim.token, {
         status: "complete",
         step_index: steps.length,
@@ -563,6 +606,7 @@ async function runPipeline(
     }
 
     const nextIndex = stepIndex + 1;
+    delete partial.stepAttempts;
     const stillOwned = await writeClaimedStep(sb, auditId, claim.token, {
       status: nextIndex >= steps.length ? "complete" : "pending",
       step_index: nextIndex,
@@ -584,9 +628,30 @@ async function runPipeline(
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const code = e instanceof AiStepError ? e.code : null;
+    // Timeouts and transient errors retry up to 3 attempts, validation
+    // failures once, each in a fresh invocation; then the step fails for good
+    // (nothing automatic revives it, so we stop paying for it).
+    const decision = decideStepFailure(classifyStepFailure(msg, code), attemptsForStep(partialAtClaim, stepIndex));
+    const attemptState = { ...partialAtClaim, stepAttempts: { step: stepIndex, count: decision.attempts } };
+    if (decision.action === "retry") {
+      const stillOwned = await writeClaimedStep(sb, auditId, claim.token, {
+        status: "pending",
+        step_index: stepIndex,
+        partial_state: attemptState,
+        error_message: `attempt ${decision.attempts}/${decision.cap} failed: ${msg}`.slice(0, 1000),
+      });
+      if (stillOwned) {
+        await sleep(2_000);
+        await chainSelf(auditId, highlightRegen ? "highlight_regen" : undefined);
+      }
+      return json({ ok: true, correlationId, status: "in_progress", reason: "step_retry", step: stepIndex, attempt: decision.attempts });
+    }
+    const capped = decision.attempts >= decision.cap;
     await writeClaimedStep(sb, auditId, claim.token, {
       status: "failed",
-      error_message: msg.slice(0, 1000),
+      partial_state: capped ? { ...attemptState, attemptCapReached: true } : attemptState,
+      error_message: (capped ? `${msg} (gave up after ${decision.attempts} attempts)` : msg).slice(0, 1000),
     });
     return json({ ok: false, correlationId, status: "failed", error: msg }, { status: 200 });
   }

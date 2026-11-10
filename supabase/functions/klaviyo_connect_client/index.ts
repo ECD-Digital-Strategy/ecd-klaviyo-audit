@@ -147,7 +147,9 @@ serve(async (req) => {
 
     // Store encrypted key
     const enc = await encryptString(apiKey);
-    await sb.from("client_secrets").upsert(
+    // Each write is checked: a failed key save used to report "connected"
+    // and the first audit then died on "No Klaviyo key for client".
+    const { error: secretErr } = await sb.from("client_secrets").upsert(
       {
         client_id: clientId,
         klaviyo_private_key_ciphertext: enc.ciphertext,
@@ -157,17 +159,18 @@ serve(async (req) => {
       },
       { onConflict: "client_id" },
     );
+    if (secretErr) throw new Error(`Could not save the Klaviyo key: ${secretErr.message}`);
 
-    await sb.from("clients").update({ klaviyo_connected: true }).eq("id", clientId);
     const normalizedWebsite = normalizeStorefrontUrl(websiteUrl);
     if (normalizedWebsite) {
       const { data: existingClient } = await sb.from("clients").select("website_url").eq("id", clientId).maybeSingle();
       if (!normalizeStorefrontUrl(existingClient?.website_url)) {
-        await sb.from("clients").update({ website_url: normalizedWebsite }).eq("id", clientId);
+        const { error: siteErr } = await sb.from("clients").update({ website_url: normalizedWebsite }).eq("id", clientId);
+        if (siteErr) throw new Error(`Could not save the website: ${siteErr.message}`);
       }
     }
 
-    await sb.from("klaviyo_connections").upsert(
+    const { error: connErr } = await sb.from("klaviyo_connections").upsert(
       {
         client_id: clientId,
         account_id: accountId,
@@ -182,6 +185,11 @@ serve(async (req) => {
       },
       { onConflict: "client_id" },
     );
+    if (connErr) throw new Error(`Could not save the Klaviyo connection: ${connErr.message}`);
+
+    // Marked connected only once the key and the connection are both stored.
+    const { error: flagErr } = await sb.from("clients").update({ klaviyo_connected: true }).eq("id", clientId);
+    if (flagErr) throw new Error(`Could not mark the client connected: ${flagErr.message}`);
 
     return json(
       {

@@ -10,14 +10,17 @@ type WizardData = {
   industry?: string;
   espPlatform?: string;
   websiteUrl?: string;
+  /** Total profiles from the full profile scan (audits.list_size). */
   listSize?: number;
+  /** Flow revenue per recipient (audits.aov; the column name is historical). */
   aov?: number;
+  /** Email-subscribed profiles (audits.monthly_traffic; historical name). */
   monthlyTraffic?: number;
   notes?: string;
   auditMethod?: "api" | "screenshot";
   requestedSectionKeys?: SectionKey[];
   /** When skipped, per-profile audience totals were not collected (fast audit). */
-  profileAudienceScan?: "full" | "skipped";
+  profileAudienceScan?: "full" | "skipped" | "timed_out";
   /** Whether to treat subscription lifecycle as a core flow in the flows rubric. */
   clientSellsSubscriptions?: boolean;
   /** Highlighted ECD add-ons selected for this audit (emphasis in narrative + placements). */
@@ -27,7 +30,7 @@ type WizardData = {
 export type KlaviyoContext = {
   account?: { name?: string; timezone?: string; website_url?: string };
   flows?: Array<{ name: string; status: string; trigger_type?: string }>;
-  campaigns?: Array<{ name: string; status: string; send_channel?: string; created_at?: string; updated_at?: string }>;
+  campaigns?: Array<{ name: string; status: string; send_channel?: string; created_at?: string; updated_at?: string; send_time?: string }>;
   segments?: Array<{ name: string; created?: string; updated?: string }>;
   forms?: Array<{ name: string; status: string }>;
   lists?: Array<{ name: string }>;
@@ -57,7 +60,53 @@ export type KlaviyoContext = {
     klaviyo_sms_active: boolean;
     should_inject_finding: boolean;
   } | null;
+  /** Email campaign deliverability (rates are 0-1), when the rollup has it. */
+  deliverability?: {
+    timeframe: string;
+    open_rate: number | null;
+    click_rate: number | null;
+    bounce_rate: number | null;
+    spam_complaint_rate: number | null;
+    unsubscribe_rate: number | null;
+    bounce_rate_90d?: number | null;
+    spam_rate_90d?: number | null;
+  } | null;
 };
+
+function pct(rate: number | null | undefined, digits = 2): string | null {
+  return typeof rate === "number" && Number.isFinite(rate) ? `${(rate * 100).toFixed(digits)}%` : null;
+}
+
+/** Compact deliverability block for prompts, or null when there is no data. */
+function summarizeDeliverability(d: KlaviyoContext["deliverability"]): Record<string, unknown> | null {
+  if (!d) return null;
+  const out: Record<string, unknown> = {
+    timeframe: d.timeframe,
+    campaign_open_rate: pct(d.open_rate, 1),
+    campaign_click_rate: pct(d.click_rate),
+    bounce_rate: pct(d.bounce_rate),
+    spam_complaint_rate: pct(d.spam_complaint_rate, 3),
+    unsubscribe_rate: pct(d.unsubscribe_rate),
+  };
+  if (d.bounce_rate_90d != null) out.bounce_rate_90d = pct(d.bounce_rate_90d);
+  if (d.spam_rate_90d != null) out.spam_rate_90d = pct(d.spam_rate_90d, 3);
+  return Object.values(out).some((v, i) => i > 0 && v != null) ? out : null;
+}
+
+/** One line per flow for the top-level step: name, status, monthly revenue.
+ * Highest revenue first, capped so the prompt stays small. */
+function compactFlowInventory(klaviyo: KlaviyoContext, limit = 40): string[] {
+  const revenueByName = new Map(
+    (klaviyo.flowPerformance ?? []).map((p) => [p.flow_name.toLowerCase(), Number(p.monthly_revenue_current) || 0]),
+  );
+  return [...(klaviyo.flows ?? [])]
+    .map((f) => ({ f, revenue: revenueByName.get(f.name.toLowerCase()) ?? null }))
+    .sort((a, b) => (b.revenue ?? -1) - (a.revenue ?? -1))
+    .slice(0, limit)
+    .map(({ f, revenue }) =>
+      `${f.name} (${(f.status || "unknown").toLowerCase()}${revenue != null ? `, $${Math.round(revenue)}/mo` : ""})`
+    );
+}
 
 export function buildAuditSystemPrompt() {
   return [
@@ -204,9 +253,20 @@ function summarizeFlows(flows: KlaviyoContext["flows"]): string {
   return lines.join("\n");
 }
 
-function summarizeCampaigns(
+function campaignRecency(c: NonNullable<KlaviyoContext["campaigns"]>[number]): number {
+  for (const v of [c.send_time, c.updated_at, c.created_at]) {
+    const ms = v ? Date.parse(v) : NaN;
+    if (Number.isFinite(ms)) return ms;
+  }
+  return 0;
+}
+
+/** Totals come from the full inventory; only the "recent" list is capped, and
+ * it is sorted newest first by send time, then updated, then created. */
+export function summarizeCampaigns(
   campaigns: KlaviyoContext["campaigns"],
   campaignsTruncated?: boolean,
+  recentLimit = 20,
 ): string {
   if (!campaigns?.length) return "No campaigns found in the account.";
   const byStatus: Record<string, number> = {};
@@ -215,14 +275,17 @@ function summarizeCampaigns(
     byStatus[s] = (byStatus[s] ?? 0) + 1;
   }
   const totalLabel = campaignsTruncated || campaigns.length > 500
-    ? "Total campaigns: 500+ (partial scan — account may have more)"
+    ? "Total campaigns: 500+ (partial scan, account may have more)"
     : `Total campaigns: ${campaigns.length}`;
   const lines = [totalLabel];
   for (const [status, count] of Object.entries(byStatus)) {
     lines.push(`  ${status}: ${count}`);
   }
-  const recent = campaigns.slice(0, 20).map(c => `${c.name} (${c.status})`);
-  lines.push(`Recent campaigns (showing up to 20): ${recent.join(", ")}`);
+  const recent = [...campaigns]
+    .sort((a, b) => campaignRecency(b) - campaignRecency(a))
+    .slice(0, recentLimit)
+    .map(c => `${c.name} (${c.status})`);
+  lines.push(`Recent campaigns (newest first, showing up to ${recentLimit}): ${recent.join(", ")}`);
   return lines.join("\n");
 }
 
@@ -257,8 +320,10 @@ function summarizeFlowPerformance(
   config: BenchmarkConfig = DEFAULT_BENCHMARK_CONFIG,
 ): string {
   if (!perf?.length) return "No flow performance data available (metrics scope may be missing).";
-  const lines = [`Flow performance data (last 30 days) for ${perf.length} flows:`];
-  for (const fp of perf.slice(0, 20)) {
+  const lines = [`Flow performance data (last 30 days) for ${perf.length} flows (top 20 by revenue shown):`];
+  // Highest revenue first, so the cap never drops the flows that matter most.
+  const byRevenue = [...perf].sort((a, b) => (Number(b.monthly_revenue_current) || 0) - (Number(a.monthly_revenue_current) || 0));
+  for (const fp of byRevenue.slice(0, 20)) {
     const b = getFlowBenchmarks(fp.flow_name, config);
     const tag = b.tier === "non_revenue" ? "[NON-REVENUE/engagement-only]" : "[REVENUE]";
     const parts = [`${fp.flow_name} ${tag} (${fp.flow_status}, ${b.tierLabel})`];
@@ -371,7 +436,7 @@ function buildScopedKlaviyoData(
     scoped.flow_performance = summarizeFlowPerformance(klaviyo.flowPerformance, benchmarkConfig);
   }
   if (needsAll || needs.has("campaigns") || needs.has("account_health")) {
-    scoped.campaigns_summary = summarizeCampaigns(klaviyo.campaigns?.slice(0, 30), klaviyo.campaigns_truncated);
+    scoped.campaigns_summary = summarizeCampaigns(klaviyo.campaigns, klaviyo.campaigns_truncated);
   }
   if (needsAll || needs.has("segmentation") || needs.has("account_health")) {
     scoped.segments_summary = summarizeSegments(klaviyo.segments);
@@ -417,13 +482,33 @@ export function buildAuditUserPrompt(
         campaigns_truncated: campaignsCapped,
         segment_count: klaviyo.segments?.length ?? 0,
         form_count: klaviyo.forms?.length ?? 0,
+        live_form_count: (klaviyo.forms ?? []).filter((f) => /live|published/i.test(f.status ?? "")).length,
+        // The findings and timeline need to know which flows exist, not just
+        // how many: name, status and monthly revenue, compact.
+        flow_inventory: compactFlowInventory(klaviyo),
         revenue_context: buildRevenueContext(klaviyo),
         top_flows: buildTopFlowsWithPct(klaviyo),
+        ...(summarizeDeliverability(klaviyo.deliverability) ? { deliverability: summarizeDeliverability(klaviyo.deliverability) } : {}),
       };
     } else {
       klaviyoSection = buildScopedKlaviyoData(klaviyo, requested, benchmarkConfig);
+      const deliverability = summarizeDeliverability(klaviyo.deliverability);
+      const needs = new Set(requested);
+      if (deliverability && (needs.has("account_health") || needs.has("campaigns"))) {
+        klaviyoSection.deliverability = deliverability;
+      }
     }
   }
+
+  // Audience scale measured by the profile scan. The audit columns are named
+  // for the old manual wizard: monthlyTraffic holds email-subscribed profiles
+  // and aov holds flow revenue per recipient.
+  const audienceScale: Record<string, number> = {};
+  if (data.profileAudienceScan !== "skipped") {
+    if (Number(data.listSize) > 0) audienceScale.total_profiles = Number(data.listSize);
+    if (Number(data.monthlyTraffic) > 0) audienceScale.email_subscribed_profiles = Number(data.monthlyTraffic);
+  }
+  if (Number(data.aov) > 0) audienceScale.flow_revenue_per_recipient_usd = Number(data.aov);
 
   const payload: Record<string, unknown> = {
     task:
@@ -438,6 +523,7 @@ export function buildAuditUserPrompt(
       esp: data.espPlatform || "Klaviyo",
       audit_method: data.auditMethod,
       notes: data.notes || undefined,
+      audience_scale: Object.keys(audienceScale).length ? audienceScale : undefined,
     },
     business_model: {
       sells_subscriptions: Boolean(data.clientSellsSubscriptions),

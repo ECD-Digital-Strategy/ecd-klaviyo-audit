@@ -11,6 +11,16 @@ import {
   runCompetingSmsWebsiteScan,
 } from "../_shared/competing-sms-scan.ts";
 import { KLAVIYO_BASE, KLAVIYO_REVISION, resolveKlaviyoRevision } from "../_shared/klaviyo-api.ts";
+import {
+  isRunningClaimStale,
+  orderFlowIdsForReport,
+  parseRetryAfterMs,
+  PROFILE_SCAN_HEARTBEAT_MS,
+  PROFILE_SCAN_STALE_MS,
+  REPORTING_CLAIM_TTL_MS,
+  retryDelayMs,
+  rollupFlowReportRows,
+} from "../_shared/klaviyo-audit-logic.ts";
 
 // Stage machine: each stage runs in its own edge invocation with a fresh ~150s
 // budget. `config` is the entry point the frontend calls; subsequent stages
@@ -347,7 +357,7 @@ async function klaviyoFetch(apiKey: string, revision: string, path: string) {
     } catch {
       body = text;
     }
-    return { ok: res.ok, status: res.status, body };
+    return { ok: res.ok, status: res.status, body, retryAfterMs: parseRetryAfterMs(res.headers.get("retry-after")) };
   } catch (e) {
     const aborted = (e as any)?.name === "AbortError";
     return {
@@ -360,17 +370,21 @@ async function klaviyoFetch(apiKey: string, revision: string, path: string) {
   }
 }
 
-async function fetchWithRetry(fn: () => Promise<{ ok: boolean; status: number; body: any }>, attempts = 5) {
-  let last: any = null;
+async function fetchWithRetry<T extends { ok: boolean; status: number; body: any; retryAfterMs?: number | null }>(
+  fn: () => Promise<T>,
+  attempts = 5,
+): Promise<T> {
+  let last: T | null = null;
   for (let i = 1; i <= attempts; i++) {
     const res = await fn();
     last = res;
     if (res.ok) return res;
     if (![429, 500, 502, 503, 504].includes(res.status)) return res;
-    const delay = 400 * Math.pow(2, i - 1);
-    await sleep(delay);
+    // No sleep after the final attempt: the caller gets the failure straight away.
+    if (i === attempts) break;
+    await sleep(retryDelayMs(i, res.retryAfterMs));
   }
-  return last;
+  return last as T;
 }
 
 async function klaviyoPaged(apiKey: string, revision: string, path: string, maxPages = 10) {
@@ -420,8 +434,12 @@ async function computeProfileSnapshotChunk(params: {
   active90d: number;
   suppressed: number;
   deadlineAtMs: number;
-}): Promise<ProfileChunkOk | { ok: false; status: number; body: any }> {
+  /** Refreshes the job's updated_at so nobody takes the scan over while it is
+   * alive. Returns false once another runner holds the claim. */
+  heartbeat?: () => Promise<boolean>;
+}): Promise<ProfileChunkOk | { ok: false; status: number; body: any; claimLost?: boolean }> {
   const since90Ms = Date.parse(params.since90Iso);
+  let lastBeatAt = Date.now();
   let totalProfiles = params.totalProfiles;
   let subscribed = params.subscribed;
   let smsSubscribed = params.smsSubscribed;
@@ -447,6 +465,13 @@ async function computeProfileSnapshotChunk(params: {
         truncated: true,
         nextPath: next,
       };
+    }
+    if (params.heartbeat && Date.now() - lastBeatAt >= PROFILE_SCAN_HEARTBEAT_MS) {
+      lastBeatAt = Date.now();
+      if (!(await params.heartbeat())) {
+        // Another runner owns the scan now: stop paging and write nothing.
+        return { ok: false, status: 0, body: "claim lost", claimLost: true };
+      }
     }
     const res = await fetchWithRetry(() => klaviyoFetch(params.apiKey, params.revision, next), 3);
     if (!res.ok) {
@@ -557,9 +582,54 @@ async function chainAuditAnalysis(auditId: string) {
   } catch { /* best effort */ }
 }
 
+/** Update this audit's scan job only while `token` still holds the claim, and
+ * report whether it did. A runner whose claim was taken over gets false and
+ * must stop. Without a token (claim_token migration not applied yet) the write
+ * is unconditional, as before. */
+async function writeOwnedScanJob(
+  sb: ReturnType<typeof assertServiceClient>,
+  auditId: string,
+  token: string | null,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  let q = sb.from("klaviyo_profile_scan_jobs")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("audit_id", auditId);
+  if (token) q = q.eq("claim_token", token).eq("status", "running");
+  const { data, error } = await q.select("audit_id");
+  if (error) throw new Error(`profile scan job write failed: ${error.message}`);
+  return Array.isArray(data) && data.length > 0;
+}
+
+/** End a scan that never counted a single profile (blocked from the first
+ * page): mark it skipped so the report renders without audience numbers
+ * instead of parking forever. Returns false when the claim was lost. */
+async function skipProfileScan(
+  sb: ReturnType<typeof assertServiceClient>,
+  auditId: string,
+  token: string | null,
+  reason: string,
+): Promise<boolean> {
+  const owned = await writeOwnedScanJob(sb, auditId, token, { status: "skipped", error_message: reason.slice(0, 500) });
+  if (!owned) return false;
+  const { data: rollups, error } = await sb.from("klaviyo_reporting_rollups").select("id, computed").eq("audit_id", auditId);
+  if (error) throw new Error(`load rollups failed: ${error.message}`);
+  for (const row of rollups ?? []) {
+    const c = (row.computed ?? {}) as Record<string, unknown>;
+    const snap = (c.account_snapshot ?? {}) as Record<string, unknown>;
+    const { error: markErr } = await sb.from("klaviyo_reporting_rollups").update({
+      computed: { ...c, account_snapshot: { ...snap, profile_scan_status: "skipped" } },
+    }).eq("id", row.id);
+    if (markErr) throw new Error(`mark profile scan skipped failed: ${markErr.message}`);
+  }
+  await chainAuditAnalysis(auditId);
+  return true;
+}
+
 async function finalizeProfileScan(
   sb: ReturnType<typeof assertServiceClient>,
   auditId: string,
+  claimToken: string | null,
   totalProfiles: number,
   subscribed: number,
   smsSubscribed: number,
@@ -571,9 +641,14 @@ async function finalizeProfileScan(
    * they publish as lower bounds rather than leaving the report stuck on
    * "full profile scan in progress" indefinitely. */
   partial = false,
-) {
-  const { data: rollups } = await sb.from("klaviyo_reporting_rollups").select("id, computed").eq("audit_id", auditId);
-  if (!rollups?.length) return;
+): Promise<boolean> {
+  // Confirm we still own the scan before publishing anything from it.
+  if (claimToken && !(await writeOwnedScanJob(sb, auditId, claimToken, {}))) return false;
+  const { data: rollupRows, error: rollupErr } = await sb.from("klaviyo_reporting_rollups").select("id, computed").eq("audit_id", auditId);
+  if (rollupErr) throw new Error(`load rollups failed: ${rollupErr.message}`);
+  // No rollup rows (e.g. config re-seeding) used to return here and leave the
+  // job running forever; the counts still go to the audit and the job ends.
+  const rollups = rollupRows ?? [];
 
   const accountSnapshotPatch = {
     total_profiles_count: totalProfiles,
@@ -618,22 +693,24 @@ async function finalizeProfileScan(
     aov: finalRprForAudit ?? 0,
   }).eq("id", auditId));
 
-  await mustSucceed("complete profile scan job", sb.from("klaviyo_profile_scan_jobs").update({
+  const owned = await writeOwnedScanJob(sb, auditId, claimToken, {
     status: "complete",
     // A partial finalize keeps next_path so the scan can still be resumed by
     // hand (or by a later fix) from exactly where the block stopped it.
     next_path: partial ? undefined : null,
     total_profiles: totalProfiles,
     subscribed,
+    sms_subscribed: smsSubscribed,
     active90d,
     suppressed,
     error_message: partial
       ? `partial: blocked upstream after ${totalProfiles} profiles; counts published as lower bounds`
       : null,
-    updated_at: new Date().toISOString(),
-  }).eq("audit_id", auditId));
+  });
+  if (!owned) return false;
 
   await chainAuditAnalysis(auditId);
+  return true;
 }
 
 /** How long to wait before retrying after N consecutive upstream blocks.
@@ -688,17 +765,30 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
     if (job.status === "complete") return json({ ok: true, correlationId, profile_metrics_status: "complete" });
     if (job.status === "skipped") return json({ ok: true, correlationId, profile_metrics_status: "complete" });
     if (job.status === "failed") return json({ ok: false, correlationId, profile_metrics_status: "failed" });
-    const updatedMs = job.updated_at ? Date.parse(String(job.updated_at)) : 0;
-    const staleRunning = job.status === "running" && updatedMs > 0 && Date.now() - updatedMs >= 90_000;
+    // Same threshold as the claim RPC. A live chunk heartbeats well inside it,
+    // so this only ever frees a dead run. Conditional on the row still being
+    // that stale run, so a runner that just claimed it is never knocked off.
+    const staleRunning = job.status === "running" && job.updated_at &&
+      isRunningClaimStale(String(job.updated_at), Date.now(), PROFILE_SCAN_STALE_MS);
     if (staleRunning) {
-      await sb.from("klaviyo_profile_scan_jobs").update({
+      const { data: freed } = await sb.from("klaviyo_profile_scan_jobs").update({
         status: "pending",
         updated_at: new Date().toISOString(),
-      }).eq("audit_id", auditId);
-      return handleResumeProfileScan(auditId, correlationId);
+      }).eq("audit_id", auditId)
+        .eq("status", "running")
+        .lt("updated_at", new Date(Date.now() - PROFILE_SCAN_STALE_MS).toISOString())
+        .select("audit_id");
+      if (freed?.length) return handleResumeProfileScan(auditId, correlationId);
     }
     return json({ ok: true, correlationId, profile_metrics_status: "in_progress", reason: "already_running" });
   }
+
+  // Every write below is conditional on this token, so once another runner
+  // takes the scan over, this one's writes are rejected and it stops.
+  const claimToken = (claimed.claim_token as string | null | undefined) ?? null;
+  const heartbeat = () => writeOwnedScanJob(sb, auditId, claimToken, {}).catch(() => true);
+  const claimLostResponse = () =>
+    json({ ok: true, correlationId, profile_metrics_status: "in_progress", reason: "claim_lost" });
 
   const startedAt = Date.now();
   // Full 148s headroom (was 145s). We don't chain until after this returns so
@@ -712,11 +802,9 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
     apiKey = await decryptString(sec.klaviyo_private_key_ciphertext, sec.klaviyo_private_key_iv);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Key error";
-    await sb.from("klaviyo_profile_scan_jobs").update({
-      status: "failed",
-      error_message: msg.slice(0, 500),
-      updated_at: new Date().toISOString(),
-    }).eq("audit_id", auditId);
+    if (!(await writeOwnedScanJob(sb, auditId, claimToken, { status: "failed", error_message: msg.slice(0, 500) }))) {
+      return claimLostResponse();
+    }
     await logStageRun(sb, {
       correlationId,
       auditId,
@@ -743,7 +831,10 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
     active90d: Number(claimed.active90d ?? 0),
     suppressed: Number(claimed.suppressed ?? 0),
     deadlineAtMs,
+    heartbeat,
   });
+
+  if (!chunk.ok && chunk.claimLost) return claimLostResponse();
 
   if (!chunk.ok) {
     // 429s and 5xx are Klaviyo having a moment, not the scan being wrong. With
@@ -785,10 +876,35 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
         active90d: Number(claimed.active90d ?? 0),
         suppressed: Number(claimed.suppressed ?? 0),
       };
-      if (stalls >= PARTIAL_AFTER_BLOCKS && soFar.total > 0) {
-        await finalizeProfileScan(
+      if (stalls >= PARTIAL_AFTER_BLOCKS && soFar.total === 0) {
+        // Blocked before counting anyone: there is nothing to publish as a
+        // lower bound, and parking forever helps nobody. Skip the scan so the
+        // report renders without audience numbers.
+        const skippedOk = await skipProfileScan(
           sb,
           auditId,
+          claimToken,
+          `skipped: blocked upstream ${stalls}x before any profile was counted (last ${chunk.status})`,
+        );
+        if (!skippedOk) return claimLostResponse();
+        await logStageRun(sb, {
+          correlationId,
+          auditId,
+          clientId: (claimed.client_id as string) ?? null,
+          stage: "resume_profile_scan",
+          status: "partial",
+          revision: String(claimed.revision ?? KLAVIYO_REVISION),
+          elapsedMs: Date.now() - startedAt,
+          errorCode: "profile_skipped_blocked",
+          errorMessage: `blocked ${stalls}x before any profile was counted; scan skipped`,
+        });
+        return json({ ok: true, correlationId, profile_metrics_status: "skipped" }, { status: 200 });
+      }
+      if (stalls >= PARTIAL_AFTER_BLOCKS && soFar.total > 0) {
+        const published = await finalizeProfileScan(
+          sb,
+          auditId,
+          claimToken,
           soFar.total,
           soFar.subscribed,
           soFar.sms,
@@ -799,6 +915,7 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
             : null,
           true,
         );
+        if (!published) return claimLostResponse();
         await logStageRun(sb, {
           correlationId,
           auditId,
@@ -828,7 +945,7 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
       const rebuiltPath = blockedAnchor
         ? profileKeysetPath(new Date(Date.parse(blockedAnchor) + nudgeMs).toISOString())
         : null;
-      await sb.from("klaviyo_profile_scan_jobs").update({
+      const parked = await writeOwnedScanJob(sb, auditId, claimToken, {
         status: "pending",
         resume_attempts: stalls,
         // Only replace the cursor when a position was actually recovered;
@@ -837,8 +954,8 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
         error_message: `transient ${chunk.status} (block #${stalls})${
           rebuiltPath ? `, re-anchored at ${blockedAnchor}${nudgeMs ? ` +${nudgeMs / 60_000}m` : ""}` : ", cursor kept"
         }: ${(trimBody(chunk.body) ?? "").slice(0, 200)}`,
-        updated_at: new Date().toISOString(),
-      }).eq("audit_id", auditId);
+      });
+      if (!parked) return claimLostResponse();
       await logStageRun(sb, {
         correlationId,
         auditId,
@@ -852,11 +969,11 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
       });
       return json({ ok: true, correlationId, profile_metrics_status: "in_progress", reason: "parked_transient" }, { status: 200 });
     }
-    await sb.from("klaviyo_profile_scan_jobs").update({
+    const failedOk = await writeOwnedScanJob(sb, auditId, claimToken, {
       status: "failed",
       error_message: trimBody(chunk.body) ?? "Klaviyo profile fetch failed",
-      updated_at: new Date().toISOString(),
-    }).eq("audit_id", auditId);
+    });
+    if (!failedOk) return claimLostResponse();
     await logStageRun(sb, {
       correlationId,
       auditId,
@@ -872,7 +989,7 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
   }
 
   if (chunk.truncated && chunk.nextPath) {
-    await mustSucceed("profile job progress", sb.from("klaviyo_profile_scan_jobs").update({
+    const progressed = await writeOwnedScanJob(sb, auditId, claimToken, {
       status: "pending",
       // Forward progress: the consecutive-park counter starts over.
       resume_attempts: 0,
@@ -882,8 +999,10 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
       sms_subscribed: chunk.smsSubscribed,
       active90d: chunk.active90d,
       suppressed: chunk.suppressed,
-      updated_at: new Date().toISOString(),
-    }).eq("audit_id", auditId));
+    });
+    // A lineage that lost its claim must not chain: that is how two or three
+    // scanners came to run on one job.
+    if (!progressed) return claimLostResponse();
     await chainStage("resume_profile_scan", auditId);
     await logStageRun(sb, {
       correlationId,
@@ -900,7 +1019,8 @@ async function handleResumeProfileScan(auditId: string, correlationId: string): 
 
   const staged = claimed.staged_revenue_per_recipient;
   const stagedRpr = staged != null && Number.isFinite(Number(staged)) ? Number(staged) : null;
-  await finalizeProfileScan(sb, auditId, chunk.totalProfiles, chunk.subscribed, chunk.smsSubscribed, chunk.active90d, chunk.suppressed, stagedRpr);
+  const finalized = await finalizeProfileScan(sb, auditId, claimToken, chunk.totalProfiles, chunk.subscribed, chunk.smsSubscribed, chunk.active90d, chunk.suppressed, stagedRpr);
+  if (!finalized) return claimLostResponse();
   await logStageRun(sb, {
     correlationId,
     auditId,
@@ -1998,10 +2118,37 @@ async function runStageReporting(params: {
     // Reload snapshots + counts from DB (stage 1 persisted them).
     const { data: flowRows } = await sb.from("klaviyo_flow_snapshots")
       .select("flow_id, name, status").eq("audit_id", params.auditId);
-    const flowIds = (flowRows ?? []).map((r) => r.flow_id as string);
 
     const { data: rollups } = await sb.from("klaviyo_reporting_rollups")
       .select("id, timeframe_key, computed").eq("audit_id", params.auditId);
+
+    // One reporting run per audit at a time. Two runs used to delete and insert
+    // flow_performance together (doubled flows and revenue, or none) and each
+    // reset the profile job mid-scan. Compare-and-set on the seeded rollup row:
+    // only one invocation gets it back, and a second within the TTL exits.
+    const claimRow = (rollups ?? []).find((r) => r.timeframe_key === "last_30_days") ?? rollups?.[0];
+    if (claimRow) {
+      const staleIso = new Date(Date.now() - REPORTING_CLAIM_TTL_MS).toISOString();
+      const { data: claimedRows, error: claimErr } = await sb.from("klaviyo_reporting_rollups")
+        .update({ reporting_started_at: new Date().toISOString(), reporting_claim: crypto.randomUUID() })
+        .eq("id", claimRow.id)
+        .or(`reporting_started_at.is.null,reporting_started_at.lt.${staleIso}`)
+        .select("id");
+      // A missing column means the migration is not applied yet: run unclaimed as before.
+      const columnMissing = claimErr && /reporting_started_at|reporting_claim|column/i.test(claimErr.message ?? "");
+      if (claimErr && !columnMissing) throw claimErr;
+      if (!claimErr && !claimedRows?.length) {
+        return json({
+          ok: true,
+          correlationId: params.correlationId,
+          stage: "reporting",
+          status: "already_running",
+        });
+      }
+    }
+
+    // Live flows first, so the report cap never spends its slots on drafts.
+    const flowIdsForReport = orderFlowIdsForReport(flowRows ?? [], MAX_REPORT_IDS);
     const timeframeKeys: Array<"last_30_days" | "last_90_days"> = ["last_30_days"];
     const reportingErrors: Array<{ stage: string; status?: number | null; message: string }> = [];
 
@@ -2015,7 +2162,6 @@ async function runStageReporting(params: {
       reportingErrors.push({ stage: "metrics_lookup", status: null, message: "No cached conversion_metric_id; run stage=config first." });
     }
 
-    const flowIdsForReport = flowIds.slice(0, MAX_REPORT_IDS);
     const flowFilterForReport = flowIdsForReport.length
       ? `contains-any(flow_id,[${flowIdsForReport.map((id) => JSON.stringify(id)).join(",")}])`
       : undefined;
@@ -2174,38 +2320,19 @@ async function runStageReporting(params: {
         reportingErrors.push({ stage: "campaign_values_last_90_days", status: camp90.status ?? null, message: trimBody(camp90.body) ?? "Campaign values report failed (last_90_days)" });
       }
 
-      // Flow rollup into flow_performance.
-      const flowAgg: Record<string, { recipients: number; open: number; click: number; conv: number; value: number; rpr: number; messageIds: Set<string> }> = {};
+      // Flow rollup into flow_performance. Open and click rates come from email
+      // rows only (SMS rows carry no opens and used to drag both down), and the
+      // message count is email messages only.
       const last30 = flowReports.find((r) => r.timeframe === "last_30_days")?.results ?? [];
-      for (const row of last30) {
-        const gid = row?.groupings?.flow_id;
-        if (!gid) continue;
-        const stats = row?.statistics ?? {};
-        const recipients = Number(stats.recipients ?? 0) || 0;
-        const open_rate = Number(stats.open_rate ?? 0) || 0;
-        const click_rate = Number(stats.click_rate ?? 0) || 0;
-        const conv_rate = Number(stats.conversion_rate ?? 0) || 0;
-        const value = Number(stats.conversion_value ?? 0) || 0;
-        const rpr = Number(stats.revenue_per_recipient ?? 0) || 0;
-        if (!flowAgg[gid]) flowAgg[gid] = { recipients: 0, open: 0, click: 0, conv: 0, value: 0, rpr: 0, messageIds: new Set() };
-        flowAgg[gid].recipients += recipients;
-        flowAgg[gid].open += open_rate * recipients;
-        flowAgg[gid].click += click_rate * recipients;
-        flowAgg[gid].conv += conv_rate * recipients;
-        flowAgg[gid].value += value;
-        flowAgg[gid].rpr += rpr * recipients;
-        const mid = row?.groupings?.flow_message_id;
-        if (mid) flowAgg[gid].messageIds.add(mid);
-      }
+      const flowAgg = rollupFlowReportRows(last30);
 
       const platformBenchmarks = await fetchPlatformBenchmarkConfig(sb);
 
       const flowPerfRows = Object.entries(flowAgg).map(([flowId, a]) => {
-        const denom = Math.max(1, a.recipients);
-        const actual_open = a.open / denom;
-        const actual_click = a.click / denom;
-        const actual_conv = a.conv / denom;
-        const actual_rpr = a.rpr / denom;
+        const actual_open = a.openRate;
+        const actual_click = a.clickRate;
+        const actual_conv = a.convRate;
+        const actual_rpr = a.rpr;
         const flowMeta = (flowRows ?? []).find((f) => f.flow_id === flowId);
         const flowName = flowMeta?.name ?? flowId;
         const flowStatus = ((flowMeta?.status ?? "live") as string).toLowerCase();
@@ -2217,6 +2344,7 @@ async function runStageReporting(params: {
         const opportunity = nonRevenue ? 0 : Math.max(0, (targetRpr - actual_rpr) * a.recipients);
         return {
           audit_id: params.auditId,
+          flow_id: flowId,
           flow_name: flowName,
           flow_status: mappedStatus,
           priority: "medium",
@@ -2232,7 +2360,7 @@ async function runStageReporting(params: {
           benchmark_conv_rate_high: flowBenchmarks.convRateHigh,
           monthly_revenue_current: a.value,
           monthly_revenue_opportunity: opportunity,
-          email_message_count: a.messageIds.size || null,
+          email_message_count: a.emailMessageCount,
           notes: nonRevenue
             ? "Non-revenue flow (engagement-only). Conv/revenue benchmarks not applicable."
             : "Computed from Klaviyo Reporting API (last_30_days).",
@@ -2342,10 +2470,17 @@ async function runStageReporting(params: {
         client_id: clientId,
         revision,
         since90_iso: since90,
+        // A fresh run starts every counter at zero: the scan resumes from
+        // total_profiles and friends, so leftovers inflated the list size.
         next_path: null,
+        total_profiles: 0,
         subscribed: 0,
+        sms_subscribed: 0,
         active90d: 0,
         suppressed: 0,
+        resume_attempts: 0,
+        // Drops any older scanner's claim, so its writes are rejected.
+        claim_token: null,
         status: "pending",
         staged_revenue_per_recipient: revenuePerRecipient,
         error_message: null,
