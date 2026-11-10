@@ -5,6 +5,7 @@ export type XeroItemCodes = { one_time: string | null; monthly: string | null };
 import { listAuditSections, listRevenueOpportunityTemplates } from './db';
 import { parseWebRoadmapDetail, type WebRoadmapRow } from './web-report-details';
 import { publicReportOrigin } from './public-origin';
+import { impliesOptional } from './line-optional';
 import { supabase } from './supabase';
 import { investmentRows, parseMonthly, setupCost } from './web-audit-pricing';
 import { addOnHasPricing } from './addon-pricing';
@@ -200,7 +201,8 @@ export async function createProposalFromAudit(audit: Audit, client: Client): Pro
       ].map((item, index) => ({ ...item, display_order: (index + 1) * 10 }))
     : auditAddOnsToLineItems(audit.layout, serviceKeyBySlug, itemsBySlug);
 
-  const lineItems = base.map(item => ({ ...item, proposal_id: proposal.id }));
+  // A line named "Optional ..." only counts if the client ticks it (2026-11-10).
+  const lineItems = base.map(item => ({ ...item, optional: item.optional || impliesOptional(item.name), proposal_id: proposal.id }));
   if (lineItems.length > 0) await createProposalLineItems(lineItems);
 
   return proposal;
@@ -260,6 +262,7 @@ export async function createProposalFromTemplate(
     await createProposalLineItems(
       defaults.map((item, index) => ({
         ...item,
+        optional: item.optional || impliesOptional(item.name),
         display_order: (index + 1) * 10,
         proposal_id: proposal.id,
       })),

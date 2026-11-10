@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { formatEventTime } from '../../lib/time-format';
 import { FilePlus2, PenSquare, Send, Mail, Link2, Eye, PenLine, Ban, RotateCcw, Sparkles, X, type LucideIcon } from 'lucide-react';
 import type { DocumentEvent, DocumentEventType } from '../../lib/types';
 
@@ -12,11 +13,6 @@ const EVENT_META: Record<DocumentEventType, { icon: LucideIcon; label: string; t
   void: { icon: Ban, label: 'Voided', tone: 'text-red-600 bg-red-50' },
   reopened: { icon: RotateCcw, label: 'Reopened', tone: 'text-blue-600 bg-blue-50' },
 };
-
-function formatEventTime(iso: string): string {
-  const date = new Date(iso);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' · ' + date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-}
 
 function asString(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null;

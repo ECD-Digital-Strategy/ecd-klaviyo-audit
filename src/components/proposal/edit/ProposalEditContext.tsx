@@ -11,6 +11,7 @@ import { scheduleSavedToast, useToast } from '../../ui/Toast';
 import { MSA_ON_FILE_SLUG, MSA_SLUG } from '../../../lib/msa-on-file';
 import { toggleContractSelection } from '../../../lib/contract-snapshot';
 import { createPatchQueue } from '../../../lib/patch-queue';
+import { impliesOptional } from '../../../lib/line-optional';
 import {
   createProposalLineItems,
   deleteProposalLineItem,
@@ -87,6 +88,15 @@ export function useProposalEdit(): ProposalEditContextValue {
 
 function blockKey(): string {
   return `block_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+type LinePatch = Partial<Omit<ProposalLineItem, 'id' | 'proposal_id' | 'created_at'>>;
+
+/** A line named "Optional ..." is saved as optional. Never flips it back to false. */
+function withImpliedOptional<P extends LinePatch>(patch: P): P {
+  return patch.name != null && impliesOptional(patch.name) && patch.optional !== true
+    ? { ...patch, optional: true }
+    : patch;
 }
 
 type ProposalEditProviderProps = {
@@ -210,7 +220,8 @@ export function ProposalEditProvider({
   );
 
   const updateLineItem = useCallback(
-    (itemId: string, patch: Partial<Omit<ProposalLineItem, 'id' | 'proposal_id' | 'created_at'>>) => {
+    (itemId: string, rawPatch: Partial<Omit<ProposalLineItem, 'id' | 'proposal_id' | 'created_at'>>) => {
+      const patch = withImpliedOptional(rawPatch);
       onLineItemsChange?.(lineItems.map(item => (item.id === itemId ? { ...item, ...patch } : item)));
       schedulePatch(`line-${itemId}`, patch, merged => updateProposalLineItem(itemId, merged));
     },
@@ -233,7 +244,7 @@ export function ProposalEditProvider({
         display_order: nextOrder,
       };
       setSaveStatus('saving');
-      createProposalLineItems([{ ...base, display_order: nextOrder, proposal_id: proposal.id }])
+      createProposalLineItems([{ ...withImpliedOptional(base), display_order: nextOrder, proposal_id: proposal.id }])
         .then(created => {
           onLineItemsChange?.([...lineItems, ...created]);
           setSaveStatus('saved');
@@ -571,7 +582,7 @@ export function TemplateEditProvider({
 
   const updateLineItem = useCallback(
     (itemId: string, patch: Partial<Omit<ProposalLineItem, 'id' | 'proposal_id' | 'created_at'>>) => {
-      saveLineItems(lineItems.map(item => (item.id === itemId ? { ...item, ...patch } : item)));
+      saveLineItems(lineItems.map(item => (item.id === itemId ? { ...item, ...withImpliedOptional(patch) } : item)));
     },
     [lineItems, saveLineItems],
   );
@@ -592,7 +603,7 @@ export function TemplateEditProvider({
         display_order: nextOrder,
       };
       const created: ProposalLineItem = {
-        ...base,
+        ...withImpliedOptional(base),
         id: templateLineItemId(),
         proposal_id: '',
         created_at: '',

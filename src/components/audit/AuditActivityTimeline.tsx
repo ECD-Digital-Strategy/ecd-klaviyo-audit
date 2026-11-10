@@ -1,4 +1,5 @@
 import { FilePlus2, PenSquare, Globe, GlobeLock, RefreshCcw, type LucideIcon } from 'lucide-react';
+import { formatEventTime } from '../../lib/time-format';
 import type { AuditEvent, AuditEventType } from '../../lib/types';
 
 const EVENT_META: Record<AuditEventType, { icon: LucideIcon; label: string; tone: string }> = {
@@ -8,13 +9,6 @@ const EVENT_META: Record<AuditEventType, { icon: LucideIcon; label: string; tone
   unpublished: { icon: GlobeLock, label: 'Unpublished', tone: 'text-gray-400 bg-gray-50' },
   status_changed: { icon: RefreshCcw, label: 'Status changed', tone: 'text-blue-600 bg-blue-50' },
 };
-
-function formatEventTime(iso: string): string {
-  const date = new Date(iso);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-    ' · ' +
-    date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-}
 
 export default function AuditActivityTimeline({ events }: { events: AuditEvent[] }) {
   if (events.length === 0) {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { relativeTime } from '../../../lib/time-format';
 import { ArrowLeft, Check, FileText, History, Loader2, MessageSquare, Mic, Paperclip, Send, Sparkles, Square, SquarePen, Trash2, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { useAudioTranscription } from '../../../hooks/useAudioTranscription';
@@ -147,19 +148,6 @@ function MessageBubble({ message, isLast, onAnswer }: { message: DocAgentChatMes
       </div>
     </div>
   );
-}
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const min = Math.round((Date.now() - then) / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.round(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function ChatHistoryList({ conversations, loading, currentId, onSelect, onDelete, onBack }: {

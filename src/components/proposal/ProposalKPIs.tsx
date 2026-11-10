@@ -4,22 +4,12 @@ import KPICard from '../ui/KPICard';
 import MonthlyBarChart from '../ui/MonthlyBarChart';
 import { deriveProposalStatus, isProposalOpen } from '../../lib/proposal-status';
 import { inYear, monthsForYear, type ProposalYear } from '../../lib/proposal-year';
-import {
-  computeProposalTotals,
-  proposalDiscountFromRow,
-  proposalPipelineValue,
-} from '../../lib/proposal-pricing';
+import { proposalValue } from '../../lib/proposal-pricing';
 import { formatCurrency } from '../../lib/revenue-calculator';
 import type { Proposal } from '../../lib/types';
 
 function monthOf(iso: string | null): string | null {
   return iso ? iso.slice(0, 7) : null;
-}
-
-/** One-time total plus 12x monthly total, for any proposal regardless of status. */
-function proposalValue(proposal: Proposal): number {
-  const totals = computeProposalTotals(proposal.line_items ?? [], proposalDiscountFromRow(proposal));
-  return proposalPipelineValue(totals);
 }
 
 export default function ProposalKPIs({ proposals, year }: { proposals: Proposal[]; year: ProposalYear }) {

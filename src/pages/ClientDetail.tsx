@@ -27,7 +27,7 @@ import type { Audit, Client, Proposal } from '../lib/types';
 import { getClient, listAuditsByClient, updateClient } from '../lib/db';
 import { listProposalsByClient } from '../lib/proposals-db';
 import { deriveProposalStatus } from '../lib/proposal-status';
-import { computeProposalTotals, proposalDiscountFromRow, proposalPipelineValue } from '../lib/proposal-pricing';
+import { proposalValue } from '../lib/proposal-pricing';
 import { canAccessArea } from '../lib/access';
 import { supabase } from '../lib/supabase';
 import Modal from '../components/ui/Modal';
@@ -129,7 +129,7 @@ export default function ClientDetail() {
     );
   }
 
-  const hasApiConnection = Boolean((client as any).klaviyo_connected);
+  const hasApiConnection = Boolean((client as Client & { klaviyo_connected?: boolean }).klaviyo_connected);
 
   const handleSaveApiKey = async () => {
     if (!client || !newApiKey.trim()) return;
@@ -216,11 +216,6 @@ export default function ClientDetail() {
         .reduce((min, t) => Math.min(min, t), Infinity),
     ).toLocaleDateString()
     : '—';
-
-  function proposalValue(proposal: Proposal): number {
-    const totals = computeProposalTotals(proposal.line_items ?? [], proposalDiscountFromRow(proposal));
-    return proposalPipelineValue(totals);
-  }
 
   const totalProposalValue = clientProposals.reduce((sum, p) => sum + proposalValue(p), 0);
   const wonProposalsCount = clientProposals.filter(p => deriveProposalStatus(p) === 'won').length;

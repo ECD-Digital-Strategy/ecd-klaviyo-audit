@@ -1,4 +1,5 @@
 import { normalizeToArray } from "../_shared/tool-payload.ts";
+import { impliesOptional } from "./line-optional.ts";
 
 // Hand-rolled validation + copy sanitizing for agent payloads.
 
@@ -73,6 +74,8 @@ function validateLineItem(item: any, label: string): string | null {
   if (item.one_time_price == null && item.monthly_price == null) {
     return `${label} needs at least one of one_time_price or monthly_price`;
   }
+  // A line named "Optional ..." is always optional (never flipped back to false).
+  if (impliesOptional(item.name)) item.optional = true;
   return null;
 }
 
@@ -233,6 +236,8 @@ export function validateEditSet(
         if (o.patch.optional != null && typeof o.patch.optional !== "boolean") {
           return { ok: false, error: `${label}: optional must be true or false` };
         }
+        // Renamed to "Optional ...": the line becomes optional.
+        if (isStr(o.patch.name) && impliesOptional(o.patch.name)) o.patch.optional = true;
         break;
       case "delete_line_item":
         if (!isStr(o.item_id) || !ctx.itemIds.has(o.item_id)) {

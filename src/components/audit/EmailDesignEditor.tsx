@@ -27,7 +27,6 @@ export default function EmailDesignEditor({
   section: AuditSection | null;
   onAnnotationsChange: (anns: Annotation[]) => void;
   onEmailDesignChange: (ed: AuditEmailDesign | null) => void;
-  onSectionUpdate?: (updates: Partial<AuditSection>) => void;
 }) {
   const [selectedEcdId, setSelectedEcdId] = useState(emailDesign?.ecd_example_id || '');
   const [saving, setSaving] = useState(false);

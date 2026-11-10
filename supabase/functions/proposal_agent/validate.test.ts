@@ -154,3 +154,21 @@ Deno.test("optional must be a boolean on a line item", () => {
   });
   assert(good.ok);
 });
+
+Deno.test("lines named Optional are saved as optional, never flipped back", () => {
+  const draft = validateDraft({
+    title: "T", summary: "S", content_blocks: [{ title: "A", content: "x" }],
+    line_items: [{ ...ITEM, name: "Optional: AfterShip Returns Setup" }, { ...ITEM, optional: true }, { ...ITEM, name: "(Optional) X", optional: false }],
+  });
+  assert(draft.ok);
+  if (draft.ok) assertEquals(draft.value.line_items.map((li: { optional?: boolean }) => li.optional), [true, true, true]);
+  const add = validateEditSet({ summary: "s", operations: [{ op: "add_line_item", item: { ...ITEM, name: "Optional - SMS" } }] }, EDIT_CTX);
+  assert(add.ok);
+  if (add.ok) assertEquals(add.value.operations[0].item.optional, true);
+  const rename = validateEditSet({ summary: "s", operations: [{ op: "update_line_item", item_id: "i1", patch: { name: "Optional add-on: Reviews" } }] }, EDIT_CTX);
+  assert(rename.ok);
+  if (rename.ok) assertEquals(rename.value.operations[0].patch.optional, true);
+  const plain = validateEditSet({ summary: "s", operations: [{ op: "update_line_item", item_id: "i1", patch: { name: "Reviews" } }] }, EDIT_CTX);
+  assert(plain.ok);
+  if (plain.ok) assertEquals(plain.value.operations[0].patch.optional, undefined);
+});

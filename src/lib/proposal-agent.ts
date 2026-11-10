@@ -13,6 +13,7 @@ import {
   updateProposalLineItem,
 } from './proposals-db';
 import { toggleContractSelection } from './contract-snapshot';
+import { impliesOptional } from './line-optional';
 import { MSA_ON_FILE_SLUG, MSA_SLUG } from './msa-on-file';
 import { listStaffSigners, resolveSigner } from './staff-signers';
 import { resolveSignatureImage } from './signature-image';
@@ -345,7 +346,7 @@ export async function applyDraftAsNewProposal(
       monthly_price: item.monthly_price,
       monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
       image_url: null,
-      optional: Boolean(item.optional),
+      optional: Boolean(item.optional) || impliesOptional(item.name),
       display_order: (i + 1) * 10,
     })),
   );
@@ -451,7 +452,9 @@ export async function applyDraftToProposal(
         one_time_label: item.one_time_label ? sanitizeCopy(item.one_time_label) : null,
         monthly_price: item.monthly_price,
         monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
-        optional: typeof item.optional === 'boolean' ? item.optional : Boolean(carried.optional),
+        // A line named "Optional ..." is always optional.
+        optional:
+          (typeof item.optional === 'boolean' ? item.optional : Boolean(carried.optional)) || impliesOptional(item.name),
         display_order: (i + 1) * 10,
       };
     }),
@@ -644,6 +647,8 @@ export async function applyEditSet(
     if (patch.description != null) clean.description = sanitizeCopy(patch.description);
     if (patch.content != null) clean.content = sanitizeCopy(patch.content);
     if (typeof patch.optional === 'boolean') clean.optional = patch.optional;
+    // Renamed to "Optional ...": the line becomes optional (never flipped back).
+    if (patch.name != null && impliesOptional(patch.name)) clean.optional = true;
     if ('one_time_price' in patch) clean.one_time_price = patch.one_time_price;
     if ('monthly_price' in patch) clean.monthly_price = patch.monthly_price;
     if ('one_time_label' in patch) {
@@ -676,7 +681,7 @@ export async function applyEditSet(
         monthly_price: item.monthly_price,
         monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
         image_url: null,
-        optional: Boolean(item.optional),
+        optional: Boolean(item.optional) || impliesOptional(item.name),
         display_order: maxOrder + (i + 1) * 10,
       })),
     );

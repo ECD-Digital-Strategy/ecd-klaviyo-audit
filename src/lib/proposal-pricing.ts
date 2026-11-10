@@ -186,3 +186,8 @@ export function formatProposalTotal(total: number, hasLabelOnly: boolean): strin
 export function proposalPipelineValue(totals: ProposalTotals): number {
   return totals.oneTimeTotal + totals.monthlyTotal * 12;
 }
+
+/** One-time total plus 12x monthly total of a proposal row (its line items and discount), whatever its status. */
+export function proposalValue(proposal: Proposal): number {
+  return proposalPipelineValue(computeProposalTotals(proposal.line_items ?? [], proposalDiscountFromRow(proposal)));
+}

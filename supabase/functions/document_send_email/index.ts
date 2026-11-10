@@ -5,6 +5,7 @@ import { assertServiceRoleClient, requireStaffUserId } from "../_shared/auth.ts"
 import { DOCUMENT_CORS_HEADERS, documentJson } from "../_shared/document-public.ts";
 import { proposalEmailHtml, resolveFromAddress, sendEmail } from "../_shared/mailer.ts";
 import { escapeHtml } from "../_shared/proposal-links.ts";
+import { addDaysToDate, businessDate } from "../_shared/valid-until.ts";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -58,8 +59,9 @@ serve(async (req) => {
 
     const token = document.public_token ?? generateToken();
     const validDays = settings.defaults?.valid_days || 0;
+    // Counted from today in New York, the same clock the expiry check uses.
     const validUntil = document.valid_until ??
-      (validDays > 0 ? new Date(Date.now() + validDays * 86400000).toISOString().slice(0, 10) : null);
+      (validDays > 0 ? addDaysToDate(businessDate(), validDays) : null);
     const wasDraft = document.status === "draft";
     const now = new Date().toISOString();
 

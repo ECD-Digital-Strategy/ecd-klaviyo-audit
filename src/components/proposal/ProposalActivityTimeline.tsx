@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { formatEventTime } from '../../lib/time-format';
 import {
   FilePlus2,
   Send,
@@ -28,13 +29,6 @@ const EVENT_META: Record<ProposalEventType, { icon: LucideIcon; label: string; t
   lost: { icon: XCircle, label: 'Marked lost', tone: 'text-red-600 bg-red-50' },
   reopened: { icon: RotateCcw, label: 'Reopened', tone: 'text-blue-600 bg-blue-50' },
 };
-
-function formatEventTime(iso: string): string {
-  const date = new Date(iso);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-    ' · ' +
-    date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-}
 
 // ---------------------------------------------------------------------------
 // Send-method detection + email preview payload

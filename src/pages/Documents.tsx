@@ -13,6 +13,7 @@ import { DocumentAgentLayout, DocAgentToggleButton } from '../components/documen
 import { deleteDocument, listDocuments } from '../lib/documents-db';
 import { applyDraftAsNewDocument, type DocDraftPayload } from '../lib/document-agent';
 import { linkDocConversationToDocument } from '../lib/document-agent-db';
+import { isPastValidUntil } from '../lib/valid-until';
 import type { Document, DocumentDisplayStatus } from '../lib/types';
 
 const TABS = [
@@ -33,10 +34,8 @@ const STATUS_LABELS: Record<DocumentDisplayStatus, { label: string; tone: string
 };
 
 function displayStatus(doc: Document): DocumentDisplayStatus {
-  if ((doc.status === 'sent' || doc.status === 'viewed') && doc.valid_until) {
-    const until = new Date(`${doc.valid_until}T23:59:59`);
-    if (Number.isFinite(until.getTime()) && until < new Date()) return 'expired';
-  }
+  // Same New York clock as the public link (valid-until.ts).
+  if ((doc.status === 'sent' || doc.status === 'viewed') && isPastValidUntil(doc.valid_until)) return 'expired';
   return doc.status;
 }
 

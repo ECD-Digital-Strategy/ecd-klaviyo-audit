@@ -18,16 +18,11 @@ import { formatCurrency } from '../lib/revenue-calculator';
 import { listAudits, listClients } from '../lib/db';
 import { listProposals } from '../lib/proposals-db';
 import { deriveProposalStatus, isProposalOpen } from '../lib/proposal-status';
-import { computeProposalTotals, proposalDiscountFromRow, proposalPipelineValue } from '../lib/proposal-pricing';
+import { proposalValue } from '../lib/proposal-pricing';
 import { canAccessArea } from '../lib/access';
 import { useAuth } from '../contexts/AuthContext';
 import AuditStatusBadge from '../components/ui/AuditStatusBadge';
 import type { Audit, Client, Proposal } from '../lib/types';
-
-function proposalValue(proposal: Proposal): number {
-  const totals = computeProposalTotals(proposal.line_items ?? [], proposalDiscountFromRow(proposal));
-  return proposalPipelineValue(totals);
-}
 
 export default function Dashboard() {
   const navigate = useNavigate();

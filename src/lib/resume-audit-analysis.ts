@@ -60,7 +60,3 @@ export async function resumeAuditAnalysis(
     setAuditAiResumeInFlight(auditId, false);
   }
 }
-
-export async function nudgeServerAuditAnalysis(auditId: string): Promise<void> {
-  await startServerAuditAnalysis(auditId);
-}

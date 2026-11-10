@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
+import { useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ExternalLink, FileSignature, History, Loader2, Sparkles } from 'lucide-react';
 import AuditContextAssistant from '../components/audit/AuditContextAssistant';
@@ -33,7 +33,6 @@ import {
   publishAudit,
   updateAudit,
   updateAuditStatus,
-  updateAuditSection,
   listAuditSections,
   type WebAuditReportBundle,
 } from '../lib/db';
@@ -45,7 +44,7 @@ import { canUseWebAudits } from '../lib/web-audit-access';
 import { klaviyoScopePermissionWarnings } from '../lib/klaviyo-fetch-diagnostics';
 import { lazyAuditReportView, preloadAuditReportView } from '../lib/preload-audit-report-view';
 import { supabase } from '../lib/supabase';
-import { scheduleSavedToast, useToast } from '../components/ui/Toast';
+import { useToast } from '../components/ui/Toast';
 
 const AuditReportView = lazy(lazyAuditReportView);
 const WebAuditReportView = lazy(() => import('../components/report/WebAuditReportView'));
@@ -83,7 +82,6 @@ export default function AuditWorkspace() {
   const [emailDesignDrawerOpen, setEmailDesignDrawerOpen] = useState(false);
   const [revenueDrawerOpen, setRevenueDrawerOpen] = useState(false);
 
-  const saveTimers = useRef<Record<string, number>>({});
   const [creatingProposal, setCreatingProposal] = useState(false);
   const [publishBlockedReason, setPublishBlockedReason] = useState<string>('');
   const [scopeWarnings, setScopeWarnings] = useState<string[]>([]);
@@ -346,19 +344,6 @@ export default function AuditWorkspace() {
       </div>
     );
   }
-
-  const handleSectionUpdate = (sectionId: string, updates: Partial<AuditSection>) => {
-    setSections(prev => prev.map(section => (section.id === sectionId ? { ...section, ...updates } : section)));
-    if (saveTimers.current[sectionId]) window.clearTimeout(saveTimers.current[sectionId]);
-    saveTimers.current[sectionId] = window.setTimeout(async () => {
-      try {
-        await updateAuditSection(sectionId, updates);
-        scheduleSavedToast(toast);
-      } catch {
-        // keep UI responsive
-      }
-    }, 800);
-  };
 
   const handlePublish = async () => {
     if (!audit) return;
@@ -730,11 +715,6 @@ export default function AuditWorkspace() {
                 section={emailDesignSection ?? null}
                 onAnnotationsChange={setAnnotations}
                 onEmailDesignChange={setEmailDesign}
-                onSectionUpdate={
-                  emailDesignSection
-                    ? updates => handleSectionUpdate(emailDesignSection.id, updates)
-                    : undefined
-                }
               />
             </EmailDesignDrawer>
           </Suspense>

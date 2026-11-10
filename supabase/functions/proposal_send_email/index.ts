@@ -116,11 +116,18 @@ serve(async (req) => {
       .eq("proposal_id", proposalId)
       .eq("role", "client");
     if (!proposal.client_signed_at && (clientSigCount ?? 0) === 0) {
+      // Same rules as buildContractsSnapshot in src/lib/contract-snapshot.ts (Deno cannot import src):
+      // catalog order (display_order), only the included contracts, a per-proposal override wins.
+      // The MSA-on-file swap is not redone here: it lives in include_contracts + contract_overrides,
+      // exactly as the editor saved them, so both paths freeze the same text.
       const includeContracts = (proposal.include_contracts ?? []) as string[];
-      const { data: docs } = await sb
+      const { data: docs, error: docsErr } = await sb
         .from("contract_documents")
         .select("slug, name, content, updated_at")
-        .in("slug", includeContracts.length ? includeContracts : ["__none__"]);
+        .in("slug", includeContracts.length ? includeContracts : ["__none__"])
+        .order("display_order", { ascending: true });
+      // A failed read must not freeze an empty contract list.
+      if (docsErr) throw docsErr;
       // A per-proposal rewrite (redlines, the "MSA on file" reference) is what
       // the client reads, so it is what gets frozen.
       const overrides = (proposal.contract_overrides ?? {}) as Record<string, string>;

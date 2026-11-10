@@ -145,6 +145,19 @@ export async function startOutreachAudit(p: OutreachProspect, userId: string): P
   const websiteUrl = `https://${p.domain}`;
   let clientId = p.client_id;
   if (!clientId) {
+    // Reuse the prospect's client from an earlier try, by website, before making one
+    // (same as startAudit in outreach_pipeline).
+    const { data: prior, error: priorErr } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('is_outreach', true)
+      .eq('website_url', websiteUrl)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    if (priorErr) throw priorErr;
+    clientId = (prior ?? [])[0]?.id ?? null;
+  }
+  if (!clientId) {
     const client = await createClient({
       name,
       company_name: name,
@@ -158,6 +171,8 @@ export async function startOutreachAudit(p: OutreachProspect, userId: string): P
     } as Omit<Client, 'id' | 'created_at'>);
     clientId = client.id;
   }
+  // Saved straight away, so a later failure never leaves the client orphaned.
+  if (clientId !== p.client_id) await updateProspect(p.id, { client_id: clientId });
   const audit = await createAudit({
     client_id: clientId,
     title: `${name} - Web Audit`,

@@ -20,6 +20,7 @@ import {
   teaserSections,
 } from "../_shared/outreach-teaser.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
+import { stripHiddenWebRows } from "./strip-hidden.ts";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -157,7 +158,9 @@ serve(async (req) => {
       // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
       // and screen size, the rest only counted, and no roadmap, pricing or sales data.
       const rawWebSections = (webSections.data ?? []) as Array<Record<string, unknown>>;
-      const servedSections = (isOutreach ? teaserSections(rawWebSections) : rawWebSections).map(redactWebSection);
+      const servedSections = (isOutreach ? teaserSections(rawWebSections) : rawWebSections)
+        .map(redactWebSection)
+        .map(stripHiddenWebRows);
       return json({
         ok: true,
         audit,
