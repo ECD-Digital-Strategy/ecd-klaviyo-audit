@@ -2,12 +2,12 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 // Reuse the generic public-token helpers from the proposals shared module.
 export { PROPOSAL_CORS_HEADERS as DOCUMENT_CORS_HEADERS, proposalJson as documentJson, PUBLIC_TOKEN_RE, hashSignedPayload as hashContent } from "./proposal-public.ts";
 import { PUBLIC_TOKEN_RE } from "./proposal-public.ts";
+import { isPastValidUntil } from "./valid-until.ts";
 
+/** Expired once the valid_until day is over in New York, the same clock as proposals. */
 export function isDocumentExpired(doc: { status: string; valid_until: string | null }): boolean {
   if (doc.status !== "sent" && doc.status !== "viewed") return false;
-  if (!doc.valid_until) return false;
-  const validUntil = new Date(`${doc.valid_until}T23:59:59`);
-  return Number.isFinite(validUntil.getTime()) && validUntil < new Date();
+  return isPastValidUntil(doc.valid_until);
 }
 
 /** Fetch a document by public token with its signature. Returns null for unknown
@@ -40,16 +40,18 @@ export function serializePublicDocument(
   bundle: NonNullable<Awaited<ReturnType<typeof fetchPublicDocument>>>,
 ) {
   const { document, signature, senderSignature } = bundle;
-  // The sender signature is shown to the recipient, but only the display-safe
-  // fields (no email / IP / user agent).
-  const publicSender = senderSignature
-    ? {
-      signer_name: senderSignature.signer_name,
-      typed_name: senderSignature.typed_name,
-      signature_image: senderSignature.signature_image,
-      signed_at: senderSignature.signed_at,
-    }
-    : null;
+  // Both signatures are shown on the page, but only the display-safe fields
+  // (no email / IP / user agent): anyone holding the link can read this.
+  const displayOnly = (s: typeof signature) =>
+    s
+      ? {
+        signer_name: s.signer_name,
+        typed_name: s.typed_name,
+        signature_image: s.signature_image,
+        signed_at: s.signed_at,
+      }
+      : null;
+  const publicSender = displayOnly(senderSignature);
   return {
     document: {
       id: document.id,
@@ -64,7 +66,7 @@ export function serializePublicDocument(
       // recipient signature, so a missing value means true.
       recipient_signature_enabled: document.recipient_signature_enabled !== false,
     },
-    signature,
+    signature: displayOnly(signature),
     sender_signature: publicSender,
     signed: Boolean(signature),
     expired: isDocumentExpired(document),

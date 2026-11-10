@@ -9,10 +9,12 @@ import {
 } from 'react';
 import { scheduleSavedToast, useToast } from '../../ui/Toast';
 import { MSA_ON_FILE_SLUG, MSA_SLUG } from '../../../lib/msa-on-file';
+import { toggleContractSelection } from '../../../lib/contract-snapshot';
+import { createPatchQueue } from '../../../lib/patch-queue';
 import {
   createProposalLineItems,
   deleteProposalLineItem,
-  listContractDocuments,
+  refreshedContractsSnapshot,
   resolveContractsForClient,
   updateProposal,
   updateProposalLineItem,
@@ -93,6 +95,8 @@ type ProposalEditProviderProps = {
   lineItems: ProposalLineItem[];
   onProposalChange?: (next: Proposal) => void;
   onLineItemsChange?: (next: ProposalLineItem[]) => void;
+  /** Any client signature exists: everything is read-only and the contract snapshot is never rebuilt. */
+  clientHasSigned?: boolean;
   children: ReactNode;
 };
 
@@ -102,11 +106,15 @@ export function ProposalEditProvider({
   lineItems,
   onProposalChange,
   onLineItemsChange,
+  clientHasSigned = false,
   children,
 }: ProposalEditProviderProps) {
   const toast = useToast();
   const [saveStatus, setSaveStatus] = useState<ProposalSaveStatus>('idle');
   const timers = useRef<Record<string, number>>({});
+  const patchQueue = useRef(createPatchQueue());
+  // Content freezes at the FIRST client signature; client_signed_at waits for the last signer.
+  const locked = clientHasSigned || Boolean(proposal.client_signed_at);
 
   const schedule = useCallback(
     (key: string, fn: () => Promise<void>) => {
@@ -127,14 +135,32 @@ export function ProposalEditProvider({
     [toast],
   );
 
+  // Edits under one key merge into one pending save (patch-queue.ts), so a second
+  // partial edit inside the debounce window no longer drops the first. A failed
+  // save goes back in the queue under anything newer, so the next edit retries it.
+  const schedulePatch = useCallback(
+    <P extends object>(key: string, patch: P, send: (merged: P) => Promise<unknown>) => {
+      patchQueue.current.add(key, patch as Record<string, unknown>);
+      schedule(key, async () => {
+        const merged = patchQueue.current.take(key) as P | undefined;
+        if (!merged) return;
+        try {
+          await send(merged);
+        } catch (e) {
+          patchQueue.current.add(key, { ...merged, ...(patchQueue.current.take(key) ?? {}) } as Record<string, unknown>);
+          throw e;
+        }
+      });
+    },
+    [schedule],
+  );
+
   const saveProposalPatch = useCallback(
     (key: string, patch: Parameters<typeof updateProposal>[1]) => {
       onProposalChange?.({ ...proposal, ...patch } as Proposal);
-      schedule(key, async () => {
-        await updateProposal(proposal.id, patch);
-      });
+      schedulePatch(key, patch, merged => updateProposal(proposal.id, merged));
     },
-    [onProposalChange, proposal, schedule],
+    [onProposalChange, proposal, schedulePatch],
   );
 
   const updateTitle = useCallback(
@@ -186,11 +212,9 @@ export function ProposalEditProvider({
   const updateLineItem = useCallback(
     (itemId: string, patch: Partial<Omit<ProposalLineItem, 'id' | 'proposal_id' | 'created_at'>>) => {
       onLineItemsChange?.(lineItems.map(item => (item.id === itemId ? { ...item, ...patch } : item)));
-      schedule(`line-${itemId}`, async () => {
-        await updateProposalLineItem(itemId, patch);
-      });
+      schedulePatch(`line-${itemId}`, patch, merged => updateProposalLineItem(itemId, merged));
     },
-    [lineItems, onLineItemsChange, schedule],
+    [lineItems, onLineItemsChange, schedulePatch],
   );
 
   const addLineItem = useCallback(
@@ -227,6 +251,10 @@ export function ProposalEditProvider({
   const removeLineItem = useCallback(
     (itemId: string) => {
       onLineItemsChange?.(lineItems.filter(item => item.id !== itemId));
+      // A pending edit to the removed line would only fail once it is gone.
+      const pendingKey = `line-${itemId}`;
+      if (timers.current[pendingKey]) window.clearTimeout(timers.current[pendingKey]);
+      patchQueue.current.drop(pendingKey);
       schedule(`line-remove-${itemId}`, async () => {
         await deleteProposalLineItem(itemId);
       });
@@ -247,13 +275,15 @@ export function ProposalEditProvider({
         const prev = lineItems.find(p => p.id === item.id);
         return prev && prev.display_order !== item.display_order;
       });
-      schedule('line-reorder', async () => {
-        await Promise.all(
-          changed.map(item => updateProposalLineItem(item.id, { display_order: item.display_order })),
+      // Each moved line saves under its own key, merged with any other pending
+      // edit to it. One shared 'line-reorder' save lost the earlier of two quick moves.
+      for (const item of changed) {
+        schedulePatch(`line-${item.id}`, { display_order: item.display_order }, merged =>
+          updateProposalLineItem(item.id, merged),
         );
-      });
+      }
     },
-    [lineItems, onLineItemsChange, schedule],
+    [lineItems, onLineItemsChange, schedulePatch],
   );
 
   const updateDiscount = useCallback(
@@ -275,9 +305,7 @@ export function ProposalEditProvider({
       // picks the form by the same rule as creating a proposal; turning it off
       // removes whichever form is attached.
       const isMsa = slug === MSA_SLUG || slug === MSA_ON_FILE_SLUG;
-      const base = included
-        ? [...new Set([...proposal.include_contracts, isMsa ? MSA_SLUG : slug])]
-        : proposal.include_contracts.filter(s => (isMsa ? s !== MSA_SLUG && s !== MSA_ON_FILE_SLUG : s !== slug));
+      const base = toggleContractSelection(proposal.include_contracts, slug, included);
 
       setSaveStatus('saving');
       (async () => {
@@ -292,23 +320,11 @@ export function ProposalEditProvider({
 
         // Once a proposal has been sent, contracts render from the frozen
         // contracts_snapshot rather than the live docs (see ProposalDocument).
-        // While it is still unsigned, toggling a contract must also refresh
-        // that snapshot — otherwise a newly-added contract has no content in
-        // the snapshot and silently fails to render. Fetch the live docs first
-        // so the optimistic update and the persisted row apply together.
-        let snapshot: Proposal['contracts_snapshot'] | undefined;
-        if (proposal.contracts_snapshot && !proposal.client_signed_at) {
-          const docs = await listContractDocuments();
-          snapshot = docs
-            .filter(d => next.includes(d.slug))
-            .map(d => ({
-              slug: d.slug,
-              name: d.name,
-              // A per-proposal rewrite wins over the shared catalog text.
-              content: overrides[d.slug]?.trim() ? overrides[d.slug] : d.content,
-              version_updated_at: d.updated_at,
-            }));
-        }
+        // While no client has signed, toggling a contract must also refresh
+        // that snapshot, otherwise a newly-added contract has no content in
+        // the snapshot and silently fails to render. Built first so the
+        // optimistic update and the persisted row apply together.
+        const snapshot = await refreshedContractsSnapshot(proposal, next, overrides, { clientHasSigned: locked });
         const patch = {
           include_contracts: next,
           ...(overridesChanged ? { contract_overrides: overrides } : {}),
@@ -327,7 +343,7 @@ export function ProposalEditProvider({
           toast('Could not save');
         });
     },
-    [proposal, onProposalChange, toast],
+    [proposal, onProposalChange, toast, locked],
   );
 
   /** Tailor one contract's text for THIS proposal only, or pass null to drop the
@@ -340,20 +356,13 @@ export function ProposalEditProvider({
       if (content && content.trim()) nextOverrides[slug] = content;
       else delete nextOverrides[slug];
 
-      if (proposal.contracts_snapshot && !proposal.client_signed_at) {
+      if (proposal.contracts_snapshot && !locked) {
         setSaveStatus('saving');
-        listContractDocuments()
-          .then(docs => {
-            const snapshot = docs
-              .filter(d => proposal.include_contracts.includes(d.slug))
-              .map(d => ({
-                slug: d.slug,
-                name: d.name,
-                content: nextOverrides[d.slug]?.trim() ? nextOverrides[d.slug] : d.content,
-                version_updated_at: d.updated_at,
-              }));
-            onProposalChange?.({ ...proposal, contract_overrides: nextOverrides, contracts_snapshot: snapshot } as Proposal);
-            return updateProposal(proposal.id, { contract_overrides: nextOverrides, contracts_snapshot: snapshot });
+        refreshedContractsSnapshot(proposal, proposal.include_contracts, nextOverrides, { clientHasSigned: false })
+          .then(snapshot => {
+            const patch = { contract_overrides: nextOverrides, ...(snapshot ? { contracts_snapshot: snapshot } : {}) };
+            onProposalChange?.({ ...proposal, ...patch } as Proposal);
+            return updateProposal(proposal.id, patch);
           })
           .then(() => {
             setSaveStatus('saved');
@@ -369,12 +378,13 @@ export function ProposalEditProvider({
 
       saveProposalPatch('contract_overrides', { contract_overrides: nextOverrides });
     },
-    [proposal, onProposalChange, saveProposalPatch, toast],
+    [proposal, onProposalChange, saveProposalPatch, toast, locked],
   );
 
   const value = useMemo<ProposalEditContextValue>(() => {
-    if (mode !== 'edit') {
-      return { mode, editMode: false, ...READ_ONLY_VALUE };
+    // A signed proposal never offers editing, whatever mode the page asked for.
+    if (mode !== 'edit' || locked) {
+      return { mode: mode === 'edit' ? 'preview' : mode, editMode: false, ...READ_ONLY_VALUE };
     }
     return {
       mode,
@@ -395,6 +405,7 @@ export function ProposalEditProvider({
     };
   }, [
     mode,
+    locked,
     saveStatus,
     updateTitle,
     updateBlock,
@@ -467,6 +478,7 @@ export function TemplateEditProvider({
   const toast = useToast();
   const [saveStatus, setSaveStatus] = useState<ProposalSaveStatus>('idle');
   const timers = useRef<Record<string, number>>({});
+  const templatePatchQueue = useRef(createPatchQueue());
 
   const schedule = useCallback(
     (key: string, fn: () => Promise<void>) => {
@@ -490,8 +502,11 @@ export function TemplateEditProvider({
   const saveTemplatePatch = useCallback(
     (key: string, patch: Parameters<typeof updateProposalTemplate>[1], next: ProposalTemplate) => {
       onTemplateChange(next);
+      // Merged per key like the proposal editor: the discount editor sends one field at a time.
+      templatePatchQueue.current.add(key, patch as Record<string, unknown>);
       schedule(key, async () => {
-        await updateProposalTemplate(template.id, patch);
+        const merged = templatePatchQueue.current.take(key) as typeof patch | undefined;
+        if (merged) await updateProposalTemplate(template.id, merged);
       });
     },
     [onTemplateChange, schedule, template.id],

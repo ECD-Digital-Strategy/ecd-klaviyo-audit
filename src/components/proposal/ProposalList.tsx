@@ -38,8 +38,7 @@ import {
   proposalExpiryTooltip,
 } from '../../lib/proposal-status';
 import HoverTooltip from '../ui/HoverTooltip';
-import { computeProposalTotals, formatProposalTotal, proposalDiscountFromRow } from '../../lib/proposal-pricing';
-import { formatCurrency } from '../../lib/revenue-calculator';
+import { computeProposalTotals, formatProposalMoney, formatProposalTotal, proposalDiscountFromRow } from '../../lib/proposal-pricing';
 import { publicProposalOrigin } from '../../lib/public-origin';
 import type { Proposal, ProposalDisplayStatus } from '../../lib/types';
 
@@ -63,7 +62,7 @@ function proposalValueSummary(proposal: Proposal): { main: string; sub: string |
     ? formatProposalTotal(totals.oneTimeTotal, totals.oneTimeHasLabelOnly)
     : null;
   const monthly = totals.monthlyTotal > 0
-    ? `${formatCurrency(totals.monthlyTotal)}/mo`
+    ? `${formatProposalMoney(totals.monthlyTotal)}/mo`
     : totals.monthlyHasLabelOnly
       ? 'monthly, see line items'
       : null;

@@ -46,7 +46,8 @@ export type DocAgentResponse = {
   edits?: DocEditPayload;
 };
 
-export type DocumentSnapshot = { id: string; title: string; content: string };
+/** truncated: the body was too long to send in full, so a whole-body edit must not be applied. */
+export type DocumentSnapshot = { id: string; title: string; content: string; truncated?: boolean };
 
 export class DocAgentError extends Error {
   code: string;
@@ -65,17 +66,21 @@ export function sanitizeCopy(input: string): string {
     .replace(/[–—]/g, ', ');
 }
 
-const SNAPSHOT_CONTENT_CAP = 12000;
+// The document goes to the assistant in full up to this size. A longer one is
+// cut and flagged truncated, and its edits (always a whole new body) are refused
+// on apply: the old 12,000 cap plus a literal "[truncated]" let an edit write the
+// cut copy back over the real document.
+export const SNAPSHOT_CONTENT_CAP = 60000;
+
+function documentTooLongForAgent(content: string): boolean {
+  return (content ?? '').length > SNAPSHOT_CONTENT_CAP;
+}
 
 export function buildDocumentSnapshot(document: Document): DocumentSnapshot {
-  return {
-    id: document.id,
-    title: document.title,
-    content:
-      document.content.length > SNAPSHOT_CONTENT_CAP
-        ? `${document.content.slice(0, SNAPSHOT_CONTENT_CAP)}\n[truncated]`
-        : document.content,
-  };
+  if (documentTooLongForAgent(document.content)) {
+    return { id: document.id, title: document.title, content: document.content.slice(0, SNAPSHOT_CONTENT_CAP), truncated: true };
+  }
+  return { id: document.id, title: document.title, content: document.content };
 }
 
 export const MAX_DOC_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -223,6 +228,11 @@ export async function applyDraftAsNewDocument(draft: DocDraftPayload): Promise<D
 }
 
 export async function applyDocumentEdits(document: Document, edits: DocEditPayload): Promise<Document> {
+  // An edit replaces the whole body, and the assistant only saw the start of a
+  // document this long, so applying it would delete the rest.
+  if (documentTooLongForAgent(document.content)) {
+    throw new Error('This document is too long for the assistant to rewrite safely, so nothing was changed. Edit it by hand.');
+  }
   let updated = await updateDocument(document.id, { content: sanitizeCopy(edits.content) });
   // "Use Zak's signature instead" arrives as an edit carrying a signer, so the
   // switch happens on apply alongside any wording change.

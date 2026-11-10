@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { attachActorNames } from './actor-names';
 import { publicProposalOrigin } from './public-origin';
 import { resolveSignatureImage } from './signature-image';
+import { buildContractsSnapshot } from './contract-snapshot';
 import { listStaffSigners, resolveSigner } from './staff-signers';
 import {
   MSA_ON_FILE_SLUG,
@@ -461,6 +462,7 @@ export async function updateProposal(
       | 'recipient_email'
       | 'recipient2_name'
       | 'recipient2_email'
+      | 'public_token2'
       | 'valid_until'
       | 'status'
       | 'lost_at'
@@ -505,10 +507,14 @@ export async function markProposalWon(id: string): Promise<Proposal> {
 }
 
 export async function reopenProposal(id: string): Promise<Proposal> {
+  // valid_until is cleared so the window restarts when the client next opens it
+  // (proposal_public stamps it on the sent -> viewed view). Keeping a past date
+  // let the hourly job mark it lost again within the hour.
   const proposal = await updateProposal(id, {
     status: 'sent',
     lost_at: null,
     lost_reason: null,
+    valid_until: null,
   });
   await recordProposalEvent(id, 'reopened');
   return proposal;
@@ -598,15 +604,7 @@ export async function markProposalSent(proposal: Proposal): Promise<Proposal> {
 
   // Freeze the text the client will actually see: a per-proposal override wins
   // over the shared catalog copy.
-  const overrides = proposal.contract_overrides ?? {};
-  const snapshot = contractDocs
-    .filter(doc => proposal.include_contracts.includes(doc.slug))
-    .map(doc => ({
-      slug: doc.slug,
-      name: doc.name,
-      content: overrides[doc.slug]?.trim() ? overrides[doc.slug] : doc.content,
-      version_updated_at: doc.updated_at,
-    }));
+  const snapshot = buildContractsSnapshot(contractDocs, proposal.include_contracts, proposal.contract_overrides);
 
   // valid_until is deliberately NOT set here. The validity window starts when
   // the client actually opens the proposal (proposal_public sets it on the first
@@ -637,6 +635,31 @@ export async function markProposalSent(proposal: Proposal): Promise<Proposal> {
     await recordProposalEvent(proposal.id, 'sent', { via: 'link', send_method: 'link' });
   }
   return mapProposalRow(data);
+}
+
+/**
+ * The contracts_snapshot to write together with a contract change, or undefined
+ * to leave it alone. Once sent, the client reads the snapshot rather than the
+ * live contracts, so a change made in the editor or by the assistant only reaches
+ * them if the snapshot is rebuilt. Never after a client signature: what they
+ * signed stays put (the database refuses it too).
+ *
+ * `clientHasSigned` saves a lookup when the caller already knows.
+ */
+export async function refreshedContractsSnapshot(
+  proposal: Pick<Proposal, 'id' | 'contracts_snapshot' | 'client_signed_at'>,
+  includeContracts: string[],
+  overrides: Record<string, string>,
+  opts: { clientHasSigned?: boolean } = {},
+): Promise<Proposal['contracts_snapshot'] | undefined> {
+  // Not sent yet: drafts render from the live catalog, and sending freezes it.
+  if (!proposal.contracts_snapshot || proposal.client_signed_at || opts.clientHasSigned) return undefined;
+  const [docs, signatures] = await Promise.all([
+    listContractDocuments(),
+    opts.clientHasSigned === false ? Promise.resolve([] as ProposalSignature[]) : listProposalSignatures(proposal.id),
+  ]);
+  if (signatures.some(s => s.role === 'client')) return undefined;
+  return buildContractsSnapshot(docs, includeContracts, overrides);
 }
 
 /** Extend (or shorten) the valid-until date; un-expires a proposal. */
@@ -734,7 +757,16 @@ export async function countersignProposal(input: {
   replace?: boolean;
 }): Promise<void> {
   const { data, error } = await supabase.functions.invoke('proposal_countersign', { body: input });
-  if (error) throw error;
+  if (error) {
+    // Refusals (client already signed, signing for someone else) come back as
+    // non-2xx with a message worth showing.
+    const context = (error as { context?: Response }).context;
+    if (context) {
+      const body = await context.json().catch(() => null);
+      if (body?.error?.message) throw new Error(body.error.message);
+    }
+    throw error;
+  }
   if (data?.ok !== true) throw new Error(data?.error?.message ?? 'Failed to countersign');
 }
 

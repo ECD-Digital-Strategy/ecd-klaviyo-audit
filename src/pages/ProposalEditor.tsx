@@ -14,6 +14,7 @@ import {
   type ProposalDraftPayload,
   type ProposalEditSet,
 } from '../lib/proposal-agent';
+import { hasClientSignature } from '../lib/proposal-status';
 
 function SaveStatusDot() {
   const { saveStatus } = useProposalEdit();
@@ -39,12 +40,13 @@ export default function ProposalEditor() {
   const navigate = useNavigate();
   const { data, setData, loading, loadError } = useProposalData(id);
 
-  // Signed proposals are immutable — bounce to the detail view.
+  // Locked from the first client signature (not only once fully signed): bounce to the detail view.
+  const locked = data ? hasClientSignature(data.proposal, data.signatures) : false;
   useEffect(() => {
-    if (data?.proposal.client_signed_at) {
+    if (locked && data?.proposal.id) {
       navigate(`/proposals/${data.proposal.id}`, { replace: true });
     }
-  }, [data?.proposal.client_signed_at, data?.proposal.id, navigate]);
+  }, [locked, data?.proposal.id, navigate]);
 
   const blockTitles = useMemo(
     () => new Map((data?.proposal.content_blocks ?? []).map(b => [b.key, b.title])),
@@ -99,7 +101,8 @@ export default function ProposalEditor() {
     >
       <ProposalAgentLayout blockTitles={blockTitles} itemNames={itemNames}>
         <ProposalEditProvider
-          mode="edit"
+          mode={locked ? 'preview' : 'edit'}
+          clientHasSigned={locked}
           proposal={proposal}
           lineItems={lineItems}
           onProposalChange={next => setData(prev => (prev ? { ...prev, proposal: next } : prev))}

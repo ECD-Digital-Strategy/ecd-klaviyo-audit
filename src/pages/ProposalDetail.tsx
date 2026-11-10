@@ -47,7 +47,7 @@ import {
   updateProposal,
 } from '../lib/proposals-db';
 import { buildTemplateInputFromProposal } from '../lib/proposal-convert';
-import { deriveProposalStatus } from '../lib/proposal-status';
+import { deriveProposalStatus, hasClientSignature } from '../lib/proposal-status';
 import { publicProposalOrigin } from '../lib/public-origin';
 import AgencySignatureCard from '../components/proposal/AgencySignatureCard';
 import XeroInvoiceCard from '../components/proposal/XeroInvoiceCard';
@@ -123,8 +123,10 @@ export default function ProposalDetail() {
   const agencySignature = signatures.find(s => s.role === 'agency') ?? null;
   const hasSecondSigner = Boolean(proposal.recipient2_email);
   const requiredSigners = hasSecondSigner ? 2 : 1;
-  // The signer roster freezes as soon as ANY client signature exists (DB-enforced too).
-  const signersLocked = clientSignatures.length > 0 || isSigned;
+  // The signer roster, content, pricing and contracts freeze as soon as ANY
+  // client signature exists, not only once fully signed (DB-enforced too).
+  const contentLocked = hasClientSignature(proposal, signatures);
+  const signersLocked = contentLocked;
   const partiallySigned = !isSigned && clientSignatures.length > 0 && clientSignatures.length < requiredSigners;
   const signerSigned = (index: number) =>
     clientSignatures.some(s => (s.signer_index ?? 1) === index);
@@ -153,6 +155,8 @@ export default function ProposalDetail() {
         recipient_email: recipientEmailDraft.trim(),
         recipient2_name: secondSignerDraft ? recipient2NameDraft.trim() : '',
         recipient2_email: secondSignerDraft ? recipient2EmailDraft.trim() : '',
+        // Removing the second signer also kills their link; sending again makes a new one.
+        ...(secondSignerDraft ? {} : { public_token2: null }),
       });
       setEditingRecipient(false);
       await reload();
@@ -253,7 +257,7 @@ export default function ProposalDetail() {
     }
   };
 
-  const onApplyEdits = isSigned
+  const onApplyEdits = contentLocked
     ? undefined
     : async (edits: ProposalEditSet) => {
         await applyEditSet(proposal, lineItems, edits);
@@ -261,7 +265,7 @@ export default function ProposalDetail() {
       };
   // A whole-proposal rewrite arrives as a draft, and it applies to this
   // proposal rather than creating a second one.
-  const onApplyDraft = isSigned
+  const onApplyDraft = contentLocked
     ? undefined
     : async (draft: ProposalDraftPayload) => {
         await applyDraftToProposal(proposal, lineItems, draft);
@@ -756,7 +760,7 @@ export default function ProposalDetail() {
           <div className="rounded-xl bg-white p-5 card-shadow">
             <h3 className="text-sm font-semibold text-gray-900">Actions</h3>
             <div className="mt-3 space-y-2">
-              {!isSigned && (
+              {!contentLocked && (
                 <button
                   type="button"
                   onClick={() => navigate(`/proposals/${proposal.id}/edit`)}
@@ -797,8 +801,9 @@ export default function ProposalDetail() {
               <AgencySignatureCard
                 proposalId={proposal.id}
                 signature={agencySignature}
-                clientHasSigned={isSigned}
+                clientHasSigned={contentLocked}
                 currentUserId={user?.id ?? null}
+                canSignForOthers={hasRole('admin')}
                 onChanged={reload}
               />
               {/* Only meaningful once signed: that is when the draft is created. */}

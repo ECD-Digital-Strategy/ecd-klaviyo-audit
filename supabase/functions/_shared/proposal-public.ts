@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { isPastValidUntil } from "./valid-until.ts";
 
 export const PUBLIC_TOKEN_RE = /^[0-9a-f]{24}$/;
 
@@ -106,10 +107,19 @@ export function computeProposalTotals(items: LineItemRow[], discount: DiscountFi
   };
 }
 
+/** Whole dollars when whole ($9,975), cents when a discount lands on them ($8,977.50), so the email matches the
+ * invoice. Same rule as formatProposalMoney in src/lib/proposal-pricing.ts. */
+export function moneyEmail(n: number): string {
+  const cents = Math.round(n * 100);
+  return cents % 100 === 0
+    ? `$${(cents / 100).toLocaleString("en-US")}`
+    : `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** "Totals: $9,975 one-time." for team emails, leaving out a side that is $0
  * (most proposals have no monthly fee, and "plus $0/mo" read like a mistake). */
 export function totalsEmailLine(totals: ProposalTotals): string {
-  const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+  const money = moneyEmail;
   const parts = [
     totals.oneTimeTotal > 0 ? `${money(totals.oneTimeTotal)} one-time` : null,
     totals.monthlyTotal > 0 ? `${money(totals.monthlyTotal)}/mo` : null,
@@ -171,11 +181,10 @@ export async function hashSignedPayload(payload: unknown): Promise<string> {
     .join("");
 }
 
+/** Expired once the valid_until day is over in New York (same rule as mark_expired_proposals_lost). */
 export function isProposalExpired(proposal: { status: string; valid_until: string | null }): boolean {
   if (proposal.status !== "sent" && proposal.status !== "viewed") return false;
-  if (!proposal.valid_until) return false;
-  const validUntil = new Date(`${proposal.valid_until}T23:59:59`);
-  return Number.isFinite(validUntil.getTime()) && validUntil < new Date();
+  return isPastValidUntil(proposal.valid_until);
 }
 
 /** Fetch a proposal by public token with its public-safe relations. Returns null for
@@ -193,6 +202,8 @@ export async function fetchPublicProposal(sb: SupabaseClient, token: string) {
   if (!proposal || proposal.status === "draft") return null;
 
   const signerIndex: 1 | 2 = proposal.public_token === token ? 1 : 2;
+  // A removed second signer's old link must stop working, even if public_token2 was left behind.
+  if (signerIndex === 2 && !String(proposal.recipient2_email ?? "").trim()) return null;
 
   const [{ data: lineItems, error: liErr }, { data: signatures, error: sigErr }] = await Promise.all([
     sb

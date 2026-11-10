@@ -7,10 +7,15 @@ const LINE_ITEM_SCHEMA = {
     name: { type: "string", description: "Service name shown in the pricing table" },
     description: { type: "string", description: "One-line description under the name" },
     content: { type: "string", description: "Markdown deliverables detail for this service" },
-    one_time_price: { type: ["number", "null"], description: "One-time fee in USD, or null" },
+    one_time_price: { type: ["number", "null"], minimum: 0, description: "One-time fee in USD, or null. Never negative; use a discount to lower a total." },
     one_time_label: { type: ["string", "null"], description: "Label for the one-time fee, e.g. Implementation" },
-    monthly_price: { type: ["number", "null"], description: "Monthly fee in USD, or null" },
+    monthly_price: { type: ["number", "null"], minimum: 0, description: "Monthly fee in USD, or null. Never negative." },
     monthly_label: { type: ["string", "null"], description: "Label for the monthly fee, e.g. Ongoing management" },
+    optional: {
+      type: "boolean",
+      description:
+        "true for an add-on the client may choose to take when signing (it counts in no total until they tick it). Mark such a line optional: true; never name a line 'Optional: ...' instead. Leave false or omit for regular lines.",
+    },
   },
   required: ["name", "description", "content", "one_time_price", "monthly_price"],
 } as const;
@@ -169,9 +174,17 @@ export const AGENT_TOOLS: LlmTool[] = [
                 ],
               },
               title: { type: "string", description: "For update_title / add_block / update_block" },
-              block_key: { type: "string", description: "For update_block / remove_block" },
+              block_key: {
+                type: "string",
+                description:
+                  "For update_block / remove_block. A block marked truncated: true in CURRENT PROPOSAL STATE was too long to send in full: never send content for it (you may still change its title).",
+              },
               after_key: { type: ["string", "null"], description: "For add_block: insert after this block key, null = at the end" },
-              content: { type: "string", description: "For update_block / add_block: full replacement markdown" },
+              content: {
+                type: "string",
+                description:
+                  "For update_block / add_block: full replacement markdown. Never for a block marked truncated: true, since you only see the start of it and the rest would be lost.",
+              },
               item: { ...LINE_ITEM_SCHEMA, description: "For add_line_item" },
               item_id: { type: "string", description: "For update_line_item / delete_line_item" },
               patch: {

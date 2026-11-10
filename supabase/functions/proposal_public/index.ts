@@ -15,6 +15,7 @@ import {
 } from "../_shared/proposal-public.ts";
 import { notificationRecipients, proposalEmailHtml, resolveFromAddress, resolveOrigin, sendEmail } from "../_shared/mailer.ts";
 import { escapeHtml, proposalReferenceLink } from "../_shared/proposal-links.ts";
+import { addDaysToDate, businessDate } from "../_shared/valid-until.ts";
 
 // Email link scanners (Outlook SafeLinks, security proxies) prefetch URLs and
 // would otherwise flip proposals to "viewed" before a human opens them.
@@ -100,8 +101,9 @@ serve(async (req) => {
       const validDays =
         ((validitySettingsRow?.proposal_settings ?? {}) as { defaults?: { valid_days?: number } })
           .defaults?.valid_days || 30;
-      const validUntil = proposal.valid_until ??
-        new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      // Counted from today's New York date, the clock the expiry job uses (a UTC
+      // date ran a day ahead for evening views in New York).
+      const validUntil = proposal.valid_until ?? addDaysToDate(businessDate(), validDays);
 
       // Race-safe first-view transition: only one concurrent request wins the
       // sent -> viewed update (M4 hangs the team notification off this winner).

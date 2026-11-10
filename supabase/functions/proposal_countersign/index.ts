@@ -6,6 +6,9 @@ import { assertServiceRoleClient, requireStaffUserId } from "../_shared/auth.ts"
 import { PROPOSAL_CORS_HEADERS, proposalJson } from "../_shared/proposal-public.ts";
 
 const MAX_SIGNATURE_LENGTH = 300000;
+// Proposals are auto-signed as Zak at creation, by whoever creates them (Members included, Hugo 2026-10-28).
+// Keep in step with DEFAULT_SIGNER_EMAIL in src/lib/staff-signers.ts.
+const DEFAULT_SIGNER_EMAIL = "zak@ecdigitalstrategy.com";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: PROPOSAL_CORS_HEADERS });
@@ -55,9 +58,16 @@ serve(async (req) => {
     if (proposal.countersigned_at && !replace) {
       return proposalJson({ ok: false, error: { code: "already_countersigned" }, correlationId }, { status: 409 });
     }
-    // Swapping the signer is fine while the deal is still open, but once the
-    // client has signed, the executed document must stop changing underneath them.
-    if (replace && proposal.client_signed_at) {
+    // Swapping the signer is fine while the deal is still open, but once ANY
+    // client has signed (client_signed_at waits for the last signer), the
+    // executed document must stop changing underneath them.
+    const { count: clientSigCount, error: cErr } = await sb
+      .from("proposal_signatures")
+      .select("id", { count: "exact", head: true })
+      .eq("proposal_id", proposalId)
+      .eq("role", "client");
+    if (cErr) throw cErr;
+    if (replace && (proposal.client_signed_at || (clientSigCount ?? 0) > 0)) {
       return proposalJson(
         { ok: false, error: { code: "client_already_signed", message: "The client has signed; the signature can no longer be changed" }, correlationId },
         { status: 409 },
@@ -67,6 +77,20 @@ serve(async (req) => {
     const { data: signerRow } = await sb.from("profiles").select("email, name").eq("id", signerUserId).maybeSingle();
     if (!signerRow) {
       return proposalJson({ ok: false, error: { code: "bad_request", message: "Unknown signer" }, correlationId }, { status: 400 });
+    }
+    // Signing as someone else is for admins. The one exception is the first ECD
+    // signature as the default signer, which is how every new proposal is signed.
+    if (signerUserId !== userId) {
+      const { data: caller } = await sb.from("profiles").select("role").eq("id", userId).maybeSingle();
+      const isAdmin = (caller as { role?: string } | null)?.role === "admin";
+      const firstDefaultSignature = !replace && !proposal.countersigned_at &&
+        String((signerRow as { email?: string }).email ?? "").toLowerCase() === DEFAULT_SIGNER_EMAIL;
+      if (!isAdmin && !firstDefaultSignature) {
+        return proposalJson(
+          { ok: false, error: { code: "forbidden", message: "Only an admin can sign for another team member" }, correlationId },
+          { status: 403 },
+        );
+      }
     }
     const signedAt = new Date().toISOString();
 

@@ -167,8 +167,17 @@ export function proposalDiscountFromRow(proposal: Proposal): ProposalDiscountInp
   };
 }
 
+/** Money on a proposal: whole dollars when it is whole ($9,975), cents when it is not ($8,977.50). A percent
+ * discount often lands on cents, and formatCurrency (whole dollars, kept for the audit reports) showed a total
+ * that differed from the invoice. Same rule as moneyEmail in supabase/functions/_shared/proposal-public.ts. */
+export function formatProposalMoney(amount: number): string {
+  const cents = Math.round(amount * 100);
+  if (cents % 100 === 0) return formatCurrency(cents / 100);
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100);
+}
+
 export function formatProposalTotal(total: number, hasLabelOnly: boolean): string {
-  if (total > 0) return formatCurrency(total);
+  if (total > 0) return formatProposalMoney(total);
   if (hasLabelOnly) return 'See line items';
   return formatCurrency(0);
 }

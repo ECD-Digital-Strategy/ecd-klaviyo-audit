@@ -7,10 +7,13 @@ import {
   deleteProposalLineItem,
   deleteProposalLineItems,
   recordProposalEvent,
+  refreshedContractsSnapshot,
   resolveContractsForClient,
   updateProposal,
   updateProposalLineItem,
 } from './proposals-db';
+import { toggleContractSelection } from './contract-snapshot';
+import { MSA_ON_FILE_SLUG, MSA_SLUG } from './msa-on-file';
 import { listStaffSigners, resolveSigner } from './staff-signers';
 import { resolveSignatureImage } from './signature-image';
 import type {
@@ -42,6 +45,8 @@ export type AgentDraftLineItem = {
   one_time_label: string | null;
   monthly_price: number | null;
   monthly_label: string | null;
+  /** An add-on the client may choose to take when signing (counts in no total until they do). */
+  optional?: boolean;
 };
 
 export type AgentDiscount = {
@@ -97,7 +102,8 @@ export type AgentSnapshot = {
     id: string;
     title: string;
     status: string;
-    content_blocks: ProposalBlock[];
+    /** truncated: the block was too long to send in full, so the assistant must not replace its content. */
+    content_blocks: Array<ProposalBlock & { truncated?: boolean }>;
     include_contracts: string[];
     discount_type: string;
     discount_value: number;
@@ -119,6 +125,7 @@ export type AgentSnapshot = {
       | 'monthly_price'
       | 'monthly_label'
       | 'display_order'
+      | 'optional'
     >
   >;
 };
@@ -153,7 +160,15 @@ export function sanitizeCopy(input: string): string {
 // ---------------------------------------------------------------------------
 // Invoke
 
-const BLOCK_CONTENT_SNAPSHOT_CAP = 2000;
+// Blocks go to the assistant in full up to this size. A longer one is cut and
+// flagged truncated, and a full replacement of it is refused on apply: the old
+// 2,000 cap plus a literal "[truncated]" let update_block write the cut copy
+// back over the real section.
+export const BLOCK_CONTENT_SNAPSHOT_CAP = 20000;
+
+function blockTooLongForAgent(content: string): boolean {
+  return (content ?? '').length > BLOCK_CONTENT_SNAPSHOT_CAP;
+}
 
 export function buildSnapshot(proposal: Proposal, lineItems: ProposalLineItem[]): AgentSnapshot {
   return {
@@ -161,14 +176,11 @@ export function buildSnapshot(proposal: Proposal, lineItems: ProposalLineItem[])
       id: proposal.id,
       title: proposal.title,
       status: proposal.status,
-      content_blocks: proposal.content_blocks.map(b => ({
-        key: b.key,
-        title: b.title,
-        content:
-          b.content.length > BLOCK_CONTENT_SNAPSHOT_CAP
-            ? `${b.content.slice(0, BLOCK_CONTENT_SNAPSHOT_CAP)}\n[truncated]`
-            : b.content,
-      })),
+      content_blocks: proposal.content_blocks.map(b =>
+        blockTooLongForAgent(b.content)
+          ? { key: b.key, title: b.title, content: b.content.slice(0, BLOCK_CONTENT_SNAPSHOT_CAP), truncated: true }
+          : { key: b.key, title: b.title, content: b.content },
+      ),
       include_contracts: proposal.include_contracts,
       discount_type: proposal.discount_type,
       discount_value: proposal.discount_value,
@@ -188,7 +200,32 @@ export function buildSnapshot(proposal: Proposal, lineItems: ProposalLineItem[])
       monthly_price: li.monthly_price,
       monthly_label: li.monthly_label,
       display_order: li.display_order,
+      optional: Boolean(li.optional),
     })),
+  };
+}
+
+/** Prices are never negative (a discount is the way to lower a total). */
+function assertNoNegativePrices(items: Array<Partial<Pick<AgentDraftLineItem, 'name' | 'one_time_price' | 'monthly_price'>>>): void {
+  for (const item of items) {
+    if ((item.one_time_price ?? 0) < 0 || (item.monthly_price ?? 0) < 0) {
+      throw new Error(`"${item.name ?? 'A line item'}" has a negative price. Use a discount instead, then ask the assistant again.`);
+    }
+  }
+}
+
+/** Fields a draft does not carry but the existing line does: optional, Xero coding, template provenance, image.
+ * Matched on the line name (case-insensitive), since a draft restates the lines without ids. */
+function carriedLineFields(existing: ProposalLineItem[], name: string): Partial<ProposalLineItem> {
+  const match = existing.find(li => li.name.trim().toLowerCase() === name.trim().toLowerCase());
+  if (!match) return {};
+  return {
+    template_slug: match.template_slug ?? null,
+    image_url: match.image_url ?? null,
+    optional: Boolean(match.optional),
+    ...(match.xero_service_key !== undefined ? { xero_service_key: match.xero_service_key } : {}),
+    ...(match.xero_item_one_time !== undefined ? { xero_item_one_time: match.xero_item_one_time } : {}),
+    ...(match.xero_item_monthly !== undefined ? { xero_item_monthly: match.xero_item_monthly } : {}),
   };
 }
 
@@ -308,6 +345,7 @@ export async function applyDraftAsNewProposal(
       monthly_price: item.monthly_price,
       monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
       image_url: null,
+      optional: Boolean(item.optional),
       display_order: (i + 1) * 10,
     })),
   );
@@ -345,11 +383,26 @@ export async function applyDraftToProposal(
   lineItems: ProposalLineItem[],
   draft: ProposalDraftPayload,
 ): Promise<ApplyEditsResult> {
+  // A draft rewrites every section, and the assistant only saw the start of a
+  // very long one, so applying it would cut that section short.
+  const longBlock = proposal.content_blocks.find(b => blockTooLongForAgent(b.content));
+  if (longBlock) {
+    throw new Error(
+      `The section "${longBlock.title}" is too long for the assistant to rewrite safely. Edit it by hand, or ask for specific edits instead of a full rewrite.`,
+    );
+  }
+  assertNoNegativePrices(draft.line_items);
   // A draft that attaches the template MSA for a client who already signed one
   // gets the on-file reference instead, same as a newly created proposal.
   const contracts = draft.include_contracts
     ? await resolveContractsForClient(proposal.client_id, draft.include_contracts, proposal.id, { dropSigned: true })
     : null;
+  const nextOverrides = contracts ? { ...(proposal.contract_overrides ?? {}), ...contracts.overrides } : null;
+  // The client reads the frozen snapshot once the proposal is sent, so a contract
+  // change has to rebuild it (the editor does the same, see contract-snapshot.ts).
+  const snapshot = contracts && nextOverrides
+    ? await refreshedContractsSnapshot(proposal, contracts.include_contracts, nextOverrides)
+    : undefined;
   const nextProposal = await updateProposal(proposal.id, {
     title: sanitizeCopy(draft.title) || proposal.title,
     content_blocks: draft.content_blocks.map(b => ({
@@ -357,10 +410,11 @@ export async function applyDraftToProposal(
       title: sanitizeCopy(b.title),
       content: sanitizeCopy(b.content),
     })),
-    ...(contracts
+    ...(contracts && nextOverrides
       ? {
           include_contracts: contracts.include_contracts,
-          contract_overrides: { ...(proposal.contract_overrides ?? {}), ...contracts.overrides },
+          contract_overrides: nextOverrides,
+          ...(snapshot ? { contracts_snapshot: snapshot } : {}),
         }
       : {}),
     ...(draft.recipient_name != null ? { recipient_name: draft.recipient_name } : {}),
@@ -379,20 +433,28 @@ export async function applyDraftToProposal(
   // version deleted first, so a failed insert left the proposal with no line
   // items at all. In this order the worst case is a proposal showing both sets,
   // which is visible and fixable, not a lost price list.
+  // A line the draft keeps (same name) keeps what the draft cannot carry: its
+  // optional flag, Xero coding and template provenance. The draft's own optional
+  // flag wins when it sets one.
   const nextItems = await createProposalLineItems(
-    draft.line_items.map((item, i) => ({
-      proposal_id: proposal.id,
-      template_slug: null,
-      name: sanitizeCopy(item.name),
-      description: sanitizeCopy(item.description),
-      content: sanitizeCopy(item.content),
-      one_time_price: item.one_time_price,
-      one_time_label: item.one_time_label ? sanitizeCopy(item.one_time_label) : null,
-      monthly_price: item.monthly_price,
-      monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
-      image_url: null,
-      display_order: (i + 1) * 10,
-    })),
+    draft.line_items.map((item, i) => {
+      const carried = carriedLineFields(lineItems, item.name);
+      return {
+        proposal_id: proposal.id,
+        template_slug: null,
+        image_url: null,
+        ...carried,
+        name: sanitizeCopy(item.name),
+        description: sanitizeCopy(item.description),
+        content: sanitizeCopy(item.content),
+        one_time_price: item.one_time_price,
+        one_time_label: item.one_time_label ? sanitizeCopy(item.one_time_label) : null,
+        monthly_price: item.monthly_price,
+        monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
+        optional: typeof item.optional === 'boolean' ? item.optional : Boolean(carried.optional),
+        display_order: (i + 1) * 10,
+      };
+    }),
   );
   await deleteProposalLineItems(lineItems.map(li => li.id));
 
@@ -438,12 +500,31 @@ export async function applyEditSet(
   let recipientEmail = proposal.recipient_email;
   let discount: AgentDiscount | null = null;
   let proposalDirty = false;
+  let contractsTouched = false;
+  let msaTicked = false;
   let signerHint: string | null = null;
 
   let nextItems: ProposalLineItem[] = lineItems.map(li => ({ ...li }));
   const itemInserts: AgentDraftLineItem[] = [];
   const itemUpdates = new Map<string, Partial<AgentDraftLineItem>>();
   const itemDeletes = new Set<string>();
+
+  // Refuse before writing anything: a full replacement of a block the assistant
+  // only saw part of would cut it short, and prices are never negative.
+  for (const op of editSet.operations) {
+    if (op.op === 'update_block' && op.content != null) {
+      const current = blocks.find(b => b.key === op.block_key);
+      if (current && blockTooLongForAgent(current.content)) {
+        throw new Error(
+          `The section "${current.title}" is too long for the assistant to replace safely, so nothing was changed. Edit that section by hand.`,
+        );
+      }
+    }
+    if (op.op === 'add_line_item') assertNoNegativePrices([op.item]);
+    if (op.op === 'update_line_item') {
+      assertNoNegativePrices([{ name: lineItems.find(li => li.id === op.item_id)?.name, ...op.patch }]);
+    }
+  }
 
   for (const op of editSet.operations) {
     switch (op.op) {
@@ -495,9 +576,10 @@ export async function applyEditSet(
         proposalDirty = true;
         break;
       case 'toggle_contract':
-        includeContracts = op.included
-          ? [...new Set([...includeContracts, op.slug])]
-          : includeContracts.filter(s => s !== op.slug);
+        // Same rules as the editor's tick box: the MSA is one choice in two forms.
+        includeContracts = toggleContractSelection(includeContracts, op.slug, op.included);
+        if (op.included && (op.slug === MSA_SLUG || op.slug === MSA_ON_FILE_SLUG)) msaTicked = true;
+        contractsTouched = true;
         proposalDirty = true;
         break;
       case 'override_contract': {
@@ -505,6 +587,7 @@ export async function applyEditSet(
         if (op.contract_content && op.contract_content.trim()) next[op.slug] = op.contract_content;
         else delete next[op.slug];
         contractOverrides = next;
+        contractsTouched = true;
         proposalDirty = true;
         break;
       }
@@ -521,6 +604,18 @@ export async function applyEditSet(
     }
   }
 
+  // Ticking the MSA for a client who already signed one attaches the on-file
+  // reference instead, the same as the editor and a new proposal.
+  if (msaTicked && includeContracts.includes(MSA_SLUG)) {
+    const resolved = await resolveContractsForClient(proposal.client_id, includeContracts, proposal.id);
+    includeContracts = resolved.include_contracts;
+    contractOverrides = { ...contractOverrides, ...resolved.overrides };
+  }
+  // Rebuild the frozen snapshot the client reads, or the change never reaches them.
+  const snapshot = contractsTouched
+    ? await refreshedContractsSnapshot(proposal, includeContracts, contractOverrides)
+    : undefined;
+
   let nextProposal = proposal;
   if (proposalDirty) {
     nextProposal = await updateProposal(proposal.id, {
@@ -528,6 +623,7 @@ export async function applyEditSet(
       content_blocks: blocks,
       include_contracts: includeContracts,
       contract_overrides: contractOverrides,
+      ...(snapshot ? { contracts_snapshot: snapshot } : {}),
       recipient_name: recipientName,
       recipient_email: recipientEmail,
       ...(discount
@@ -547,6 +643,7 @@ export async function applyEditSet(
     if (patch.name != null) clean.name = sanitizeCopy(patch.name);
     if (patch.description != null) clean.description = sanitizeCopy(patch.description);
     if (patch.content != null) clean.content = sanitizeCopy(patch.content);
+    if (typeof patch.optional === 'boolean') clean.optional = patch.optional;
     if ('one_time_price' in patch) clean.one_time_price = patch.one_time_price;
     if ('monthly_price' in patch) clean.monthly_price = patch.monthly_price;
     if ('one_time_label' in patch) {
@@ -579,6 +676,7 @@ export async function applyEditSet(
         monthly_price: item.monthly_price,
         monthly_label: item.monthly_label ? sanitizeCopy(item.monthly_label) : null,
         image_url: null,
+        optional: Boolean(item.optional),
         display_order: maxOrder + (i + 1) * 10,
       })),
     );

@@ -50,6 +50,9 @@ function isNumOrNull(v: unknown): v is number | null {
 function isStrOrNull(v: unknown): v is string | null {
   return v === null || v === undefined || typeof v === "string";
 }
+function isNegative(v: unknown): boolean {
+  return typeof v === "number" && v < 0;
+}
 
 // ask_user validation is shared with the document assistant.
 export { validateQuestion } from "../_shared/ask-user.ts";
@@ -63,6 +66,10 @@ function validateLineItem(item: any, label: string): string | null {
   if (!isNumOrNull(item.monthly_price)) return `${label}.monthly_price must be a number or null`;
   if (!isStrOrNull(item.one_time_label)) return `${label}.one_time_label must be a string or null`;
   if (!isStrOrNull(item.monthly_label)) return `${label}.monthly_label must be a string or null`;
+  if (isNegative(item.one_time_price) || isNegative(item.monthly_price)) {
+    return `${label}: prices cannot be negative; use a discount to lower the total`;
+  }
+  if (item.optional != null && typeof item.optional !== "boolean") return `${label}.optional must be true or false`;
   if (item.one_time_price == null && item.monthly_price == null) {
     return `${label} needs at least one of one_time_price or monthly_price`;
   }
@@ -142,7 +149,13 @@ export function isEmptyEditSet(input: unknown): boolean {
 
 export function validateEditSet(
   input: any,
-  ctx: { blockKeys: Set<string>; itemIds: Set<string>; contractSlugs: Set<string> },
+  ctx: {
+    blockKeys: Set<string>;
+    itemIds: Set<string>;
+    contractSlugs: Set<string>;
+    /** Blocks sent cut short (truncated: true in the snapshot): their content must not be replaced. */
+    truncatedBlockKeys?: Set<string>;
+  },
 ): ValidationResult<any> {
   if (!input || typeof input !== "object") return { ok: false, error: "propose_edits input must be an object" };
   if (!isStr(input.summary) || !input.summary.trim()) return { ok: false, error: "summary is required" };
@@ -179,6 +192,12 @@ export function validateEditSet(
         if (o.title == null && o.content == null) {
           return { ok: false, error: `${label}: provide title and/or content` };
         }
+        if (o.content != null && ctx.truncatedBlockKeys?.has(o.block_key)) {
+          return {
+            ok: false,
+            error: `${label}: block ${o.block_key} is truncated (too long to send in full), so its content cannot be replaced. Change only its title, or tell the user to edit that section by hand.`,
+          };
+        }
         break;
       case "add_block":
         if (!isStr(o.title) || !o.title.trim() || !isStr(o.content)) {
@@ -204,6 +223,15 @@ export function validateEditSet(
         }
         if (!o.patch || typeof o.patch !== "object" || Object.keys(o.patch).length === 0) {
           return { ok: false, error: `${label}: patch must contain at least one field` };
+        }
+        if (!isNumOrNull(o.patch.one_time_price) || !isNumOrNull(o.patch.monthly_price)) {
+          return { ok: false, error: `${label}: prices must be numbers or null` };
+        }
+        if (isNegative(o.patch.one_time_price) || isNegative(o.patch.monthly_price)) {
+          return { ok: false, error: `${label}: prices cannot be negative; use a discount to lower the total` };
+        }
+        if (o.patch.optional != null && typeof o.patch.optional !== "boolean") {
+          return { ok: false, error: `${label}: optional must be true or false` };
         }
         break;
       case "delete_line_item":

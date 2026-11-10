@@ -10,12 +10,11 @@ import {
   proposalExpiryTooltip,
 } from '../../lib/proposal-status';
 import type { Proposal } from '../../lib/types';
+import { addDaysToDate, businessDate } from '../../lib/valid-until';
 
-/** Add days to today, as a YYYY-MM-DD date (valid_until is a DATE column). */
+/** Add days to today in New York, as a YYYY-MM-DD date (valid_until is a DATE column on the New York clock). */
 function datePlusDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return addDaysToDate(businessDate(), days);
 }
 
 /**

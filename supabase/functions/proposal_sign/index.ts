@@ -68,6 +68,11 @@ serve(async (req) => {
     }
 
     const { proposal, signerIndex, lineItems, signatures } = bundle;
+    // A second signer who was removed has no slot to sign (fetchPublicProposal already hides
+    // the link; this keeps the rule here too).
+    if (signerIndex === 2 && requiredClientSigners(proposal) < 2) {
+      return proposalJson({ ok: false, error: { code: "not_found" }, correlationId }, { status: 404 });
+    }
     if (proposal.status !== "sent" && proposal.status !== "viewed") {
       return proposalJson({ ok: false, error: { code: "already_signed" }, correlationId }, { status: 409 });
     }

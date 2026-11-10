@@ -23,6 +23,7 @@ import SignaturePad, { type SignaturePadHandle, type SignatureMeta } from '../co
 import BrandedCheckbox from '../components/ui/BrandedCheckbox';
 import Modal from '../components/ui/Modal';
 import type { Document, DocumentDisplayStatus, DocumentEvent, DocumentSignature } from '../lib/types';
+import { isPastValidUntil } from '../lib/valid-until';
 
 const STATUS_LABELS: Record<DocumentDisplayStatus, { label: string; tone: string }> = {
   draft: { label: 'Draft', tone: 'bg-gray-100 text-gray-600' },
@@ -34,10 +35,8 @@ const STATUS_LABELS: Record<DocumentDisplayStatus, { label: string; tone: string
 };
 
 function displayStatus(doc: Document): DocumentDisplayStatus {
-  if ((doc.status === 'sent' || doc.status === 'viewed') && doc.valid_until) {
-    const until = new Date(`${doc.valid_until}T23:59:59`);
-    if (Number.isFinite(until.getTime()) && until < new Date()) return 'expired';
-  }
+  // Same clock as the public link: the end of the valid_until day in New York.
+  if ((doc.status === 'sent' || doc.status === 'viewed') && isPastValidUntil(doc.valid_until)) return 'expired';
   return doc.status;
 }
 

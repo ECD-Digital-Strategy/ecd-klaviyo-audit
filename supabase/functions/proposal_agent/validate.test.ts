@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { validateQuestion } from "./validate.ts";
+import { validateDraft, validateEditSet, validateQuestion } from "./validate.ts";
 
 // The real payload from 2026-09-19, off the proposal at 2a449d2b after "Fit it
 // for ~$10k to match his budget". The model wrote its own function-call markup
@@ -108,4 +108,49 @@ Deno.test("a question with no options at all is still refused", () => {
   assertEquals(result.ok, false);
   const missing = validateQuestion({ options: [{ label: "a", value: "b" }] });
   assertEquals(missing.ok, false);
+});
+
+const ITEM = { name: "Setup", description: "d", content: "c", one_time_price: 500, monthly_price: null };
+const EDIT_CTX = {
+  blockKeys: new Set(["b1", "b2"]),
+  itemIds: new Set(["i1"]),
+  contractSlugs: new Set(["msa"]),
+  truncatedBlockKeys: new Set(["b2"]),
+};
+
+Deno.test("negative prices are refused in drafts, new lines and line patches", () => {
+  const draft = validateDraft({
+    title: "T", summary: "S", content_blocks: [{ title: "A", content: "x" }],
+    line_items: [{ ...ITEM, one_time_price: -100 }],
+  });
+  assert(!draft.ok);
+  const add = validateEditSet({ summary: "s", operations: [{ op: "add_line_item", item: { ...ITEM, monthly_price: -5 } }] }, EDIT_CTX);
+  assert(!add.ok);
+  const patch = validateEditSet({ summary: "s", operations: [{ op: "update_line_item", item_id: "i1", patch: { one_time_price: -1 } }] }, EDIT_CTX);
+  assert(!patch.ok);
+  const fine = validateEditSet({ summary: "s", operations: [{ op: "update_line_item", item_id: "i1", patch: { optional: true } }] }, EDIT_CTX);
+  assert(fine.ok);
+});
+
+Deno.test("a truncated block can be renamed but its content cannot be replaced", () => {
+  const replace = validateEditSet({ summary: "s", operations: [{ op: "update_block", block_key: "b2", content: "short" }] }, EDIT_CTX);
+  assert(!replace.ok);
+  if (!replace.ok) assertStringIncludes(replace.error, "truncated");
+  const rename = validateEditSet({ summary: "s", operations: [{ op: "update_block", block_key: "b2", title: "New" }] }, EDIT_CTX);
+  assert(rename.ok);
+  const other = validateEditSet({ summary: "s", operations: [{ op: "update_block", block_key: "b1", content: "ok" }] }, EDIT_CTX);
+  assert(other.ok);
+});
+
+Deno.test("optional must be a boolean on a line item", () => {
+  const bad = validateDraft({
+    title: "T", summary: "S", content_blocks: [{ title: "A", content: "x" }],
+    line_items: [{ ...ITEM, optional: "yes" }],
+  });
+  assert(!bad.ok);
+  const good = validateDraft({
+    title: "T", summary: "S", content_blocks: [{ title: "A", content: "x" }],
+    line_items: [{ ...ITEM, optional: true }],
+  });
+  assert(good.ok);
 });

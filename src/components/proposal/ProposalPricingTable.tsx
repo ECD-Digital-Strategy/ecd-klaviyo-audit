@@ -12,6 +12,7 @@ import { useProposalOptions } from './ProposalOptions';
 import {
   buildProposalPriceLines,
   computeProposalTotals,
+  formatProposalMoney,
   formatProposalTotal,
   lineItemHasPricing,
   lineIsTaken,
@@ -544,14 +545,14 @@ export default function ProposalPricingTable({ proposal, lineItems, clientWebsit
               {totals.oneTimeDiscount > 0 && (
                 <SummaryTotalRow
                   label={discountLabel}
-                  amount={`−${formatCurrency(totals.oneTimeDiscount)}`}
+                  amount={`−${formatProposalMoney(totals.oneTimeDiscount)}`}
                   tone="discount"
                 />
               )}
               {totals.monthlyDiscount > 0 && (
                 <SummaryTotalRow
                   label={`${discountLabel} (monthly)`}
-                  amount={`−${formatCurrency(totals.monthlyDiscount)}`}
+                  amount={`−${formatProposalMoney(totals.monthlyDiscount)}`}
                   suffix="/mo"
                   tone="discount"
                 />

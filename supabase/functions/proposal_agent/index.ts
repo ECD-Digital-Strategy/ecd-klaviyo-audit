@@ -322,7 +322,7 @@ serve(async (req) => {
           const { data: p } = await sb
             .from("proposals")
             .select(
-              "id, title, status, content_blocks, include_contracts, contract_overrides, discount_type, discount_value, discount_applies_to, discount_label, client:clients(company_name), line_items:proposal_line_items(name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, display_order)",
+              "id, title, status, content_blocks, include_contracts, contract_overrides, discount_type, discount_value, discount_applies_to, discount_label, client:clients(company_name), line_items:proposal_line_items(name, description, content, one_time_price, one_time_label, monthly_price, monthly_label, display_order, optional)",
             )
             .eq("id", id)
             .maybeSingle();
@@ -348,6 +348,7 @@ serve(async (req) => {
                 one_time_label: li?.one_time_label ?? null,
                 monthly_price: li?.monthly_price ?? null,
                 monthly_label: li?.monthly_label ?? null,
+                optional: li?.optional === true,
               })),
               discount: {
                 type: (p as any).discount_type,
@@ -409,6 +410,9 @@ serve(async (req) => {
           blockKeys: new Set((snapshot?.proposal.content_blocks ?? []).map((b) => b.key)),
           itemIds: new Set((snapshot?.line_items ?? []).map((li) => li.id)),
           contractSlugs: new Set(contracts.map((c) => c.slug)),
+          truncatedBlockKeys: new Set(
+            (snapshot?.proposal.content_blocks ?? []).filter((b) => b.truncated).map((b) => b.key),
+          ),
         });
       }
 

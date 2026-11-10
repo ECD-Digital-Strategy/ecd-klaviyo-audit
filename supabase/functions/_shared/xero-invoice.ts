@@ -13,6 +13,7 @@ import { notificationRecipients, proposalEmailHtml, sendEmail } from "./mailer.t
 import { deliverNewInvoices, loadInvoicing } from "./invoice-delivery.ts";
 import { inlineLink, proposalLink } from "./app-links.ts";
 import { splitPaymentTerms } from "./payment-terms.ts";
+import { roundLinesToTotal } from "./invoice-rounding.ts";
 
 /**
  * Creates the DRAFT sales invoices for a signed proposal, by Zak's rules
@@ -378,6 +379,8 @@ export async function createDraftInvoiceForProposal(
       // Approved means payable: it gets a pay link and may be emailed to the client. Not when the terms split it.
       const held = inv.kind === "one_time" && splitTerms !== null;
       const approved = inv.kind === "one_time" && !held;
+      // Whole cents that add up to the signed total: the rounding remainder goes on the last line.
+      const unitAmounts = roundLinesToTotal(inv.lines.map((l) => l.amount));
       const payload = {
         Invoices: [
           {
@@ -393,12 +396,12 @@ export async function createDraftInvoiceForProposal(
             DueDate: inv.dueDate,
             Reference: reference,
             LineAmountTypes: "Exclusive",
-            LineItems: inv.lines.map((l) => ({
+            LineItems: inv.lines.map((l, i) => ({
               Description: l.description,
               Quantity: 1,
               // Xero recomputes totals from UnitAmount, so the discount is folded
               // into the unit price proportionally rather than sent separately.
-              UnitAmount: Math.round(l.amount * 100) / 100,
+              UnitAmount: unitAmounts[i],
               AccountCode: l.accountCode,
               ...(l.itemCode ? { ItemCode: l.itemCode } : {}),
               ...(conn?.tax_type ? { TaxType: conn.tax_type } : {}),
@@ -447,7 +450,8 @@ export async function createDraftInvoiceForProposal(
         number: made.InvoiceNumber ?? "",
         date: inv.date,
         due_date: inv.dueDate,
-        total: Math.round(inv.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100,
+        // Xero's own total when it sends one (it is what the client is billed), else ours.
+        total: typeof made.Total === "number" ? made.Total : Math.round(unitAmounts.reduce((s, a) => s + a, 0) * 100) / 100,
         status: approved ? "AUTHORISED" : "DRAFT",
         online_url: onlineUrl,
         ...(held ? { held_reason: splitTerms } : {}),

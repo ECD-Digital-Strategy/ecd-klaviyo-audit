@@ -3,7 +3,7 @@ export type AgentSnapshot = {
     id: string;
     title: string;
     status: string;
-    content_blocks: Array<{ key: string; title: string; content: string }>;
+    content_blocks: Array<{ key: string; title: string; content: string; truncated?: boolean }>;
     include_contracts: string[];
     discount_type: string;
     discount_value: number;
@@ -23,6 +23,7 @@ export type AgentSnapshot = {
     monthly_price: number | null;
     monthly_label: string | null;
     display_order: number;
+    optional?: boolean;
   }>;
 } | null;
 
@@ -37,7 +38,8 @@ WRITING STYLE (mandatory):
 const DRAFT_RULES = `
 PROPOSAL STRUCTURE (for propose_draft):
 - content_blocks: ordered markdown sections. A strong default set: Overview / Our Understanding, Scope of Work, What's Included, What's Not Included, Timeline, Why ECD Digital Strategy. Adapt to the source material, but ALWAYS include a "What's Included" block and a "What's Not Included" block unless the user explicitly says to leave them out. These protect both sides on scope.
-- line_items: the priced services. Each needs a clear name, a one-line description, and markdown content describing deliverables. Use one_time_price for setup/project fees, monthly_price for retainers. Labels like "Implementation" or "Ongoing management" clarify what each price covers.
+- line_items: the priced services. Each needs a clear name, a one-line description, and markdown content describing deliverables. Use one_time_price for setup/project fees, monthly_price for retainers. Labels like "Implementation" or "Ongoing management" clarify what each price covers. Prices are never negative; a reduction is a discount.
+- OPTIONAL ADD-ONS: an add-on the client may choose to take or leave is a line with optional: true. The client ticks it when signing and it counts in no total until they do. Never write it as a regular line named "Optional: ...", which reads as bought and gets billed.
 - include_contracts: recommend the MSA by default for service engagements; add other contracts only when they fit.
 - NEVER RESTATE THE PRICING IN A CONTENT BLOCK. The proposal page already renders an investment section from line_items, with each service, its price, and the total. So a content block must never contain a fees or investment table, a bulleted price list, a "Total engagement investment: $X" line, or per-service dollar amounts. Even when the source document has a fees table, convert it into line_items and do not copy the table into a block. Price only belongs in line_items.
 - Payment TERMS are different from prices and are welcome in a block: deposit or milestone split, invoice timing, net terms, accepted payment methods, late fees. Write those in words and refer to amounts generically ("the project fee", "the first invoice") rather than repeating the numbers.
@@ -55,6 +57,7 @@ EDITING (for propose_edits):
 - You are editing the proposal shown in CURRENT PROPOSAL STATE. Reference blocks by their key and line items by their id exactly as given there.
 - Propose the minimal set of operations that accomplishes the request. Do not rewrite blocks the user did not ask about.
 - Keep the existing voice and structure of untouched content.
+- A block marked truncated: true was too long to send you in full. Never send update_block content for it (you would erase the part you cannot see); you may change its title. If the user wants it rewritten, tell them to edit that section by hand or to point you at the specific passage to change in a new section.
 - WHO SIGNS FOR ECD is something you can change. Every proposal is signed on our behalf automatically, by Zak unless someone picked otherwise. If the user asks for a different signer ("have Xiomara sign this one", "use Zak's signature"), emit a set_agency_signer operation with their name; that is the whole change, so do not touch any block to accomplish it. Never guess a name the user did not say, and never emit it unprompted. Once the client has signed, the proposal is executed and the signature can no longer change: say so rather than proposing it.`;
 
 const BEHAVIOR_RULES = `

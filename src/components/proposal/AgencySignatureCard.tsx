@@ -21,6 +21,7 @@ export default function AgencySignatureCard({
   signature,
   clientHasSigned,
   currentUserId,
+  canSignForOthers = false,
   onChanged,
 }: {
   proposalId: string;
@@ -28,6 +29,9 @@ export default function AgencySignatureCard({
   /** Once the client signs, the executed document stops changing. */
   clientHasSigned: boolean;
   currentUserId: string | null;
+  /** Admins can sign as anyone. Others sign as themselves, or as the default
+   * signer when ECD has not signed yet (proposal_countersign enforces the same). */
+  canSignForOthers?: boolean;
   onChanged: () => void;
 }) {
   const [signers, setSigners] = useState<StaffSigner[]>([]);
@@ -38,21 +42,30 @@ export default function AgencySignatureCard({
   const [padEmpty, setPadEmpty] = useState(true);
   const padRef = useRef<SignaturePadHandle>(null);
 
+  const signedById = signature?.signer_user_id ?? null;
+  const hasSignature = Boolean(signature);
+
   useEffect(() => {
     let cancelled = false;
     listStaffSigners()
-      .then(rows => {
+      .then(all => {
         if (cancelled) return;
+        const rows = canSignForOthers
+          ? all
+          : all.filter(r =>
+              r.id === currentUserId ||
+              r.id === signedById ||
+              (!hasSignature && r.email.toLowerCase() === DEFAULT_SIGNER_EMAIL));
         setSigners(rows);
         const current =
-          rows.find(r => r.id === signature?.signer_user_id) ??
+          rows.find(r => r.id === signedById) ??
           rows.find(r => r.email.toLowerCase() === DEFAULT_SIGNER_EMAIL) ??
           rows[0];
         setSelectedId(current?.id ?? '');
       })
       .catch(() => { /* the card degrades to read-only */ });
     return () => { cancelled = true; };
-  }, [signature?.signer_user_id]);
+  }, [signedById, hasSignature, canSignForOthers, currentUserId]);
 
   const selected = signers.find(s => s.id === selectedId) ?? null;
   const changed = Boolean(signature) && signature?.signer_user_id !== selectedId;
