@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient, hasCronSecret } from "../_shared/auth.ts";
 import { requireOutreachOwner } from "../_shared/outreach-access.ts";
 import { sendEmail } from "../_shared/mailer.ts";
-import { ImapSession } from "../_shared/imap-search.ts";
+import { advanceCursor, ImapSession, newUids, uidSet } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
@@ -15,7 +15,7 @@ import {
   UNSORTED,
   type ReplyVerdict,
 } from "../_shared/outreach-replies.ts";
-import { extractGmailSignature, isAutoReply, mailHeader, mailHtml, parseMail } from "../_shared/mail-parse.ts";
+import { extractGmailSignature, isAutoReply, mailHeader, mailHtml, matchMessage, parseMail } from "../_shared/mail-parse.ts";
 import { imapDate } from "../_shared/imap-search.ts";
 import { gmailSignature, NeedsReconnect } from "../_shared/gmail.ts";
 import { mailboxByEmail } from "../_shared/invoice-delivery.ts";
@@ -96,6 +96,9 @@ type Settings = {
   auto_pipeline: boolean;
   auto_audits_per_day: number;
   min_lead_score: number;
+  /** Inbox cursor (2026-11-10): All Mail's UIDVALIDITY and the last UID fully handled. */
+  inbox_uidvalidity: number | null;
+  inbox_last_uid: number | null;
 };
 const DEFAULT_SETTINGS: Settings = {
   paused: false,
@@ -116,6 +119,8 @@ const DEFAULT_SETTINGS: Settings = {
   auto_pipeline: false,
   auto_audits_per_day: 3,
   min_lead_score: 40,
+  inbox_uidvalidity: null,
+  inbox_last_uid: null,
 };
 type Prospect = {
   id: string;
@@ -563,73 +568,267 @@ async function hotLeads(sb: Sb, settings: Settings) {
 }
 
 // Each new message is read and sorted, oldest first, up to this many per prospect
-// per run; the rest wait for the next run (and hold that prospect's follow-ups).
+// per run in the per-prospect scan; the rest wait for the next run (and hold that
+// prospect's follow-ups).
 const MAX_REPLIES_PER_PROSPECT = 5;
-// The cron allows about 120s per run; the inbox gets this much of it.
+// The cron allows about 120s per run; the inbox gets this much of it. The IMAP
+// session enforces it on every read, so a stalled connection can't outlast it.
 const INBOX_BUDGET_MS = 70_000;
+// New messages looked at per run with the inbox cursor; the rest next run.
+const MAX_NEW_MESSAGES = 50;
+// Fetched for every new message in one round trip; bodies only for prospects' mail.
+const HEADER_FIELDS = [
+  "FROM",
+  "REPLY-TO",
+  "MESSAGE-ID",
+  "IN-REPLY-TO",
+  "REFERENCES",
+  "AUTO-SUBMITTED",
+  "PRECEDENCE",
+  "LIST-UNSUBSCRIBE",
+  "X-AUTOREPLY",
+  "X-AUTORESPOND",
+];
+
+/** A prospect a new message may be from. claimed: a first email is being sent or
+ * a dead run's send is not sorted out yet (status approved, sent_at set). */
+type InboxCandidate = Prospect & {
+  contactEmail: string | null;
+  messageIds: string[];
+  inSequence: boolean;
+  sentAt: number | null;
+  claimed: boolean;
+};
+
+/** Prospects in a sequence (sent, emailed in the last 45 days) and claimed first
+ * emails, with every Message-ID we sent them. Null when the database can't say. */
+async function inboxCandidates(sb: Sb): Promise<InboxCandidate[] | null> {
+  const [sent, claimed] = await Promise.all([
+    sb.from("outreach_prospects").select("*").eq("status", "sent").gte("sent_at", new Date(Date.now() - 45 * 86_400_000).toISOString()),
+    sb.from("outreach_prospects").select("*").eq("status", "approved").not("sent_at", "is", null),
+  ]);
+  if (sent.error || claimed.error) return null;
+  const rows = [
+    ...((sent.data ?? []) as Prospect[]).map((p) => ({ p, claimed: false })),
+    ...((claimed.data ?? []) as Prospect[]).map((p) => ({ p, claimed: true })),
+  ];
+  const ids = new Map<string, string[]>();
+  if (rows.length) {
+    const { data, error } = await sb
+      .from("outreach_sends")
+      .select("prospect_id, message_id")
+      .in("prospect_id", rows.map((r) => r.p.id))
+      .eq("status", "sent");
+    if (error) return null;
+    for (const s of (data ?? []) as Array<{ prospect_id: string; message_id: string | null }>) {
+      if (s.message_id) ids.set(s.prospect_id, [...(ids.get(s.prospect_id) ?? []), s.message_id]);
+    }
+  }
+  return rows.map(({ p, claimed }) => ({
+    ...p,
+    contactEmail: p.contact_email,
+    messageIds: [...(p.message_id ? [p.message_id] : []), ...(ids.get(p.id) ?? [])],
+    inSequence: !claimed,
+    sentAt: p.sent_at ? Date.parse(p.sent_at) : null,
+    claimed,
+  }));
+}
+
+async function saveCursor(sb: Sb, uidValidity: number, lastUid: number): Promise<boolean> {
+  const { error } = await sb.from("outreach_settings").update({ inbox_uidvalidity: uidValidity, inbox_last_uid: lastUid }).eq("id", "default");
+  return !error;
+}
+
+async function markBounced(sb: Sb, p: Prospect) {
+  await sb.from("outreach_prospects").update({ status: "bounced" }).eq("id", p.id);
+  await pause(sb, `${p.contact_email} (${p.domain}) bounced. Sending is paused until you check the address list.`);
+}
 
 /**
  * Replies and bounces since each prospect was emailed. ok=false if the inbox could
  * not be read in full this run: then no follow-up goes out at all.
+ * Since 2026-11-10 each run reads only mail that is new since the last run (an
+ * inbox cursor on outreach_settings); the per-prospect scan runs only when there
+ * is no cursor yet or Gmail renumbered the mailbox (UIDVALIDITY changed).
  */
 async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
   const deadline = Date.now() + INBOX_BUDGET_MS;
-  const { data } = await sb
-    .from("outreach_prospects")
-    .select("*")
-    .eq("status", "sent")
-    .gte("sent_at", new Date(Date.now() - 45 * 86_400_000).toISOString());
-  const sent = (data ?? []) as Array<Prospect & { sent_at: string }>;
-  if (sent.length === 0) return true;
+  const cands = await inboxCandidates(sb);
+  if (!cands) return false;
   const settings = await loadSettings(sb);
   let imap: ImapSession;
   try {
-    imap = await ImapSession.open(box);
+    imap = await ImapSession.open(box, { deadline });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (looksLikeAuthFailure(msg)) await pause(sb, `Gmail refused the outreach mailbox sign-in (inbox): ${msg}`);
-    return false;
+    // Nobody to protect: nothing is held up.
+    return cands.length === 0;
   }
-  let complete = true;
   try {
-    for (const p of sent) {
-      if (!p.contact_email) continue;
-      if (Date.now() > deadline) {
-        // Out of time: the rest are read next run, and no follow-up goes out now.
-        complete = false;
-        break;
-      }
-      const since = new Date(p.sent_at);
-      if ((await imap.bouncesFor(p.contact_email, since)) > 0) {
-        await sb.from("outreach_prospects").update({ status: "bounced" }).eq("id", p.id);
-        await pause(sb, `${p.contact_email} (${p.domain}) bounced. Sending is paused until you check the address list.`);
-        continue;
-      }
-      const seqs = await imap.messagesFrom(replySearchKey(p.contact_email, p.domain), since);
-      const seen = p.replies_seen ?? 0;
-      const todo = pendingReplies(seqs, seen, MAX_REPLIES_PER_PROSPECT);
-      // Every new message, oldest first; the first one that is not an away
-      // message stops the sequence and the rest are not needed.
-      let read = seen;
-      let stopped = false;
-      for (const seq of todo) {
-        if (Date.now() > deadline) break;
-        const raw = await imap.fetchRaw(seq);
-        read += 1;
-        if (!(await handleReply(sb, settings, box, p, read, parseMail(raw), isAutoReply(raw)))) {
-          stopped = true;
-          break;
-        }
-      }
-      // Unread messages left (over the cap or out of time): no follow-up this run.
-      if (!stopped && read < seqs.length) complete = false;
+    const validity = imap.uidValidity;
+    const max = await imap.maxUid();
+    const hasCursor = validity !== null && settings.inbox_uidvalidity === validity && settings.inbox_last_uid !== null;
+    if (!hasCursor) {
+      const complete = await scanPerProspect(sb, settings, box, imap, cands.filter((c) => !c.claimed), max, deadline);
+      // The cursor starts where the scan stopped looking. Not while a first email is
+      // claimed: its replies would fall behind the cursor, so scan again next run.
+      // A failed save only means the next run scans again.
+      if (complete && validity !== null && !cands.some((c) => c.claimed)) await saveCursor(sb, validity, max);
+      return complete;
     }
-    return complete;
+    if (cands.length === 0) {
+      // Nobody in a sequence: everything so far is not a prospect's.
+      if (max > settings.inbox_last_uid!) await saveCursor(sb, validity!, max);
+      return true;
+    }
+    return await readNewMail(sb, settings, box, imap, cands, validity!, settings.inbox_last_uid!, deadline);
   } catch {
     return false;
   } finally {
     await imap.close();
   }
+}
+
+/**
+ * One pass over the mail that arrived since the cursor, oldest first: headers for
+ * all of it in one fetch, bodies only for prospects' mail, each classified as
+ * before. The cursor moves past each message once it is fully handled and stops at
+ * the first one that can't be (read again next run; no follow-ups this run).
+ */
+async function readNewMail(
+  sb: Sb,
+  settings: Settings,
+  box: Mailbox,
+  imap: ImapSession,
+  cands: InboxCandidate[],
+  validity: number,
+  last: number,
+  deadline: number,
+): Promise<boolean> {
+  const { batch, more } = newUids(await imap.uidSearch(`UID ${last + 1}:*`), last, MAX_NEW_MESSAGES);
+  if (!batch.length) return true;
+  const heads = await imap.fetchHeaders(batch, HEADER_FIELDS);
+  // Not in the fetch: gone from All Mail (trashed or deleted) unless a search still finds it.
+  const missing = batch.filter((u) => !heads.has(u));
+  const stillThere = new Set(missing.length ? await imap.uidSearch(`UID ${uidSet(missing)}`) : []);
+  const live = [...cands];
+  const results: Array<{ uid: number; handled: boolean }> = [];
+  let saved = last;
+  for (const uid of batch) {
+    if (Date.now() > deadline) break;
+    const h = heads.get(uid);
+    const outcome = h ? await handleNewMessage(sb, settings, box, imap, live, uid, h) : stillThere.has(uid) ? "unhandled" : "skipped";
+    results.push({ uid, handled: outcome !== "unhandled" });
+    if (outcome === "unhandled") break;
+    if (outcome === "handled") {
+      // Saved straight away, so a run cut off later never handles it twice.
+      if (!(await saveCursor(sb, validity, uid))) return false;
+      saved = uid;
+    }
+  }
+  const cursor = advanceCursor(last, results);
+  if (cursor > saved && !(await saveCursor(sb, validity, cursor))) return false;
+  return !more && results.length === batch.length && results.every((r) => r.handled);
+}
+
+/** One new message: a bounce, a prospect's reply (classified), or not ours. */
+async function handleNewMessage(
+  sb: Sb,
+  settings: Settings,
+  box: Mailbox,
+  imap: ImapSession,
+  live: InboxCandidate[],
+  uid: number,
+  h: { header: string; internalDate: number | null },
+): Promise<"handled" | "skipped" | "unhandled"> {
+  const from = mailHeader(h.header, "from");
+  const heads = {
+    from,
+    replyTo: mailHeader(h.header, "reply-to"),
+    inReplyTo: mailHeader(h.header, "in-reply-to"),
+    references: mailHeader(h.header, "references"),
+    internalDate: h.internalDate,
+  };
+  const drop = (p: InboxCandidate) => live.splice(live.indexOf(p), 1);
+  if (/mailer-daemon/i.test(from)) {
+    // A bounce: whose address it names (or whose email it answers).
+    const raw = await imap.fetchRawUid(uid);
+    if (!raw) return "unhandled";
+    const text = raw.toLowerCase();
+    const thread = matchMessage(heads, live, box.user);
+    const p = thread?.by === "thread"
+      ? thread.prospect
+      : live.find((c) => c.contact_email && text.includes(c.contact_email.trim().toLowerCase()));
+    if (!p) return "skipped";
+    if (p.claimed) return "unhandled";
+    await markBounced(sb, p);
+    drop(p);
+    return "handled";
+  }
+  const match = matchMessage(heads, live, box.user);
+  if (!match) return "skipped";
+  const p = match.prospect;
+  // Wait until the claimed first email is sorted out (reconcileStaleClaims).
+  if (p.claimed) return "unhandled";
+  const raw = await imap.fetchRawUid(uid);
+  if (!raw) return "unhandled";
+  // replies_seen counts what the per-prospect scan's FROM search would find, so a
+  // later scan (new UIDVALIDITY) never skips a message it hasn't seen.
+  const counted = Boolean(p.contact_email) && from.toLowerCase().includes(replySearchKey(p.contact_email!, p.domain));
+  const seen = (p.replies_seen ?? 0) + (counted ? 1 : 0);
+  p.replies_seen = seen;
+  if (!(await handleReply(sb, settings, box, p, seen, parseMail(raw), isAutoReply(raw)))) drop(p);
+  return "handled";
+}
+
+/**
+ * The per-prospect scan (before 2026-11-10 it ran every time): per prospect, a
+ * bounce search and a FROM search since they were emailed, then each message past
+ * replies_seen. Only mail up to maxUid, where the cursor will start.
+ */
+async function scanPerProspect(
+  sb: Sb,
+  settings: Settings,
+  box: Mailbox,
+  imap: ImapSession,
+  sent: InboxCandidate[],
+  maxUid: number,
+  deadline: number,
+): Promise<boolean> {
+  let complete = true;
+  for (const p of sent) {
+    if (!p.contact_email || !p.sent_at) continue;
+    if (Date.now() > deadline) {
+      // Out of time: the rest are read next run, and no follow-up goes out now.
+      return false;
+    }
+    const since = new Date(p.sent_at);
+    if ((await imap.bounceUids(p.contact_email, since, maxUid)).length > 0) {
+      await markBounced(sb, p);
+      continue;
+    }
+    const uids = await imap.replyUids(replySearchKey(p.contact_email, p.domain), since, maxUid);
+    const seen = p.replies_seen ?? 0;
+    const todo = pendingReplies(uids, seen, MAX_REPLIES_PER_PROSPECT);
+    // Every new message, oldest first; the first one that is not an away
+    // message stops the sequence and the rest are not needed.
+    let read = seen;
+    let stopped = false;
+    for (const uid of todo) {
+      if (Date.now() > deadline) break;
+      const raw = await imap.fetchRawUid(uid);
+      if (!raw) break;
+      read += 1;
+      if (!(await handleReply(sb, settings, box, p, read, parseMail(raw), isAutoReply(raw)))) {
+        stopped = true;
+        break;
+      }
+    }
+    // Unread messages left (over the cap or out of time): no follow-up this run.
+    if (!stopped && read < uids.length) complete = false;
+  }
+  return complete;
 }
 
 async function tick(sb: Sb) {

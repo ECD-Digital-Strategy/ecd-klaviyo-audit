@@ -207,6 +207,74 @@ export function extractGmailSignature(html: string): string | null {
   return sig.replace(/<[^>]+>/g, "").trim() ? sig : null;
 }
 
+/** The addresses in an address header, lowercased: the ones in <...> when there
+ * are any (so an address in a display name doesn't count), else the bare ones. */
+export function addressesIn(header: string): string[] {
+  const angled = [...header.matchAll(/<([^<>\s]+@[^<>\s]+)>/g)].map((m) => m[1]);
+  const found = angled.length ? angled : header.match(/[^\s<>"',;:()]+@[^\s<>"',;:()]+/g) ?? [];
+  return found.map((a) => a.trim().toLowerCase());
+}
+
+/** The <message-ids> in an In-Reply-To or References header, lowercased. */
+export function messageIdsIn(header: string): string[] {
+  return [...header.matchAll(/<[^<>\s]+>/g)].map((m) => m[0].toLowerCase());
+}
+
+/** A prospect a new message might belong to. inSequence: status sent, emailed in
+ * the last 45 days (only those match by domain). */
+export type MatchCandidate = {
+  contactEmail: string | null;
+  domain: string;
+  messageIds: string[];
+  inSequence: boolean;
+  /** When the first email went (epoch ms), if known. */
+  sentAt: number | null;
+};
+
+/** The headers that decide who a new message is from. */
+export type MessageHeads = { from: string; replyTo?: string; inReplyTo?: string; references?: string; internalDate?: number | null };
+
+const utcDayStart = (ms: number) => {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+};
+
+/**
+ * Which prospect a new message is from (Outreach inbox cursor, 2026-11-10), best
+ * evidence first: it answers one of our emails (In-Reply-To or References holds a
+ * Message-ID we sent them), else the sender (From or Reply-To) is their address,
+ * else the sender is at their store's domain. Our own mail never matches, and
+ * address or domain only count for mail that arrived on or after the day they
+ * were emailed (as the old SINCE search). Null: not from a prospect.
+ */
+export function matchMessage<P extends MatchCandidate>(
+  m: MessageHeads,
+  prospects: P[],
+  ownAddress: string,
+): { prospect: P; by: "thread" | "address" | "domain" } | null {
+  const own = ownAddress.trim().toLowerCase();
+  const from = addressesIn(m.from);
+  if (own && from.includes(own)) return null;
+  const refs = new Set([...messageIdsIn(m.inReplyTo ?? ""), ...messageIdsIn(m.references ?? "")]);
+  if (refs.size) {
+    const p = prospects.find((c) => c.messageIds.some((id) => refs.has(id.trim().toLowerCase())));
+    if (p) return { prospect: p, by: "thread" };
+  }
+  const senders = [...from, ...addressesIn(m.replyTo ?? "")].filter((a) => a !== own);
+  const afterSend = (c: P) => !m.internalDate || !c.sentAt || m.internalDate >= utcDayStart(c.sentAt);
+  const byAddress = prospects.find((c) => c.contactEmail && senders.includes(c.contactEmail.trim().toLowerCase()) && afterSend(c));
+  if (byAddress) return { prospect: byAddress, by: "address" };
+  const byDomain = prospects.find((c) => {
+    const d = c.domain.trim().toLowerCase().replace(/^www\./, "");
+    if (!c.inSequence || !d || !afterSend(c)) return false;
+    return senders.some((a) => {
+      const host = a.split("@")[1] ?? "";
+      return host === d || host.endsWith(`.${d}`);
+    });
+  });
+  return byDomain ? { prospect: byDomain, by: "domain" } : null;
+}
+
 export function parseMail(raw: string): ParsedMail {
   const { headers } = splitHeaders(raw);
   const { plain, html } = partText(raw);
