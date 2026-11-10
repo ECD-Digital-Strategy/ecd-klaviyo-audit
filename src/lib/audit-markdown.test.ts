@@ -2,7 +2,51 @@
  * @vitest-environment node
  */
 import { describe, expect, it } from 'vitest';
-import { parseRichAuditBlocks, prepareAuditMarkdown, tokenizeInlineMarkdown } from './audit-markdown';
+import {
+  bulletsArrayToEditorHtml,
+  editorValueToBulletsArray,
+  htmlToMd,
+  inlineMdToHtml,
+  markdownToEditorHtml,
+  parseRichAuditBlocks,
+  prepareAuditMarkdown,
+  tokenizeInlineMarkdown,
+} from './audit-markdown';
+
+describe('inlineMdToHtml escaping', () => {
+  it('escapes raw HTML in plain text', () => {
+    expect(inlineMdToHtml('<img src=x onerror=alert(1)>')).toBe('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('escapes inside bold and italic but keeps the formatting tags', () => {
+    expect(inlineMdToHtml('**<script>x</script>** and *"q" & \'s\'*')).toBe(
+      '<strong>&lt;script&gt;x&lt;/script&gt;</strong> and <em>&quot;q&quot; &amp; &#39;s&#39;</em>',
+    );
+  });
+
+  it('escapes entity chip names so they cannot break out of the span', () => {
+    const html = inlineMdToHtml('`flow:a"><img src=x onerror=1>`');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('a&quot;&gt;&lt;img src=x onerror=1&gt;');
+  });
+
+  it('keeps bare URLs as escaped text', () => {
+    expect(inlineMdToHtml('see https://x.com/a?b=1&c=2.')).toBe('see https://x.com/a?b=1&amp;c=2.');
+  });
+
+  it('escapes block content in lists, headings and tables', () => {
+    const html = markdownToEditorHtml('# <b>h</b>\n- <i>x</i>\n\n| <a> | b |\n| --- | --- |\n| <c> | d |');
+    expect(html).not.toMatch(/<(b|i|a|c)>/);
+    expect(html).toContain('<h1>&lt;b&gt;h&lt;/b&gt;</h1>');
+    expect(html).toContain('<li>&lt;i&gt;x&lt;/i&gt;</li>');
+  });
+
+  it('round-trips escaped text back to the same markdown', () => {
+    const md = 'Use <b> & "quotes" it\'s **bold <x>** fine';
+    expect(htmlToMd(markdownToEditorHtml(md))).toBe(md);
+    expect(editorValueToBulletsArray(bulletsArrayToEditorHtml(['a < b & "c"']))).toEqual(['a < b & "c"']);
+  });
+});
 
 describe('parseRichAuditBlocks numbered lists', () => {
   it('keeps counting when items are separated by blank lines', () => {

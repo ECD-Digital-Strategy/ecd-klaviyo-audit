@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { fetchSessions } from "../_shared/shopify-sessions.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, hasCronSecret, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { hasCronSecret, isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { decryptString } from "../_shared/crypto.ts";
 import { normalizeShopDomain, shopifyRest, shopifyGraphql, mapShopifyErrorCode, exchangeClientCredentials } from "../_shared/shopify-api.ts";
 import {
@@ -84,7 +84,9 @@ async function authorize(req: Request) {
   // The web pipeline's own secret, as the capture and analysis steps accept:
   // lets a backfill re-read the store data without a signed-in user.
   if (await hasCronSecret(req, "web_pipeline_cron_secret")) return;
-  await getUserIdFromAuthorization(req);
+  // A session alone is not enough: we act with the service role, so only staff
+  // with audit access may drive this.
+  await requireStaffUserId(req, "audits");
 }
 
 /** Sample recent current-period orders' line items to rank top products by revenue. */

@@ -10,7 +10,15 @@
 // opportunity computation, account snapshot extraction, etc.) keeps working
 // unchanged.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { teaserLockedTotal, teaserSections } from "../_shared/outreach-teaser.ts";
+import {
+  newestPerKind,
+  redactExecutiveSummary,
+  redactKlaviyoSection,
+  redactLayout,
+  redactWebSection,
+  teaserLockedTotal,
+  teaserSections,
+} from "../_shared/outreach-teaser.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
 
 const CORS_HEADERS: Record<string, string> = {
@@ -51,6 +59,15 @@ const FORM_SNAPSHOT_SELECT =
   "id, audit_id, client_id, form_id, name, status, ab_test, created_at_klaviyo, updated_at_klaviyo, fetched_at, is_hidden, display_name, display_notes, display_order";
 const CAMPAIGN_SNAPSHOT_SELECT =
   "id, audit_id, client_id, campaign_id, name, status, send_channel, created_at_klaviyo, updated_at_klaviyo, fetched_at, is_hidden, display_name, display_notes, display_order, _audiences:raw->attributes->audiences";
+// Only what the web report reads off a page snapshot (WebPageSection,
+// WebFindingCard): which shot it is and its image. The capture diagnostics in
+// raw/metrics, the storage path and error text stay server side.
+const WEB_PAGE_SNAPSHOT_SELECT =
+  "id, audit_id, client_id, page_type, viewport, variant, url, screenshot_url, status, fetched_at";
+
+/** Fields of the audit and client rows the public report never reads. */
+const AUDIT_PRIVATE_FIELDS = ["context", "created_by"];
+const CLIENT_PRIVATE_FIELDS = ["notes", "email", "hubspot_company_id", "created_by", "api_key_placeholder"];
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -85,15 +102,20 @@ serve(async (req) => {
     // internal, and the report renders neither. `select("*")` was handing both
     // to whoever holds the share link. Redact in place so the same raw row
     // shapes the frontend enrichment expects still arrive, minus these keys.
+    // The same goes for who created it, the client's own email and CRM ids, and
+    // anything the report hides: hidden copy is taken out here rather than
+    // only hidden in the browser.
     const redactAudit = (row: Record<string, unknown> | null) => {
       if (row) {
-        delete (row as Record<string, unknown>).context;
+        for (const key of AUDIT_PRIVATE_FIELDS) delete row[key];
+        row.executive_summary = redactExecutiveSummary(row.executive_summary);
+        row.layout = redactLayout(row.layout);
       }
       return row;
     };
     const redactClient = (row: Record<string, unknown> | null) => {
       if (row) {
-        delete (row as Record<string, unknown>).notes;
+        for (const key of CLIENT_PRIVATE_FIELDS) delete row[key];
       }
       return row;
     };
@@ -104,7 +126,7 @@ serve(async (req) => {
       const [webClient, webSections, pageSnaps, shopifySnaps] = await Promise.all([
         sb.from("clients").select("*").eq("id", audit.client_id).maybeSingle(),
         sb.from("audit_sections").select("*").eq("audit_id", audit.id),
-        sb.from("web_page_snapshots").select("*").eq("audit_id", audit.id).order("page_type").order("viewport"),
+        sb.from("web_page_snapshots").select(WEB_PAGE_SNAPSHOT_SELECT).eq("audit_id", audit.id).order("page_type").order("viewport"),
         // Newest first. Every refetch inserts another row, so without an order
         // the public link served an arbitrary one: Pipeliner's Cloud showed a
         // client $407,324 of a 7-day window days after the real 30-day figure of
@@ -132,18 +154,28 @@ serve(async (req) => {
       // visit (outreach_note_view). Emil's own links carry ?preview=1 and are not
       // counted. Best effort.
       if (isOutreach && !preview) await sb.rpc("outreach_note_view", { p_audit_id: audit.id }).then(() => {}, () => {});
+      // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
+      // and screen size, the rest only counted, and no roadmap, pricing or sales data.
+      const rawWebSections = (webSections.data ?? []) as Array<Record<string, unknown>>;
+      const servedSections = (isOutreach ? teaserSections(rawWebSections) : rawWebSections).map(redactWebSection);
       return json({
         ok: true,
         audit,
         client: redactClient(webClient.data as Record<string, unknown>),
-        // Outreach audits (Emil, 2026-11-01) are a teaser: the strongest finding per page
-        // and screen size, the rest only counted, and no roadmap, pricing or sales data.
-        sections: isOutreach ? teaserSections(webSections.data ?? []) : webSections.data ?? [],
+        sections: servedSections,
         teaser: isOutreach
-          ? { locked_total: teaserLockedTotal(webSections.data ?? []), booking_url: bookingUrl, about_intro: outreach?.about_intro ?? null }
+          ? { locked_total: teaserLockedTotal(rawWebSections), booking_url: bookingUrl, about_intro: outreach?.about_intro ?? null }
           : null,
-        webPageSnapshots: pageSnaps.data ?? [],
-        shopifySnapshots: isOutreach ? [] : shopifySnaps.data ?? [],
+        // Same row shape as before, with the diagnostics columns left empty.
+        webPageSnapshots: ((pageSnaps.data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+          ...row,
+          screenshot_path: null,
+          error_message: null,
+          metrics: {},
+          raw: {},
+        })),
+        // The report reads only the newest row of each kind (newestSnapshot).
+        shopifySnapshots: isOutreach ? [] : newestPerKind(shopifySnaps.data ?? []),
         correlationId,
       });
     }
@@ -196,7 +228,7 @@ serve(async (req) => {
       ok: true,
       audit,
       client: redactClient(client.data as Record<string, unknown>),
-      sections: sections.data ?? [],
+      sections: ((sections.data ?? []) as Array<Record<string, unknown>>).map(redactKlaviyoSection),
       assets: assets.data ?? [],
       flowPerformance: flows.data ?? [],
       flowSnapshots: flowSnaps.data ?? [],

@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { normalizeShopDomain, shopifyRest, mapShopifyErrorCode, exchangeClientCredentials, fetchInstalledAppToken, SHOPIFY_API_VERSION } from "../_shared/shopify-api.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { decryptString } from "../_shared/crypto.ts";
+import { requireStaffUserId } from "../_shared/auth.ts";
 
 /** The scopes the audit reads, and what goes missing without each one. Checked on
  * every test so a gap is named while there is still time to fix it, rather than
@@ -129,6 +130,13 @@ async function report(shopDomain: string, accessTokenFinal: string): Promise<Res
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, { status: 405 });
+  // Staff with audit access only: this decrypts stored store tokens and makes
+  // outbound calls with whatever credentials it is handed.
+  try {
+    await requireStaffUserId(req, "audits");
+  } catch (e) {
+    return json({ ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } }, { status: 401 });
+  }
   try {
     const { shopDomain: rawDomain, accessToken, clientId, clientSecret, useInstalledApp, websiteUrl, auditClientId } =
       (await req.json()) as {

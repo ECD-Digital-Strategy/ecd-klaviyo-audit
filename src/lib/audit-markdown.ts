@@ -77,35 +77,44 @@ export function tokenizeInlineMarkdown(text: string): InlineMarkdownToken[] {
   return tokens;
 }
 
-function entitySpan(type: EntityType, name: string): string {
-  const safe = name
+/** Escape text for HTML. Stored copy is markdown, never HTML, so anything that
+ * looks like a tag must land in the editor as text, not as live markup. */
+export function escapeHtml(text: string): string {
+  return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function entitySpan(type: EntityType, name: string): string {
   const label = ENTITY_LABELS[type];
-  return `<span data-entity-type="${type}" class="${ENTITY_CHIP_CLASS[type]}" title="${label}">${safe}</span>`;
+  return `<span data-entity-type="${type}" class="${ENTITY_CHIP_CLASS[type]}" title="${label}">${escapeHtml(name)}</span>`;
 }
 
 export function mdToHtml(md: string): string {
   return markdownToEditorHtml(md);
 }
 
-function inlineMdToHtml(md: string): string {
+/** Inline markdown to editor HTML. Every piece of text is escaped first; the
+ * only tags in the output are the ones added here. */
+export function inlineMdToHtml(md: string): string {
   return tokenizeInlineMarkdown(md)
     .map(token => {
       switch (token.type) {
         case 'entity':
           return entitySpan(token.entityType, token.name);
         case 'bold':
-          return `<strong>${token.value}</strong>`;
+          return `<strong>${escapeHtml(token.value)}</strong>`;
         case 'italic':
-          return `<em>${token.value}</em>`;
+          return `<em>${escapeHtml(token.value)}</em>`;
         case 'link':
           // Plain text while editing: an anchor here would come back through
           // htmlToMd as something other than the URL that went in.
-          return token.value;
+          return escapeHtml(token.value);
         default:
-          return token.value;
+          return escapeHtml(token.value);
       }
     })
     .join('');
@@ -160,12 +169,15 @@ export function markdownToEditorHtml(md: string): string {
     .join('');
 }
 
+// &amp; goes last so an escaped entity ("&amp;lt;") decodes once, to "&lt;".
 function decodeHtmlEntities(text: string): string {
   return text
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ');
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
 }
 
 function inlineHtmlToMd(html: string): string {
@@ -232,13 +244,8 @@ export function htmlToMd(html: string): string {
     (_, type: EntityType, inner: string) => {
       const name = inner
         .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<[^>]+>/g, '')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&nbsp;/g, ' ')
-        .trim();
-      return `\`${type}:${name}\``;
+        .replace(/<[^>]+>/g, '');
+      return `\`${type}:${decodeHtmlEntities(name).trim()}\``;
     },
   );
 
@@ -295,11 +302,8 @@ export function htmlToMd(html: string): string {
     .replace(/<em>(.*?)<\/em>/gi, '*$1*')
     .replace(/<i>(.*?)<\/i>/gi, '*$1*')
     .replace(/<u>(.*?)<\/u>/gi, '$1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ')
+    .replace(/<[^>]+>/g, '');
+  md = decodeHtmlEntities(md)
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 

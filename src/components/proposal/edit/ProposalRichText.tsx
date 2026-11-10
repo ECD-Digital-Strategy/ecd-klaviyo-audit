@@ -36,6 +36,8 @@ export default function ProposalRichText({
       isInternalUpdate.current = false;
       return;
     }
+    // Safe to assign as HTML: auditTextToEditorHtml escapes all stored text and
+    // only adds its own formatting tags.
     const html = auditTextToEditorHtml(value || '', undefined, false, false);
     if (editorRef.current.innerHTML !== html) {
       editorRef.current.innerHTML = html;

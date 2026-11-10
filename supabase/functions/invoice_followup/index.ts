@@ -230,7 +230,9 @@ serve(async (req) => {
 
   let userId: string;
   try {
-    userId = await requireStaffUserId(req);
+    // Welcome and invoice emails are proposals work, so a Member without
+    // Proposals access can't drive them.
+    userId = await requireStaffUserId(req, "proposals");
   } catch {
     return json({ ok: false, error: "forbidden" }, 403);
   }

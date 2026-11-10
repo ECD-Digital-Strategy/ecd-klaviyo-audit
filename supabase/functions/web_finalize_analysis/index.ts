@@ -3,7 +3,7 @@ import { freeShippingNote, labelsFromSnapshots, readFreeShippingOffer } from "..
 import { sessionsEvidence } from "../_shared/shopify-sessions.ts";
 import { belowFoldEvidence, isBelowFoldReport, popupEvidence, storefrontFactsForPlays } from "../_shared/below-fold-probe.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, hasCronSecret, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { hasCronSecret, isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { claimJobStep, ensureJobRow, releaseStaleRun, writeClaimedStep } from "../_shared/job-claim.ts";
 import { createLlmClient, type LlmImage, type LlmMessage } from "../_shared/llm-adapter.ts";
 import { FINDINGS_GUARDRAILS, CRO_HEURISTICS } from "../_shared/ecommerce-ux-kb.ts";
@@ -1271,7 +1271,8 @@ serve(async (req) => {
     await hasCronSecret(req, "web_pipeline_cron_secret");
   if (!internal) {
     try {
-      await getUserIdFromAuthorization(req);
+      // Staff with audit access only: everything below runs as the service role.
+      await requireStaffUserId(req, "audits");
     } catch (e) {
       return json({ ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" }, correlationId }, { status: 401 });
     }

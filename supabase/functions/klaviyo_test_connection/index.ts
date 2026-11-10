@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { KLAVIYO_BASE, KLAVIYO_REVISION } from "../_shared/klaviyo-api.ts";
+import { requireStaffUserId } from "../_shared/auth.ts";
 
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -36,6 +37,12 @@ function mapErrorCode(status: number): string {
 
 serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, { status: 405 });
+  // Staff with audit access only, so this cannot be used as an open key checker.
+  try {
+    await requireStaffUserId(req, "audits");
+  } catch (e) {
+    return json({ ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } }, { status: 401 });
+  }
   try {
     const { apiKey } = (await req.json()) as { apiKey?: string };
     if (!apiKey || typeof apiKey !== "string") return json({ error: "Missing apiKey" }, { status: 400 });

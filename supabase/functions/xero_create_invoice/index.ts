@@ -33,7 +33,7 @@ serve(async (req) => {
   try {
     const token = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
     atSigning = Boolean(token) && isServiceRoleAuthorization(token);
-    if (!atSigning) await requireStaffUserId(req);
+    if (!atSigning) await requireStaffUserId(req, "proposals");
   } catch (e) {
     return json(
       { ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } },
@@ -47,6 +47,17 @@ serve(async (req) => {
     if (!proposalId) return json({ ok: false, error: { code: "bad_request", message: "Missing proposal_id" } });
 
     const sb = serviceClient();
+    // Only a proposal the client has fully signed may be invoiced, whoever asks.
+    const { data: signedRow, error: signedErr } = await sb
+      .from("proposals")
+      .select("client_signed_at")
+      .eq("id", proposalId)
+      .maybeSingle();
+    if (signedErr) throw signedErr;
+    if (!signedRow?.client_signed_at) {
+      return json({ ok: false, error: { code: "not_signed", message: "This proposal has not been signed by the client yet" } });
+    }
+
     // Not connected yet is a normal state, not an error worth alarming about.
     const conn = await loadConnection(sb);
     if (!conn?.refresh_token_ciphertext || !conn.tenant_id) {

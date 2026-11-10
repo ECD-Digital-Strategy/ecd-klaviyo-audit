@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { requireStaffUserId } from "../_shared/auth.ts";
+import { requireAdminUserId, requireStaffUserId } from "../_shared/auth.ts";
 import {
   accessToken,
   buildAuthorizeUrl,
@@ -159,9 +159,12 @@ serve(async (req) => {
     });
   }
 
+  // Changing the connection or the account coding touches every invoice, so it
+  // is admin only. Reads and auto-coding one proposal are proposals work.
+  const ADMIN_ACTIONS = new Set(["connect", "disconnect", "save_settings", "save_services", "delete_service"]);
   let uid: string;
   try {
-    uid = await requireStaffUserId(req);
+    uid = ADMIN_ACTIONS.has(action) ? await requireAdminUserId(req) : await requireStaffUserId(req, "proposals");
   } catch (e) {
     return json(
       { ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" } },

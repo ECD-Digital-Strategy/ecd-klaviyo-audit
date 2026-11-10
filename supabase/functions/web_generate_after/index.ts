@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, hasCronSecret, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { hasCronSecret, isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
 import { type WebPageKind } from "../_shared/ecommerce-ux-kb.ts";
 // The prompt, the Gemini call, and the vision QA live in _shared so the model
@@ -1170,7 +1170,9 @@ serve(async (req) => {
     await hasCronSecret(req, "web_pipeline_cron_secret");
   if (!isService) {
     try {
-      await getUserIdFromAuthorization(req);
+      // Staff with audit access only: the door below can publish an audit and
+      // everything after it runs as the service role.
+      await requireStaffUserId(req, "audits");
     } catch (e) {
       return json({ ok: false, error: { code: "unauthorized", message: e instanceof Error ? e.message : "Unauthorized" }, correlationId }, { status: 401 });
     }
@@ -1190,8 +1192,13 @@ serve(async (req) => {
   //    was finalized before the switch and is being nudged now.
   if (!afterImagesEnabled()) {
     const sbOff = assertServiceClient();
-    try { await sbOff.from("audits").update({ web_afters_ready: true }).eq("id", auditId); } catch { /* non-fatal */ }
-    await autoPublishAudit(sbOff, auditId);
+    // Only web audits ever reach this function legitimately, so never flag or
+    // publish anything else through this door.
+    const { data: offAudit } = await sbOff.from("audits").select("audit_type").eq("id", auditId).maybeSingle();
+    if (offAudit?.audit_type === "web") {
+      try { await sbOff.from("audits").update({ web_afters_ready: true }).eq("id", auditId); } catch { /* non-fatal */ }
+      await autoPublishAudit(sbOff, auditId);
+    }
     return json({
       ok: false,
       error: {

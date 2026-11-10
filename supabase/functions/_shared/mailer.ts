@@ -87,10 +87,45 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   }
 }
 
-/** The request Origin is the real app domain the client/staff member is on;
- * APP_URL is only a fallback for server-triggered calls with no Origin header. */
+/** Our own app domains. The Origin header is set by whoever calls a public
+ * endpoint, so only these may end up as link targets in staff emails. */
+const TRUSTED_APP_ORIGINS = new Set([
+  "https://audit.ecdigitalstrategy.com",
+  "https://proposal.ecdigitalstrategy.com",
+  "https://docs.ecdigitalstrategy.com",
+]);
+
+/** Whether an Origin header value is one of our app domains, or a local dev server. */
+export function isTrustedAppOrigin(origin: string): boolean {
+  const v = origin.trim().replace(/\/$/, "");
+  if (TRUSTED_APP_ORIGINS.has(v)) return true;
+  return /^http:\/\/localhost:\d{1,5}$/.test(v);
+}
+
+/** The request Origin when it is one of our app domains (the domain the client
+ * or staff member is on); otherwise APP_URL, the same fallback used for
+ * server-triggered calls with no Origin header. A forged Origin never reaches a
+ * link in an email. */
 export function resolveOrigin(req: Request): string {
-  return (req.headers.get("origin") || Deno.env.get("APP_URL") || "").trim().replace(/\/$/, "");
+  const fromHeader = (req.headers.get("origin") ?? "").trim().replace(/\/$/, "");
+  if (fromHeader && isTrustedAppOrigin(fromHeader)) return fromHeader;
+  return (Deno.env.get("APP_URL") ?? "").trim().replace(/\/$/, "");
+}
+
+/** Escape a value for an HTML attribute or text node. */
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Only http(s) links go into an href or src, so a javascript: URL can't. */
+function safeUrl(url: string): string {
+  const v = url.trim();
+  return /^https?:\/\//i.test(v) ? v : "";
 }
 
 type EmailSettings = {
@@ -153,7 +188,12 @@ export function proposalEmailHtml(options: {
   ctaUrl?: string;
   logoUrl?: string;
 }): string {
-  const { heading, bodyLines, ctaLabel, ctaUrl, logoUrl } = options;
+  const { heading, bodyLines, ctaLabel } = options;
+  // URLs are escaped here so a quote in one can't break out of the attribute.
+  // heading, bodyLines and ctaLabel stay raw HTML: callers build them with
+  // their own escaping and inline links.
+  const ctaUrl = options.ctaUrl ? escapeAttr(safeUrl(options.ctaUrl)) : "";
+  const logoUrl = options.logoUrl ? escapeAttr(safeUrl(options.logoUrl)) : "";
   return `<!doctype html>
 <html>
   <body style="margin:0;padding:0;background:#f4f4f8;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">

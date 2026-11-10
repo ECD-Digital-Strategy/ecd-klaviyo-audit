@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { persistAuditAnalysisResults } from "../_shared/audit-analysis-persist.ts";
 import { autoPublishAudit } from "../_shared/auto-publish.ts";
 import { claimJobStep, ensureJobRow, releaseStaleRun, writeClaimedStep } from "../_shared/job-claim.ts";
@@ -615,7 +615,8 @@ serve(async (req) => {
   const isServiceRole = isServiceRoleAuthorization(token);
   if (!isServiceRole) {
     try {
-      await getUserIdFromAuthorization(req);
+      // Staff with audit access only: the pipeline runs as the service role.
+      await requireStaffUserId(req, "audits");
     } catch (e) {
       return json({
         ok: false,

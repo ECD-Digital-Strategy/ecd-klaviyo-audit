@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, hasCronSecret, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { hasCronSecret, isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { getScreenshotProvider } from "../_shared/screenshot-provider.ts";
 import { browserlessEnabled, captureWithBrowserless, type CapturedElement, type CapturedPhoto, type CapturedTextLock } from "../_shared/browserless.ts";
 import { DOM_OUTLINE_PROBE, isUsableOutline } from "../_shared/html-after.ts";
@@ -67,7 +67,9 @@ async function authorize(req: Request) {
   // with its own secret rather than a Supabase key, which cannot go stale the
   // way the vault's copy of the service role key did.
   if (await hasCronSecret(req, "web_pipeline_cron_secret")) return;
-  await getUserIdFromAuthorization(req);
+  // Every action (detect included) acts with the service role, so only staff
+  // with audit access may drive it, not any signed-in session.
+  await requireStaffUserId(req, "audits");
 }
 
 function normalizeUrl(raw: unknown): string | null {

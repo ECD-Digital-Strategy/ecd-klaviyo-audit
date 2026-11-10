@@ -64,7 +64,8 @@ export default function EditablePlainText({
     if (ref.current && editMode && canSave && rich) {
       ref.current.innerHTML = auditTextToEditorHtml(value, entityLookup, false, entityHighlightsEnabled);
     } else if (ref.current && editMode && canSave) {
-      ref.current.innerHTML = value || '';
+      // Plain text: never parse a stored value as HTML.
+      ref.current.textContent = value || '';
     }
   }, [value, editMode, canSave, rich, entityLookup, entityHighlightsEnabled, focused]);
 

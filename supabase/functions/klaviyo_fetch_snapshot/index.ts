@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import { fetchPlatformBenchmarkConfig, getFlowBenchmarks } from "../_shared/benchmarks.ts";
 import { computeCampaignRevenuePerRecipient } from "../_shared/campaign-metrics.ts";
 import { buildRevenueBreakdown } from "../_shared/revenue-breakdown.ts";
@@ -273,8 +273,10 @@ function assertServiceClient() {
   });
 }
 
+// Staff with audit access only: every stage reads keys and writes snapshots
+// with the service role, so a bare signed-in session is not enough.
 async function requireAuthenticatedUser(req: Request) {
-  await getUserIdFromAuthorization(req);
+  await requireStaffUserId(req, "audits");
 }
 
 function b64encode(bytes: Uint8Array) {
@@ -3003,6 +3005,26 @@ serve(async (req) => {
   if (!auditId || !clientId) {
     return json({ ok: false, error: { code: "bad_request", message: "Missing audit_id or client_id" }, correlationId }, { status: 400 });
   }
+  // The client must be the audit's own. Otherwise one client's stored key could
+  // be read into another audit, or an inline key could overwrite theirs.
+  try {
+    const { data: auditRow, error: auditErr } = await assertServiceClient()
+      .from("audits")
+      .select("client_id")
+      .eq("id", auditId)
+      .maybeSingle();
+    if (auditErr) throw auditErr;
+    if (!auditRow) {
+      return json({ ok: false, error: { code: "not_found", message: "Audit not found" }, correlationId }, { status: 404 });
+    }
+    if (String(auditRow.client_id ?? "") !== clientId) {
+      return json({ ok: false, error: { code: "bad_request", message: "client_id does not match the audit" }, correlationId }, { status: 400 });
+    }
+  } catch (e) {
+    const msg = redactSecrets(e instanceof Error ? e.message : "Unknown error");
+    return json({ ok: false, error: { code: "config_failed", message: msg }, correlationId }, { status: 500 });
+  }
+
   const revision = resolveKlaviyoRevision(bodyJson.revision);
   const profileScan: "full" | "fast" = bodyJson.profile_scan === "fast" ? "fast" : "full";
 

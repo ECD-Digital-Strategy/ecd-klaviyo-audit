@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getUserIdFromAuthorization, isServiceRoleAuthorization } from "../_shared/auth.ts";
+import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 import {
   AI_OUTPUT_JSON_SCHEMA,
   AI_SECTIONS_ONLY_SCHEMA,
@@ -310,7 +310,9 @@ serve(async (req) => {
     const isServiceRole = isServiceRoleAuthorization(token);
     if (!isServiceRole) {
       try {
-        await getUserIdFromAuthorization(req);
+        // Staff with audit access only: a session alone could spend AI calls
+        // and read audit data through the service role.
+        await requireStaffUserId(req, "audits");
       } catch (e) {
         // Important: return 200 so supabase-js doesn't surface a non-2xx transport error.
         // The client handles ok:false responses and can show a friendly message.

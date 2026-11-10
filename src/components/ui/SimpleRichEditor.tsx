@@ -36,6 +36,8 @@ export default function SimpleRichEditor({
       isInternalUpdate.current = false;
       return;
     }
+    // Safe to assign as HTML: both converters escape all stored text and only
+    // add their own formatting tags.
     const html = entityTags
       ? auditTextToEditorHtml(value || '', entityLookup, false, entityHighlightsEnabled)
       : markdownToEditorHtml(value || '');
