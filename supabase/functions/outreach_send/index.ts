@@ -7,8 +7,15 @@ import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
 import { getSecret } from "../_shared/app-secrets.ts";
 import { HubSpot, OUTREACH_HUBSPOT_SCOPES, type HubLeadStatus } from "../_shared/outreach-hubspot.ts";
-import { ALERTING, PASSING, SUPPRESSING, classifyReply, type ReplyVerdict } from "../_shared/outreach-replies.ts";
-import { extractGmailSignature, mailHeader, mailHtml, parseMail } from "../_shared/mail-parse.ts";
+import {
+  classifyReply,
+  pendingReplies,
+  replyAction,
+  staleClaimDecision,
+  UNSORTED,
+  type ReplyVerdict,
+} from "../_shared/outreach-replies.ts";
+import { extractGmailSignature, isAutoReply, mailHeader, mailHtml, parseMail } from "../_shared/mail-parse.ts";
 import { imapDate } from "../_shared/imap-search.ts";
 import { gmailSignature, NeedsReconnect } from "../_shared/gmail.ts";
 import { mailboxByEmail } from "../_shared/invoice-delivery.ts";
@@ -192,21 +199,33 @@ async function logToHubspot(
   if (!hs) return;
   try {
     const owner = await hs.ownerId(OUTREACH_OWNER_EMAIL);
+    // Ids are saved on the prospect only for records Outreach created. A record that
+    // was already in HubSpot only gets the email logged: its lead status is never
+    // touched (audit 2026-11-10).
     let companyId = p.hubspot_company_id ?? null;
     let contactId = p.hubspot_contact_id ?? null;
-    if (!companyId) companyId = await hs.upsertCompany(p.domain, p.store_name || p.domain, owner);
+    let ownsContact = Boolean(contactId);
+    let ownsCompany = Boolean(companyId);
+    if (!companyId) {
+      const c = await hs.upsertCompany(p.domain, p.store_name || p.domain, owner);
+      companyId = c.id;
+      ownsCompany = c.created;
+    }
     if (!contactId) {
-      contactId = await hs.upsertContact(
+      const c = await hs.upsertContact(
         { email: p.contact_email, name: p.contact_name, title: p.contact_title ?? null, domain: p.domain },
         companyId,
         owner,
       );
+      contactId = c.id;
+      ownsContact = c.created;
     }
     await hs.logEmail({ contactId, companyId, ownerId: owner, ...email });
-    if (status) await hs.setLeadStatus(contactId, status);
-    p.hubspot_company_id = companyId;
-    p.hubspot_contact_id = contactId;
-    await sb.from("outreach_prospects").update({ hubspot_company_id: companyId, hubspot_contact_id: contactId, hubspot_error: null }).eq("id", p.id);
+    if (status && ownsContact) await hs.setLeadStatus(contactId, status);
+    const patch: Record<string, unknown> = { hubspot_error: null };
+    if (ownsCompany) patch.hubspot_company_id = p.hubspot_company_id = companyId;
+    if (ownsContact) patch.hubspot_contact_id = p.hubspot_contact_id = contactId;
+    await sb.from("outreach_prospects").update(patch).eq("id", p.id);
   } catch (e) {
     await sb.from("outreach_prospects").update({ hubspot_error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }).eq("id", p.id);
   }
@@ -301,13 +320,81 @@ async function deliver(
   return ok ? { ok, messageId } : { ok, error };
 }
 
-async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings) {
-  if (!p.contact_email?.includes("@")) return { ok: false, error: "Add their email first." };
+/** "https://www.Brand.com/x" -> "brand.com", as outreach_screen reads client websites. */
+function hostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const raw = url.trim().toLowerCase();
+    return new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
+}
+
+/** A past or current client with this website (not an Outreach prospect row), as outreach_screen decides it. */
+async function isClient(sb: Sb, domain: string): Promise<boolean> {
+  const { data, error } = await sb
+    .from("clients")
+    .select("website_url")
+    .eq("is_outreach", false)
+    .ilike("website_url", `%${domain.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+    .limit(20);
+  if (error) throw new Error(`clients could not be checked: ${error.message}`);
+  return (data ?? []).some((c) => hostOf((c as { website_url: string | null }).website_url) === domain);
+}
+
+type SendCheck = { ok: true } | { ok: false; outcome: "blocked" | "retry"; error: string };
+
+/**
+ * Checked again right before a first email goes out (audit 2026-11-10), not only
+ * at screening: the do-not-contact list, past clients, and HubSpot (the exact
+ * address as a contact, the domain as a company). A HubSpot record Outreach did
+ * not create blocks it for good; HubSpot unreachable means not this run.
+ */
+async function sendTimeCheck(sb: Sb, p: Prospect): Promise<SendCheck> {
+  const email = String(p.contact_email ?? "").trim().toLowerCase();
+  try {
+    if (await suppressed(sb, p.domain)) return { ok: false, outcome: "blocked", error: "Someone at this company asked not to be contacted." };
+    if (await isClient(sb, p.domain)) return { ok: false, outcome: "blocked", error: "Already a client (found at send time)." };
+  } catch (e) {
+    return { ok: false, outcome: "retry", error: `Not sent yet, the do-not-contact checks could not run: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const hs = await hubspot();
+  if (!hs) return { ok: false, outcome: "retry", error: "Not sent yet: HubSpot is not connected, so it could not be checked." };
+  let contactId: string | null;
+  let companyId: string | null;
+  try {
+    [contactId, companyId] = await Promise.all([hs.findContactByEmail(email), hs.findCompanyByDomain(p.domain)]);
+  } catch (e) {
+    return { ok: false, outcome: "retry", error: `Not sent yet: HubSpot could not be checked (${e instanceof Error ? e.message : String(e)}).` };
+  }
+  if (contactId && contactId !== p.hubspot_contact_id) {
+    return { ok: false, outcome: "blocked", error: `${email} is already a contact in HubSpot (found at send time).` };
+  }
+  if (companyId && companyId !== p.hubspot_company_id) {
+    return { ok: false, outcome: "blocked", error: `${p.domain} is already a company in HubSpot (found at send time).` };
+  }
+  return { ok: true };
+}
+
+type InitialResult =
+  | { ok: true; messageId?: string }
+  | { ok: false; error: string; outcome: "invalid" | "blocked" | "retry" | "busy" };
+
+async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings): Promise<InitialResult> {
+  if (!p.contact_email?.includes("@")) return { ok: false, outcome: "invalid", error: "Add their email first." };
   // A decision-maker only: never a support or info inbox (Emil, 2026-11-02).
-  if (isRoleAddress(p.contact_email)) return { ok: false, error: `${p.contact_email} is a shared inbox, not a person. Find the decision-maker first.` };
-  if (!p.email_subject?.trim() || !p.email_body?.trim()) return { ok: false, error: "The email is empty." };
-  if (p.sent_at) return { ok: false, error: "Already sent." };
-  if (await suppressed(sb, p.domain)) return { ok: false, error: "Someone at this company asked not to be contacted." };
+  if (isRoleAddress(p.contact_email)) return { ok: false, outcome: "invalid", error: `${p.contact_email} is a shared inbox, not a person. Find the decision-maker first.` };
+  if (!p.email_subject?.trim() || !p.email_body?.trim()) return { ok: false, outcome: "invalid", error: "The email is empty." };
+  if (p.sent_at) return { ok: false, outcome: "busy", error: "Already sent." };
+  const check = await sendTimeCheck(sb, p);
+  if (!check.ok) {
+    if (check.outcome === "blocked") {
+      // Excluded for good, like a store screened out: never sent.
+      await sb.from("outreach_prospects").update({ status: "skipped", skip_reason: check.error }).eq("id", p.id).is("sent_at", null);
+    }
+    return check;
+  }
   const subject = p.email_subject.trim();
   const text = initialText(p.email_body, settings);
   // Take it first: sent_at is set only if nobody else set it, so "Send now" and the
@@ -319,20 +406,25 @@ async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings
     .eq("id", p.id)
     .is("sent_at", null)
     .select("id");
-  if (!mine?.length) return { ok: false, error: "Already sent." };
+  if (!mine?.length) return { ok: false, outcome: "busy", error: "Already sent." };
   const r = await deliver(sb, box, settings, p, "initial", subject, text);
   if (!r.ok) {
     // Not sent: free it again so it can be retried.
     await sb.from("outreach_prospects").update({ sent_at: null }).eq("id", p.id).eq("sent_at", claimedAt);
-    return r;
+    return { ok: false, outcome: "retry", error: r.error ?? "not sent" };
   }
   const now = new Date().toISOString();
   await sb.from("outreach_prospects").update({ status: "sent", sent_at: now, last_sent_at: now, message_id: r.messageId }).eq("id", p.id);
   await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email }, "ATTEMPTED_TO_CONTACT");
-  return r;
+  return { ok: true, messageId: r.messageId };
 }
 
-/** Acts on a new message from a prospect: sorts it, then stops, remembers, alerts and logs as it says. */
+/**
+ * Acts on one new message from a prospect: sorts it, then stops, remembers, alerts
+ * and logs as it says. Returns true only when the sequence carries on (an away
+ * message, or a machine reply by its headers). Anything unsorted stops it and
+ * alerts Emil, so nobody is chased by mistake (audit 2026-11-10).
+ */
 async function handleReply(
   sb: Sb,
   settings: Settings,
@@ -340,25 +432,24 @@ async function handleReply(
   p: Prospect,
   seen: number,
   mail: { from: string; subject: string; text: string },
-) {
+  autoReply: boolean,
+): Promise<boolean> {
   let verdict: ReplyVerdict;
-  let sorted = true;
   try {
     verdict = await classifyReply(mail.text, mail.subject);
   } catch {
-    // Unsorted: treat it as a person answering, so nobody is chased by mistake.
-    verdict = { kind: "other", summary: "Could not be sorted automatically; read it in Gmail." };
-    sorted = false;
+    verdict = UNSORTED;
   }
+  const decision = replyAction(verdict, autoReply);
   const now = new Date().toISOString();
   const reply = { reply_kind: verdict.kind, reply_summary: verdict.summary, reply_text: mail.text.slice(0, 4000), replies_seen: seen };
 
-  if (sorted && PASSING.has(verdict.kind)) {
+  if (decision.action === "pass") {
     // An away message or an automatic receipt: the sequence carries on.
     await sb.from("outreach_prospects").update(reply).eq("id", p.id);
-    return;
+    return true;
   }
-  const stop = SUPPRESSING.has(verdict.kind);
+  const stop = decision.action === "suppress";
   await sb.from("outreach_prospects").update({ ...reply, status: stop ? "unsubscribed" : "replied", replied_at: now }).eq("id", p.id);
   if (stop) {
     await sb.from("outreach_suppressions").upsert(
@@ -374,9 +465,10 @@ async function handleReply(
     from: p.contact_email ?? mail.from,
     to: box.user,
   }, status);
-  if (settings.reply_alerts && (ALERTING.has(verdict.kind) || !sorted)) {
+  if (settings.reply_alerts && decision.alert) {
     await alertEmil(p, verdict, mail, await reportUrl(sb, p)).catch(() => {});
   }
+  return false;
 }
 
 /**
@@ -470,8 +562,18 @@ async function hotLeads(sb: Sb, settings: Settings) {
   }
 }
 
-/** Replies and bounces since each prospect was emailed. Returns false if the inbox could not be read. */
+// Each new message is read and sorted, oldest first, up to this many per prospect
+// per run; the rest wait for the next run (and hold that prospect's follow-ups).
+const MAX_REPLIES_PER_PROSPECT = 5;
+// The cron allows about 120s per run; the inbox gets this much of it.
+const INBOX_BUDGET_MS = 70_000;
+
+/**
+ * Replies and bounces since each prospect was emailed. ok=false if the inbox could
+ * not be read in full this run: then no follow-up goes out at all.
+ */
 async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
+  const deadline = Date.now() + INBOX_BUDGET_MS;
   const { data } = await sb
     .from("outreach_prospects")
     .select("*")
@@ -488,21 +590,41 @@ async function checkInbox(sb: Sb, box: Mailbox): Promise<boolean> {
     if (looksLikeAuthFailure(msg)) await pause(sb, `Gmail refused the outreach mailbox sign-in (inbox): ${msg}`);
     return false;
   }
+  let complete = true;
   try {
     for (const p of sent) {
       if (!p.contact_email) continue;
+      if (Date.now() > deadline) {
+        // Out of time: the rest are read next run, and no follow-up goes out now.
+        complete = false;
+        break;
+      }
       const since = new Date(p.sent_at);
       if ((await imap.bouncesFor(p.contact_email, since)) > 0) {
         await sb.from("outreach_prospects").update({ status: "bounced" }).eq("id", p.id);
         await pause(sb, `${p.contact_email} (${p.domain}) bounced. Sending is paused until you check the address list.`);
         continue;
       }
-      const latest = await imap.latestFrom(replySearchKey(p.contact_email, p.domain), since);
-      if (latest.count > (p.replies_seen ?? 0)) {
-        await handleReply(sb, settings, box, p, latest.count, parseMail(latest.raw ?? ""));
+      const seqs = await imap.messagesFrom(replySearchKey(p.contact_email, p.domain), since);
+      const seen = p.replies_seen ?? 0;
+      const todo = pendingReplies(seqs, seen, MAX_REPLIES_PER_PROSPECT);
+      // Every new message, oldest first; the first one that is not an away
+      // message stops the sequence and the rest are not needed.
+      let read = seen;
+      let stopped = false;
+      for (const seq of todo) {
+        if (Date.now() > deadline) break;
+        const raw = await imap.fetchRaw(seq);
+        read += 1;
+        if (!(await handleReply(sb, settings, box, p, read, parseMail(raw), isAutoReply(raw)))) {
+          stopped = true;
+          break;
+        }
       }
+      // Unread messages left (over the cap or out of time): no follow-up this run.
+      if (!stopped && read < seqs.length) complete = false;
     }
-    return true;
+    return complete;
   } catch {
     return false;
   } finally {
@@ -514,6 +636,7 @@ async function tick(sb: Sb) {
   const box = await mailbox(sb);
   if (!box) return { ok: true, skipped: "mailbox_not_connected" };
   const now = new Date();
+  const reconciled = await reconcileStaleClaims(sb, box).catch(() => [] as string[]);
   const inboxOk = await checkInbox(sb, box);
   let settings = await loadSettings(sb);
   await hotLeads(sb, settings);
@@ -533,6 +656,8 @@ async function tick(sb: Sb) {
     const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").lt("followups_sent", settings.max_followups);
     for (const p of (data ?? []) as Prospect[]) {
       if (!p.last_sent_at || now.getTime() - Date.parse(p.last_sent_at) < settings.followup_gap_days * 86_400_000) continue;
+      // Put on the do-not-contact list since the first email: no more follow-ups.
+      if (await suppressed(sb, p.domain)) continue;
       const url = await reportUrl(sb, p);
       if (!url || !p.email_subject) continue;
       const n = (p.followups_sent + 1) as 1 | 2;
@@ -554,6 +679,9 @@ async function tick(sb: Sb) {
       const r = await deliver(sb, box, settings, p, n === 1 ? "followup_1" : "followup_2", subject, text);
       if (!r.ok) {
         await sb.from("outreach_prospects").update({ followups_sent: p.followups_sent }).eq("id", p.id).eq("followups_sent", n);
+        // A refused sign-in pauses everything: then no first email this run either.
+        settings = await loadSettings(sb);
+        if (settings.paused) return { ok: true, sent, paused: true, reason: settings.pause_reason };
         break;
       }
       await sb.from("outreach_prospects").update({ last_sent_at: new Date().toISOString() }).eq("id", p.id);
@@ -566,21 +694,113 @@ async function tick(sb: Sb) {
   // At most one first email per run, within the daily limit and spacing.
   const today = await sentToday(sb, now);
   if (today.initial < settings.daily_new_cap && now.getTime() - today.lastInitialAt >= settings.min_gap_minutes * 60_000) {
+    // Only unclaimed ones: a claim left by a dead run is sorted out above, and
+    // never holds up the rest of the queue.
     const { data } = await sb
       .from("outreach_prospects")
       .select("*")
       .eq("status", "approved")
+      .is("sent_at", null)
       .order("approved_at", { ascending: true })
       .limit(1);
     const next = ((data ?? []) as Prospect[])[0];
     if (next) {
       const r = await sendInitial(sb, box, next, settings);
       if (r.ok) sent.push(`${next.domain}: first email`);
-      // "Already sent": "Send now" took it a moment ago. Leave it alone, it is going out.
-      else if (r.error !== "Already sent.") await sb.from("outreach_prospects").update({ status: "ready", notes: `Not sent: ${r.error}` }).eq("id", next.id);
+      else if (r.outcome === "invalid") {
+        // Needs Emil (no address, a shared inbox, empty email): back to Ready.
+        await sb.from("outreach_prospects").update({ status: "ready", notes: `Not sent: ${r.error}` }).eq("id", next.id).eq("status", "approved");
+      } else if (r.outcome === "retry") {
+        // A passing problem (Gmail, HubSpot): stays approved and is tried again,
+        // unless Gmail refused it MAX_INITIAL_TRIES times.
+        const { count } = await sb
+          .from("outreach_sends")
+          .select("id", { count: "exact", head: true })
+          .eq("prospect_id", next.id)
+          .eq("kind", "initial")
+          .eq("status", "failed");
+        const giveUp = (count ?? 0) >= MAX_INITIAL_TRIES;
+        await sb
+          .from("outreach_prospects")
+          .update(giveUp ? { status: "ready", notes: `Not sent after ${count} tries: ${r.error}` } : { notes: `Not sent yet, will retry: ${r.error}` })
+          .eq("id", next.id)
+          .eq("status", "approved")
+          .is("sent_at", null);
+      }
+      // "blocked" is already skipped with the reason; "busy" is being sent by "Send now".
     }
   }
-  return { ok: true, sent, inbox: inboxOk };
+  return { ok: true, sent, inbox: inboxOk, reconciled };
+}
+
+const MAX_INITIAL_TRIES = 3;
+// A claim older than this belongs to a run that died mid-send.
+const STALE_CLAIM_MS = 10 * 60_000;
+
+/**
+ * First emails claimed (sent_at set) by a run that died before marking them sent
+ * (audit 2026-11-10). Marked sent when the send log or his mailbox shows the
+ * email went; released for a retry only when the mailbox was read and shows
+ * nothing, so nobody is emailed twice.
+ */
+async function reconcileStaleClaims(sb: Sb, box: Mailbox): Promise<string[]> {
+  const { data } = await sb
+    .from("outreach_prospects")
+    .select("*")
+    .eq("status", "approved")
+    .not("sent_at", "is", null)
+    .lt("sent_at", new Date(Date.now() - STALE_CLAIM_MS).toISOString())
+    .limit(5);
+  const stale = (data ?? []) as Array<Prospect & { sent_at: string }>;
+  if (stale.length === 0) return [];
+  const log: string[] = [];
+  let imap: ImapSession | null = null;
+  try {
+    imap = await ImapSession.open(box);
+  } catch {
+    imap = null; // the mailbox can't say: nothing is released this run
+  }
+  try {
+    for (const p of stale) {
+      const { data: rows } = await sb
+        .from("outreach_sends")
+        .select("message_id, sent_at")
+        .eq("prospect_id", p.id)
+        .eq("kind", "initial")
+        .eq("status", "sent")
+        .order("sent_at", { ascending: false })
+        .limit(1);
+      const row = ((rows ?? []) as Array<{ message_id: string | null; sent_at: string }>)[0];
+      let inMailbox: boolean | null = null;
+      let mailboxId: string | null = null;
+      if (!row && imap && p.contact_email) {
+        try {
+          const since = new Date(Date.parse(p.sent_at) - 86_400_000);
+          const seqs = await imap.sentTo(box.user, p.contact_email.trim(), since);
+          inMailbox = seqs.length > 0;
+          if (inMailbox) mailboxId = mailHeader(await imap.fetchRaw(seqs[seqs.length - 1], 8_000), "message-id").trim() || null;
+        } catch {
+          inMailbox = null;
+        }
+      }
+      const decision = staleClaimDecision({ sentLogged: Boolean(row), inMailbox });
+      if (decision === "mark_sent") {
+        const at = row?.sent_at ?? p.sent_at;
+        await sb
+          .from("outreach_prospects")
+          .update({ status: "sent", sent_at: at, last_sent_at: at, message_id: row?.message_id ?? mailboxId })
+          .eq("id", p.id)
+          .eq("status", "approved");
+        log.push(`${p.domain}: interrupted send found, marked sent`);
+      } else if (decision === "release") {
+        await sb.from("outreach_prospects").update({ sent_at: null }).eq("id", p.id).eq("status", "approved").eq("sent_at", p.sent_at);
+        log.push(`${p.domain}: interrupted send not found, released for a retry`);
+      }
+    }
+  } finally {
+    await imap?.close();
+  }
+  return log;
 }
 
 const clampInt = (v: unknown, lo: number, hi: number, fallback: number) => {

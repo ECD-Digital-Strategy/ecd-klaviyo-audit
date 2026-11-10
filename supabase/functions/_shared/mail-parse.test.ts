@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { decodeHeader, extractGmailSignature, parseMail } from "./mail-parse.ts";
+import { decodeHeader, extractGmailSignature, isAutoReply, parseMail, stripQuoted } from "./mail-parse.ts";
 
 Deno.test("the Gmail signature from the new part, nested divs kept, quoted ones ignored", () => {
   const html = [
@@ -46,6 +46,50 @@ Deno.test("base64 bodies and html-only mail", () => {
   assertEquals(parseMail(raw).text, "Not interested, thanks.");
   const html = ["From: a@b.com", "Content-Type: text/html", "", "<p>I am out of the office until Monday.</p>"].join("\r\n");
   assertEquals(parseMail(html).text, "I am out of the office until Monday.");
+});
+
+Deno.test("a bottom-posted reply is read, not lost", () => {
+  const text = [
+    "On Mon, Nov 2, 2026 at 10:00 AM Emil <emil@ecdigitalstrategy.com> wrote:",
+    "> Hi Jane,",
+    "> I looked at your store.",
+    "",
+    "Sounds good, call me Thursday.",
+    "",
+    "-- ",
+    "Jane Doe",
+    "CEO",
+  ].join("\n");
+  assertEquals(stripQuoted(text), "Sounds good, call me Thursday.");
+});
+
+Deno.test("inline answers between quoted lines are kept", () => {
+  const text = [
+    "On Mon, Emil wrote:",
+    "> Would a short call help?",
+    "Yes, Thursday works.",
+    "> Or should I send the full audit?",
+    "Send it too please.",
+  ].join("\n");
+  assertEquals(stripQuoted(text), "Yes, Thursday works.\nSend it too please.");
+  // A top reply plus inline answers: both.
+  assertEquals(stripQuoted(`See below.\n\n${text}`), "See below.\n\nYes, Thursday works.\nSend it too please.");
+});
+
+Deno.test("a quote with nothing new is still empty", () => {
+  assertEquals(stripQuoted("On Mon, Emil wrote:\n> Hi\n> there"), "");
+});
+
+Deno.test("auto-reply headers", () => {
+  const msg = (h: string) => `${h}\r\nFrom: a@b.com\r\n\r\nbody`;
+  assertEquals(isAutoReply(msg("Auto-Submitted: auto-replied")), true);
+  assertEquals(isAutoReply(msg("Auto-Submitted: no")), false);
+  assertEquals(isAutoReply(msg("Precedence: bulk")), true);
+  assertEquals(isAutoReply(msg("Precedence: list")), true);
+  assertEquals(isAutoReply(msg("List-Unsubscribe: <mailto:x@y.com>")), true);
+  assertEquals(isAutoReply(msg("X-Autoreply: yes")), true);
+  assertEquals(isAutoReply(msg("X-Autorespond: yes")), true);
+  assertEquals(isAutoReply(msg("Subject: Re: hi")), false);
 });
 
 Deno.test("encoded-word headers", () => {

@@ -67,6 +67,16 @@ export class HubSpot {
     return r.results?.[0]?.id ?? null;
   }
 
+  /** The contact with this exact email, or null. Throws when HubSpot can't be read. */
+  findContactByEmail(email: string): Promise<string | null> {
+    return this.findOne("contacts", "email", email.trim().toLowerCase());
+  }
+
+  /** The company with this domain, or null. Throws when HubSpot can't be read. */
+  findCompanyByDomain(domain: string): Promise<string | null> {
+    return this.findOne("companies", "domain", domain);
+  }
+
   /** Emil's HubSpot owner id, so the leads are his. */
   async ownerId(email: string): Promise<string | null> {
     if (this.ownerIdCache !== undefined) return this.ownerIdCache;
@@ -79,23 +89,30 @@ export class HubSpot {
     return this.ownerIdCache;
   }
 
-  async upsertCompany(domain: string, name: string, ownerId: string | null): Promise<string> {
+  /** created=false: the company was already there, so Outreach does not own it. */
+  async upsertCompany(domain: string, name: string, ownerId: string | null): Promise<{ id: string; created: boolean }> {
     const found = await this.findOne("companies", "domain", domain);
-    if (found) return found;
+    if (found) return { id: found, created: false };
     const r = await this.req<{ id: string }>("/crm/v3/objects/companies", {
       method: "POST",
       body: JSON.stringify({ properties: { name, domain, lifecyclestage: "lead", ...(ownerId ? { hubspot_owner_id: ownerId } : {}) } }),
     });
-    return r.id;
+    return { id: r.id, created: true };
   }
 
+  /**
+   * created=false: the contact was already in HubSpot (not made by Outreach). It
+   * is left as it is (no association, no lead status); only emails are logged.
+   */
   async upsertContact(
     c: { email: string; name: string | null; title: string | null; domain: string },
     companyId: string,
     ownerId: string | null,
-  ): Promise<string> {
-    let id = await this.findOne("contacts", "email", c.email);
-    if (!id) {
+  ): Promise<{ id: string; created: boolean }> {
+    const found = await this.findOne("contacts", "email", c.email);
+    if (found) return { id: found, created: false };
+    let id: string;
+    {
       const [first, ...rest] = (c.name ?? "").trim().split(/\s+/).filter(Boolean);
       const r = await this.req<{ id: string }>("/crm/v3/objects/contacts", {
         method: "POST",
@@ -115,9 +132,10 @@ export class HubSpot {
       id = r.id;
     }
     await this.req(`/crm/v4/objects/contacts/${id}/associations/default/companies/${companyId}`, { method: "PUT" });
-    return id;
+    return { id, created: true };
   }
 
+  /** Only for a contact Outreach created: never on one that was already in HubSpot. */
   async setLeadStatus(contactId: string, status: HubLeadStatus) {
     await this.req(`/crm/v3/objects/contacts/${contactId}`, {
       method: "PATCH",

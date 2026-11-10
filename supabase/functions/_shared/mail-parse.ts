@@ -108,16 +108,63 @@ function partText(raw: string, depth = 0): { plain: string | null; html: string 
   return { plain: null, html: null };
 }
 
-/** The new part of a reply: everything above "On ... wrote:" and the quoted lines. */
+const ATTRIBUTION = /^\s*On .{3,200}wrote:\s*$/;
+const QUOTED = /^\s*>/;
+const tidyText = (lines: string[]) => lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+/** Lines up to a "-- " signature delimiter. */
+function withoutSignature(lines: string[]): string[] {
+  const at = lines.findIndex((l) => /^--\s?$/.test(l));
+  return at === -1 ? lines : lines.slice(0, at);
+}
+
+/**
+ * The new part of a reply: everything above "On ... wrote:" and the quoted lines.
+ * Bottom-posted and inline replies (audit 2026-11-10): answers written under or
+ * between ">" lines are kept too, and when nothing is left above the quote the
+ * text is read with only the quoted lines and the signature removed.
+ */
 export function stripQuoted(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const out: string[] = [];
-  for (const line of lines) {
-    if (/^\s*On .{3,200}wrote:\s*$/.test(line) || /^-{2,}\s*Original Message\s*-{2,}/i.test(line) || /^From: .+/.test(line) && out.length > 0) break;
-    if (/^\s*>/.test(line)) continue;
+  let rest: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (ATTRIBUTION.test(line)) {
+      rest = lines.slice(i + 1);
+      break;
+    }
+    if (/^-{2,}\s*Original Message\s*-{2,}/i.test(line) || /^From: .+/.test(line) && out.length > 0) break;
+    if (QUOTED.test(line)) continue;
     out.push(line);
   }
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // Inline answers: unquoted lines after a quoted one, below the attribution.
+  const inline: string[] = [];
+  let sawQuote = false;
+  for (const line of withoutSignature(rest)) {
+    if (QUOTED.test(line)) {
+      sawQuote = true;
+      continue;
+    }
+    if (sawQuote && !ATTRIBUTION.test(line)) inline.push(line);
+  }
+  const top = tidyText(out);
+  const below = tidyText(inline);
+  if (top || below) return [top, below].filter(Boolean).join("\n\n");
+  // Nothing found: everything that is not quoted, an attribution or the signature.
+  return tidyText(withoutSignature(lines).filter((l) => !QUOTED.test(l) && !ATTRIBUTION.test(l)));
+}
+
+/**
+ * Sent by a machine, by its headers: Auto-Submitted (anything but "no"),
+ * Precedence bulk/junk/list, List-Unsubscribe, X-Autoreply or X-Autorespond.
+ */
+export function isAutoReply(raw: string): boolean {
+  const h = splitHeaders(raw).headers;
+  const auto = (h["auto-submitted"] ?? "").trim().toLowerCase();
+  if (auto && auto !== "no") return true;
+  if (/\b(bulk|junk|list)\b/i.test(h["precedence"] ?? "")) return true;
+  return Boolean(h["list-unsubscribe"]?.trim() || h["x-autoreply"]?.trim() || h["x-autorespond"]?.trim());
 }
 
 /** The HTML part of a message (null when it is plain text only), and a header. */

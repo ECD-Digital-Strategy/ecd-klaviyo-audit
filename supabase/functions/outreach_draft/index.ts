@@ -33,6 +33,8 @@ const PAGE_LABEL: Record<string, string> = {
   web_cart: "cart",
 };
 const RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+/** Statuses that may get a (new) draft: not yet emailed and not excluded. */
+const DRAFTABLE = ["new", "auditing", "ready", "approved", "failed"];
 
 const SYSTEM = `You write short cold emails for Emil Gorgijev at ECD Digital Strategy, an ecommerce agency that works with Shopify brands on their website, email and SMS. We ran a free audit of the prospect's storefront and published a short preview of it. Write the first email.
 
@@ -66,6 +68,11 @@ serve(async (req) => {
   const { data: prospect } = await sb.from("outreach_prospects").select("*").eq("id", prospect_id).maybeSingle();
   if (!prospect) return json({ ok: false, error: "not_found" }, 404);
   if (!prospect.audit_id) return json({ ok: false, error: "no_audit" }, 409);
+  // Only before the first email: a sent (or replied, stopped) prospect keeps the
+  // email it got, and never goes back to Ready (audit 2026-11-10).
+  if (prospect.sent_at || !DRAFTABLE.includes(String(prospect.status))) {
+    return json({ ok: false, error: "already_sent", message: "This prospect was already emailed or excluded, so the email can't be redrafted." }, 409);
+  }
 
   const { data: audit } = await sb.from("audits").select("id, status, public_share_token, client_id").eq("id", prospect.audit_id).maybeSingle();
   if (!audit || audit.status !== "published" || !audit.public_share_token) {
@@ -127,6 +134,17 @@ serve(async (req) => {
   const subject = tidy(String(input.subject ?? "")).slice(0, 120);
   if (!subject || !body) return json({ ok: false, error: "draft_failed" }, 502);
 
-  await sb.from("outreach_prospects").update({ email_subject: subject, email_body: body, status: "ready" }).eq("id", prospect_id);
+  // Guarded again here: a send may have started while the model was writing. An
+  // approved one goes back to Ready, since Emil approves every first email as written.
+  const { data: saved } = await sb
+    .from("outreach_prospects")
+    .update({ email_subject: subject, email_body: body, status: "ready" })
+    .eq("id", prospect_id)
+    .is("sent_at", null)
+    .in("status", DRAFTABLE)
+    .select("id");
+  if (!saved?.length) {
+    return json({ ok: false, error: "already_sent", message: "This prospect was emailed while the draft was being written, so it was not changed." }, 409);
+  }
   return json({ ok: true, subject, body });
 });

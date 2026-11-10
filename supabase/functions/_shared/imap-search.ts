@@ -1,8 +1,8 @@
 // A minimal IMAP client for one job (Outreach, 2026-11-02): ask Emil's Gmail, with
 // the same app password the outreach emails are sent with, whether anything came
 // back. Read-only (EXAMINE, never SELECT), searching All Mail so a reply he has
-// already archived still counts. It counts matches, and (2026-11-02) reads the
-// latest reply so it can be sorted (BODY.PEEK, so nothing is marked as read).
+// already archived still counts. It counts matches, and (2026-11-02) reads each
+// new reply so it can be sorted (BODY.PEEK, so nothing is marked as read).
 
 export type ImapAuth = { user: string; pass: string; host?: string; port?: number };
 
@@ -85,11 +85,15 @@ export class ImapSession {
     return body.join("\r\n");
   }
 
-  /** How many messages came from this domain since a date, and the latest one, raw. */
-  async latestFrom(domain: string, since: Date): Promise<{ count: number; raw: string | null }> {
-    const seqs = await this.search(`SINCE ${imapDate(since)} FROM ${q(domain)}`);
-    if (seqs.length === 0) return { count: 0, raw: null };
-    return { count: seqs.length, raw: await this.fetchRaw(seqs[seqs.length - 1]) };
+  /** Message numbers from this domain since a date, oldest first. Each new one is
+   * read and sorted in turn (fetchRaw), not just the latest (audit 2026-11-10). */
+  messagesFrom(domain: string, since: Date): Promise<number[]> {
+    return this.search(`SINCE ${imapDate(since)} FROM ${q(domain)}`);
+  }
+
+  /** Messages this mailbox sent to an address since a date, oldest first. */
+  sentTo(from: string, to: string, since: Date): Promise<number[]> {
+    return this.search(`SINCE ${imapDate(since)} FROM ${q(from)} TO ${q(to)}`);
   }
 
   /** Anything from this domain (a reply, an out-of-office, a "please remove me") since a date. */

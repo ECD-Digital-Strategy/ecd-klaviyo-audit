@@ -185,9 +185,15 @@ serve(async (req) => {
       ]);
       if (company) reason = "In HubSpot (company)";
       else if (contact) reason = "In HubSpot (contact)";
-      else if (company === null && contact === null) reason = "HubSpot could not be checked, so skipped to be safe";
+      // Either lookup failing is unknown, not "no": fail closed (audit 2026-11-10).
+      else if (company === null || contact === null) reason = "HubSpot could not be checked, so skipped to be safe. Screen it again later";
     } else if (!reason && !hubspotToken) {
-      reason = "HubSpot is not connected, so skipped to be safe";
+      reason = "HubSpot is not connected, so skipped to be safe. Screen it again later";
+    }
+    if (reason?.endsWith("Screen it again later")) {
+      // Not saved, so screening it again later checks it afresh.
+      results.push({ domain, status: "skipped", reason });
+      continue;
     }
 
     const [home, rank, products] = reason

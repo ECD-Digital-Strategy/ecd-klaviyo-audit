@@ -27,6 +27,28 @@ const WEB_SECTION_KEYS = [
 
 const MAX_IN_FLIGHT = 2;
 const MAX_LOOKUPS_PER_RUN = 3;
+const MAX_DRAFT_TRIES = 3;
+const STUCK_AUDIT_MS = 2 * 3_600_000;
+
+type AuditingRow = {
+  id: string;
+  domain: string;
+  notes: string | null;
+  auto_started_at: string | null;
+  updated_at: string;
+  audit: { status?: string; created_at?: string } | null;
+};
+
+// Draft tries are counted in one line of the prospect's notes (no extra column).
+const DRAFT_NOTE = /^Draft failed .*$/m;
+function draftTries(notes: string | null): number {
+  const m = (notes ?? "").match(/^Draft failed \((\d+)\/\d+\)/m);
+  return m ? Number(m[1]) : 0;
+}
+function withDraftNote(notes: string | null, line: string): string {
+  const base = (notes ?? "").replace(DRAFT_NOTE, "").replace(/\n{2,}/g, "\n").trim();
+  return [base, line].filter(Boolean).join("\n");
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -72,7 +94,27 @@ async function ownerId(sb: Sb): Promise<string | null> {
 async function startAudit(sb: Sb, p: Prospect, userId: string | null): Promise<string | null> {
   const name = p.store_name?.trim() || p.domain;
   const websiteUrl = `https://${p.domain}`;
+  // Any failure before the capture starts marks the prospect failed, so the same
+  // store is not retried (and a client or audit made) every 30 minutes.
+  const fail = async (msg: string) => {
+    await sb.from("outreach_prospects").update({
+      status: "failed",
+      notes: [p.notes, msg].filter(Boolean).join("\n"),
+    }).eq("id", p.id).eq("status", "new");
+    return msg;
+  };
   let clientId = p.client_id;
+  if (!clientId) {
+    // Reuse the prospect's client from an earlier try, by website, before making one.
+    const { data: prior } = await sb
+      .from("clients")
+      .select("id")
+      .eq("is_outreach", true)
+      .eq("website_url", websiteUrl)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    clientId = ((prior ?? []) as Array<{ id: string }>)[0]?.id ?? null;
+  }
   if (!clientId) {
     const { data, error } = await sb.from("clients").insert({
       name,
@@ -85,9 +127,11 @@ async function startAudit(sb: Sb, p: Prospect, userId: string | null): Promise<s
       created_by: userId,
       is_outreach: true,
     }).select("id").single();
-    if (error) return `Could not create the client: ${error.message}`;
+    if (error) return await fail(`Could not create the client: ${error.message}`);
     clientId = (data as { id: string }).id;
   }
+  // Saved straight away, so a later failure never leaves the client orphaned.
+  if (clientId !== p.client_id) await sb.from("outreach_prospects").update({ client_id: clientId }).eq("id", p.id);
   const { data: audit, error: auditErr } = await sb.from("audits").insert({
     client_id: clientId,
     title: `${name} - Web Audit`,
@@ -103,7 +147,7 @@ async function startAudit(sb: Sb, p: Prospect, userId: string | null): Promise<s
     show_recommendations: true,
     is_outreach: true,
   }).select("id").single();
-  if (auditErr) return `Could not create the audit: ${auditErr.message}`;
+  if (auditErr) return await fail(`Could not create the audit: ${auditErr.message}`);
   const auditId = (audit as { id: string }).id;
   const { error: secErr } = await sb.from("audit_sections").insert(WEB_SECTION_KEYS.map((section_key) => ({
     audit_id: auditId,
@@ -121,7 +165,10 @@ async function startAudit(sb: Sb, p: Prospect, userId: string | null): Promise<s
     status: "approved",
     section_details: null,
   })));
-  if (secErr) return `Could not create the audit sections: ${secErr.message}`;
+  if (secErr) {
+    await sb.from("audits").delete().eq("id", auditId); // no half-made audit left behind
+    return await fail(`Could not create the audit sections: ${secErr.message}`);
+  }
   await sb.from("outreach_prospects").update({
     client_id: clientId,
     audit_id: auditId,
@@ -152,17 +199,50 @@ async function tick(sb: Sb) {
   if (!settings.auto_pipeline) return { ok: true, skipped: "off" };
   const log: string[] = [];
 
-  // 1. Draft finished audits.
+  // 1. Draft finished audits, least recently tried first, so one that keeps
+  // failing never starves the rest.
   const { data: auditing } = await sb
     .from("outreach_prospects")
-    .select("id, domain, email_body, audit:audits(status)")
+    .select("id, domain, email_body, notes, auto_started_at, updated_at, audit:audits(status, created_at)")
     .eq("status", "auditing")
-    .is("email_body", null);
-  const done = ((auditing ?? []) as Array<{ id: string; domain: string; audit: { status?: string } | null }>)
-    .filter((p) => p.audit?.status === "published");
+    .is("email_body", null)
+    .order("updated_at", { ascending: true });
+  const rows = (auditing ?? []) as AuditingRow[];
+  const done = rows.filter((p) => p.audit?.status === "published");
   for (const p of done.slice(0, 3)) {
     const r = await callFn<{ message?: string; error?: string }>("outreach_draft", { prospect_id: p.id });
-    log.push(r.ok ? `${p.domain}: drafted` : `${p.domain}: draft failed (${r.data?.message ?? r.data?.error ?? r.status})`);
+    if (r.ok) {
+      log.push(`${p.domain}: drafted`);
+      continue;
+    }
+    const why = String(r.data?.message ?? r.data?.error ?? `HTTP ${r.status}`);
+    const tries = draftTries(p.notes) + 1;
+    const giveUp = tries >= MAX_DRAFT_TRIES;
+    await sb.from("outreach_prospects").update({
+      ...(giveUp ? { status: "failed" } : {}),
+      notes: withDraftNote(p.notes, giveUp
+        ? `Draft failed ${tries} times, no more automatic tries: ${why}. Draft it by hand.`
+        : `Draft failed (${tries}/${MAX_DRAFT_TRIES}): ${why}`),
+    }).eq("id", p.id).eq("status", "auditing");
+    log.push(`${p.domain}: draft failed (${why})${giveUp ? ", gave up" : ""}`);
+  }
+
+  // A capture that died leaves an audit that never finishes: after STUCK_AUDIT_MS
+  // it is marked failed (shown on the page with the note) and stops counting.
+  const nowMs = Date.now();
+  let inFlight = 0;
+  for (const p of rows) {
+    if (p.audit?.status === "published") continue;
+    const startedAt = Date.parse(p.audit?.created_at ?? p.auto_started_at ?? p.updated_at);
+    if (Number.isFinite(startedAt) && nowMs - startedAt > STUCK_AUDIT_MS) {
+      await sb.from("outreach_prospects").update({
+        status: "failed",
+        notes: [p.notes, "The audit did not finish within 2 hours. Skip it, or run the audit again from the web audit page."].filter(Boolean).join("\n"),
+      }).eq("id", p.id).eq("status", "auditing");
+      log.push(`${p.domain}: audit stuck, marked failed`);
+      continue;
+    }
+    inFlight++;
   }
 
   // 2. Start the next best store, within the daily number and two at a time.
@@ -171,7 +251,6 @@ async function tick(sb: Sb) {
     .from("outreach_prospects")
     .select("id", { count: "exact", head: true })
     .gte("auto_started_at", startOfSendDay(new Date()).toISOString());
-  const inFlight = ((auditing ?? []) as Array<{ audit: { status?: string } | null }>).filter((p) => p.audit?.status !== "published").length;
   if ((startedToday ?? 0) >= cap) return { ok: true, log, skipped_start: `daily limit (${cap}) reached` };
   if (inFlight >= MAX_IN_FLIGHT) return { ok: true, log, skipped_start: `${inFlight} audits already running` };
 

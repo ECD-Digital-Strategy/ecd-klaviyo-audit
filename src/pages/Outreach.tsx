@@ -377,7 +377,7 @@ function ProspectCard({
           {p.status === 'auditing' && !auditDone && (
             <span className="inline-flex items-center gap-1.5 text-xs text-gray-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Auditing</span>
           )}
-          {(p.status === 'auditing' && auditDone) && (
+          {((p.status === 'auditing' || p.status === 'failed') && auditDone) && (
             <button
               type="button"
               disabled={busy !== null}
