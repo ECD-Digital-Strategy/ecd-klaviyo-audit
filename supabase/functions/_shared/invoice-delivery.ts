@@ -51,6 +51,7 @@ export type InvoiceRecord = {
 type ProposalForEmail = {
   id: string;
   title: string;
+  client_id?: string | null;
   recipient_name: string | null;
   recipient_email: string | null;
   invoice_sender_id: string | null;
@@ -105,10 +106,58 @@ export async function patchInvoiceRecord(sb: Sb, proposalId: string, invoiceId: 
   await sb.from("proposals").update({ xero_invoices: next }).eq("id", proposalId);
 }
 
+/** Picks who the client is: the proposal's recipient, else whoever signed for the client, else the client record. */
+export function pickClientContact(
+  recipient: { name?: string | null; email?: string | null },
+  signer: { name?: string | null; email?: string | null } | null,
+  clientEmail: string | null | undefined,
+): { email: string; name: string } {
+  const ok = (e: string | null | undefined) => {
+    const v = (e ?? "").trim();
+    return v.includes("@") ? v : "";
+  };
+  const rName = (recipient.name ?? "").trim();
+  const sName = (signer?.name ?? "").trim();
+  const fromRecipient = ok(recipient.email);
+  if (fromRecipient) return { email: fromRecipient, name: rName || sName };
+  const fromSigner = ok(signer?.email);
+  if (fromSigner) return { email: fromSigner, name: sName || rName };
+  return { email: ok(clientEmail), name: rName };
+}
+
+/**
+ * The client's email and name for a signed proposal. A proposal shared by link has
+ * no recipient email (12 of the 33 signed by 2026-11-10; the first live welcome
+ * email, #78, stalled on it), but the person who signed gave theirs.
+ */
+export async function clientContact(
+  sb: Sb,
+  p: { id: string; client_id?: string | null; recipient_name: string | null; recipient_email: string | null },
+): Promise<{ email: string; name: string }> {
+  const recipient = { name: p.recipient_name, email: p.recipient_email };
+  const direct = pickClientContact(recipient, null, null);
+  if (direct.email) return direct;
+  const { data: sig } = await sb
+    .from("proposal_signatures")
+    .select("signer_name, signer_email")
+    .eq("proposal_id", p.id)
+    .eq("role", "client")
+    .order("signed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  let clientEmail: string | null = null;
+  if (p.client_id) {
+    const { data: c } = await sb.from("clients").select("email").eq("id", p.client_id).maybeSingle();
+    clientEmail = (c as { email?: string | null } | null)?.email ?? null;
+  }
+  const s = sig as { signer_name?: string | null; signer_email?: string | null } | null;
+  return pickClientContact(recipient, s ? { name: s.signer_name, email: s.signer_email } : null, clientEmail);
+}
+
 async function loadProposal(sb: Sb, proposalId: string): Promise<ProposalForEmail | null> {
   const { data } = await sb
     .from("proposals")
-    .select("id, title, recipient_name, recipient_email, invoice_sender_id, sent_by, created_by, xero_invoices, client:clients(company_name)")
+    .select("id, title, client_id, recipient_name, recipient_email, invoice_sender_id, sent_by, created_by, xero_invoices, client:clients(company_name)")
     .eq("id", proposalId)
     .maybeSingle();
   return (data as ProposalForEmail | null) ?? null;
@@ -127,8 +176,9 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
   const inv = (p.xero_invoices ?? []).find((r) => r.id === invoiceId);
   if (!inv) throw new Error("That invoice is not on this proposal.");
   if (inv.kind !== "one_time" || !inv.online_url) throw new Error("Only the approved implementation invoice is emailed; monthly ones stay drafts for Maria.");
-  const to = (p.recipient_email ?? "").trim();
-  if (!to.includes("@")) throw new Error("The proposal has no client email.");
+  const contact = await clientContact(sb, p);
+  const to = contact.email;
+  if (!to) throw new Error("There's no client email: none on the proposal, from the signer or on the client.");
   const sender = await resolveSender(sb, p, s);
   if (!sender) throw new Error("Neither the proposal's creator nor the fallback sender has connected their Gmail.");
   const { box, fallback } = sender;
@@ -136,7 +186,7 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
 
   const company = p.client?.company_name ?? "";
   const vars = {
-    first_name: (p.recipient_name ?? "").trim().split(/\s+/)[0] || "there",
+    first_name: contact.name.split(/\s+/)[0] || "there",
     company,
     proposal_title: p.title,
     invoice_number: inv.number,

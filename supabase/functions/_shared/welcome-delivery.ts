@@ -2,7 +2,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { xeroApi, xeroInvoicePdf } from "./xero.ts";
 import { deleteDraft, freeBusy, NeedsReconnect, type Attachment } from "./gmail.ts";
 import { draftForClient, slackDm } from "./client-draft.ts";
-import { loadInvoicing, patchInvoiceRecord, resolveSender, senderFirstName, type InvoiceRecord } from "./invoice-delivery.ts";
+import { clientContact, loadInvoicing, patchInvoiceRecord, resolveSender, senderFirstName, type InvoiceRecord } from "./invoice-delivery.ts";
 import { longDate, money, type InvoicingSettings } from "./invoice-email.ts";
 import { fillSubject, fillWelcome, LINK_LABELS, welcomeHtml, type WelcomeSettings, type WelcomeVars } from "./welcome-email.ts";
 import { candidateDays, findSlots, formatSlot, zonedTime } from "./launch-slots.ts";
@@ -209,10 +209,16 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
     missing.push("The implementation invoice isn't in Xero yet, so there's no pay link.");
   }
   if (!info?.found) missing.push("The Client Tracker has no onboarding for this proposal, so there's no intake form.");
-  else if (!info.intake_link) missing.push(info.intake_note ? `No intake form: ${info.intake_note}` : "The intake form hasn't been made yet.");
+  // Nothing sold has an intake tab (e.g. a K:Social setup): waiting won't make one, so it
+  // is a note for the sender, not a reason to hold the email for a day (#78, 2026-11-10).
+  else if (!info.intake_link && /no intake tab matches/i.test(info.intake_note ?? "")) {
+    notes.push("No intake form: nothing that was sold has an intake tab, so the email goes without one.");
+  } else if (!info.intake_link) missing.push(info.intake_note ? `No intake form: ${info.intake_note}` : "The intake form hasn't been made yet.");
 
-  const to = (p.recipient_email ?? "").trim();
-  if (!to.includes("@")) missing.push("The proposal has no client email.");
+  // A proposal shared by link has no recipient email: the person who signed gave theirs.
+  const contact = await clientContact(sb, p);
+  const to = contact.email;
+  if (!to) missing.push("There's no client email: none on the proposal, from the signer or on the client.");
   const sender = await resolveSender(sb, p, s);
   if (!sender) {
     return {
@@ -233,7 +239,7 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
   }
 
   const vars: WelcomeVars = {
-    first_name: (p.recipient_name ?? "").trim().split(/\s+/)[0] || "there",
+    first_name: contact.name.split(/\s+/)[0] || "there",
     company: p.client?.company_name ?? "",
     proposal_title: p.title,
     invoice_number: inv?.number ?? "",
