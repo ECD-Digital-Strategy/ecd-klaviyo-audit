@@ -9,7 +9,7 @@ import type { WelcomeSettings } from '../../lib/types';
 
 // Proposal settings: the welcome email after signing (Xiomara 2026-11-03, Emil
 // 2026-11-04). One email from the sender's Gmail with the invoice, launch call
-// times that fit Isa's and the RS's calendars, the ECD onboarding form, the W-9
+// times that fit Isa's and the LS's (Lifecycle Strategist's) calendars, the ECD onboarding form, the W-9
 // and the client's intake form. Existing clients get the invoice and their intake
 // form. Off until switched on; saved with the panel's Save settings. Server side:
 // supabase/functions/_shared/welcome-delivery.ts.
@@ -115,7 +115,7 @@ export default function WelcomeEmailSettings({
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
             Wait up to
             <input type="number" min={0} max={168} value={value.wait_hours} onChange={e => set({ wait_hours: num(e.target.value, 24, 0, 168) })} className={numberClass} />
-            hours after signing for the RS to be confirmed and the intake form to be made.
+            hours after signing for the LS to be confirmed and the intake form to be made.
           </div>
         </div>
 
@@ -164,8 +164,8 @@ export default function WelcomeEmailSettings({
             />
           </div>
           <ToggleRow
-            title="Also the client's RS"
-            description="The RS from the Client Tracker, once the pod is confirmed."
+            title="Also the client's LS"
+            description="The client's Lifecycle Strategist (LS) from the Client Tracker, once the pod is confirmed."
             checked={value.call_include_rs}
             onChange={v => set({ call_include_rs: v })}
           />

@@ -13,9 +13,9 @@ import { gmailSettingsLink, inlineLink, proposalLink } from "./app-links.ts";
 // from the invoice_followup function every 15 minutes (cron welcome-email):
 //  1. a proposal signed since the switch went on is queued ("waiting");
 //  2. it waits, up to wait_hours, for what other systems make after signing: the
-//     Xero invoice, the client's intake form and (new clients) the RS once the pod
+//     Xero invoice, the client's intake form and (new clients) the LS (Lifecycle Strategist) once the pod
 //     is confirmed in the Client Tracker;
-//  3. it reads Isa's and the RS's free/busy through the sender's Google
+//  3. it reads Isa's and the LS's free/busy through the sender's Google
 //     connection and picks launch call times;
 //  4. then (2026-11-05: nothing is sent to clients automatically) it is written as
 //     a DRAFT in the sender's own Gmail, Maria copied, invoice PDF attached, and
@@ -232,7 +232,7 @@ async function compose(sb: Sb, p: ProposalRow, s: InvoicingSettings, info: Track
   let times: string[] = [];
   if (kind === "new") {
     const rs = info?.rs ?? [];
-    if (w.call_include_rs && (!info?.pod_confirmed || !rs.length)) missing.push("The RS isn't confirmed yet, so the times only fit the other calendars.");
+    if (w.call_include_rs && (!info?.pod_confirmed || !rs.length)) missing.push("The LS isn't confirmed yet, so the times only fit the other calendars.");
     const got = await launchTimes(sb, box, w, rs);
     times = got.times;
     missing.push(...got.problems);

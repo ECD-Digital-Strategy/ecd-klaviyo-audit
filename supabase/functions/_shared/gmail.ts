@@ -391,7 +391,7 @@ export async function sendAsPerson(
 /**
  * When people are busy (Google Calendar free/busy), read with the connected
  * person's access. In the ECD Workspace everyone can see colleagues' free/busy,
- * so one connected sender is enough to check Isa's and the RS's calendars.
+ * so one connected sender is enough to check Isa's and the LS's calendars.
  * Calendars it could not read come back in `unreadable`. Throws NeedsReconnect when
  * the person connected before the calendar permission was asked for.
  */

@@ -2,7 +2,7 @@
 // 2026-11-04). What Xiomara sends by hand today, in one email from the sender's
 // own Gmail:
 //  - a brand new client: the invoice, launch call times that fit Isa's and the
-//    RS's calendars, the ECD onboarding form, our W-9 and their intake form;
+//    LS's calendars, the ECD onboarding form, our W-9 and their intake form;
 //  - an existing client signing more work: the invoice and the intake form for
 //    what they bought.
 // Never sent by the app (2026-11-05, Zak + Xiomara): written as a draft in the
@@ -26,7 +26,7 @@ export type WelcomeSettings = {
   project_body: string;
   /** Filled into {intro} when it comes from the fallback sender, who the client may not know. */
   intro_line: string;
-  /** Whose calendars the launch call has to fit, besides the RS (Isa). */
+  /** Whose calendars the launch call has to fit, besides the LS (Isa). */
   call_attendee_emails: string[];
   call_include_rs: boolean;
   /** The sender's own calendar too (Xiomara, 2026-11-04: yes). */
@@ -38,7 +38,7 @@ export type WelcomeSettings = {
   call_first_day: number;
   call_last_day: number;
   call_count: number;
-  /** How long to wait for the RS and the intake form before drafting without them. */
+  /** How long to wait for the LS and the intake form before drafting without them. */
   wait_hours: number;
 };
 

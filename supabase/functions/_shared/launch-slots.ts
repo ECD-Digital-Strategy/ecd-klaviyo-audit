@@ -1,5 +1,5 @@
 // Launch call times for the welcome email (Xiomara, 2026-11-03: "I always check
-// Isa's cal and the assigned RS's one too"). Given everyone's busy times (Google
+// Isa's cal and the assigned RS's one too"; RS is now LS, Lifecycle Strategist, 2026-11-11). Given everyone's busy times (Google
 // Calendar free/busy), finds a few times they are all free, in working hours in one
 // time zone, a couple of business days out so the team has time to prepare.
 // Plain logic, no I/O: welcome-delivery.ts reads the calendars.
