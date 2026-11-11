@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient, hasCronSecret } from "../_shared/auth.ts";
 import { OUTREACH_OWNER_EMAIL, requireOutreachOwner } from "../_shared/outreach-access.ts";
 import { crmEventLeads, crmKnown, crmSkipReason, type CrmKnown } from "../_shared/outreach-crm.ts";
-import { approachFor, groupGuests, OWN_DOMAINS, pickGuest, relevantMatches, type EventBrand } from "../_shared/outreach-events.ts";
+import { approachFor, groupGuests, guestName, OWN_DOMAINS, pickGuest, relevantMatches, type EventBrand } from "../_shared/outreach-events.ts";
 import { createLlmClient } from "../_shared/llm-adapter.ts";
 import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-score.ts";
 
@@ -53,6 +53,15 @@ const hostOf = (url: string | null | undefined) => (url ? normalizeDomain(url) :
 type Screened = { domain: string; status: "new" | "skipped" | "exists" | "invalid"; reason?: string; store_name?: string; lead_score?: number };
 
 /** Name and size signals from the homepage. shopify=false means it is not a Shopify store. */
+/** "Astral Health &amp; Beauty" -> "Astral Health & Beauty". */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&(amp|quot|apos|lt|gt|nbsp|rsquo|lsquo|ndash|mdash);/g, (_, e) =>
+      ({ amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " ", rsquo: "'", lsquo: "'", ndash: "-", mdash: "-" })[e as string] ?? _);
+}
+
 type Homepage = {
   shopify: boolean;
   name: string | null;
@@ -78,7 +87,7 @@ async function readHomepage(domain: string): Promise<Homepage | null> {
     const shopify = /cdn\.shopify\.com|Shopify\.theme|myshopify\.com/i.test(html);
     const og = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']{1,80})["']/i)?.[1];
     const title = html.match(/<title[^>]*>([^<]{1,120})<\/title>/i)?.[1];
-    const name = (og ?? title?.split(/[|\-–:]/)[0] ?? "").trim() || null;
+    const name = decodeEntities((og ?? title?.split(/[|\-–:]/)[0] ?? "").trim()) || null;
     const signals = [
       [/attn\.tv|attentivemobile/i, "Attentive"],
       [/postscript\.io/i, "Postscript"],
@@ -281,9 +290,9 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
     const approach = approachFor(b.domain, home?.shopify ?? false);
     const others = b.guests
       .filter((g) => g !== guest && g.email)
-      .map((g) => ({ name: [g.first_name, g.last_name].filter(Boolean).join(" ") || null, email: g.email, title: g.title }));
+      .map((g) => ({ name: guestName(g), email: g.email, title: g.title }));
     const noteLines = [
-      v?.kind === "unknown" ? `Check it is a brand: ${v.why}.` : null,
+      v?.kind === "unknown" ? `Check it is a brand: ${v.why.replace(/\.+$/, "")}.` : null,
       home && !home.shopify ? "Not on Shopify, so it gets the discovery email (no audit)." : null,
       !home ? "Their website did not load." : null,
       !guest ? "No guest email from this brand: use Find decision-maker." : null,
@@ -301,7 +310,7 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
       event_kind: event.kind,
       event_date: event.held_on,
       approach: reason ? null : approach,
-      contact_name: guest ? [guest.first_name, guest.last_name].filter(Boolean).join(" ") || null : null,
+      contact_name: guest ? guestName(guest) : null,
       contact_email: guest?.email ?? null,
       contact_title: guest?.title ?? null,
       contact_source: guest ? "event" : null,

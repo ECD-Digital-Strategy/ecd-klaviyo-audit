@@ -1,5 +1,12 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { approachFor, groupGuests, pickGuest, relevantMatches, type EventGuest } from "./outreach-events.ts";
+import { approachFor, groupGuests, guestName, pickGuest, relevantMatches, type EventGuest } from "./outreach-events.ts";
+
+Deno.test("guestName: no doubled surname", () => {
+  assertEquals(guestName({ first_name: "Skip Stone", last_name: "Stone" }), "Skip Stone");
+  assertEquals(guestName({ first_name: "Jane", last_name: "Doe" }), "Jane Doe");
+  assertEquals(guestName({ first_name: null, last_name: "Doe" }), "Doe");
+  assertEquals(guestName({ first_name: null, last_name: null }), null);
+});
 
 const g = (p: Partial<EventGuest>): EventGuest => ({
   brand: null, domain: null, contact_id: null, email: null, first_name: null, last_name: null, title: null, removed: false, ...p,

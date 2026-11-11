@@ -52,6 +52,15 @@ export function groupGuests(guests: EventGuest[]): { brands: EventBrand[]; unpla
   return { brands: [...by.values()], unplaced };
 }
 
+/** "Skip Stone" + "Stone" -> "Skip Stone": some CRM contacts carry the surname inside the first name too. */
+export function guestName(g: Pick<EventGuest, "first_name" | "last_name">): string | null {
+  const first = g.first_name?.trim() ?? "";
+  const last = g.last_name?.trim() ?? "";
+  if (!first) return last || null;
+  if (!last || first.toLowerCase().endsWith(` ${last.toLowerCase()}`) || first.toLowerCase() === last.toLowerCase()) return first;
+  return `${first} ${last}`;
+}
+
 /** Who gets the email: a guest Zak did not take off, with an address at the brand's own domain first. */
 export function pickGuest(b: EventBrand): EventGuest | null {
   const live = b.guests.filter((g) => !g.removed && g.email?.includes("@"));

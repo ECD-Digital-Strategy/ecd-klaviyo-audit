@@ -1,4 +1,4 @@
-import { assertServiceRoleClient, isServiceRoleAuthorization, requireAdminUserId } from "./auth.ts";
+import { assertServiceRoleClient, hasCronSecret, isServiceRoleAuthorization, requireAdminUserId } from "./auth.ts";
 
 /** Outreach is Emil's alone for now (Emil, 2026-11-01); the page, the
  * outreach_prospects policy and these functions all check this address. */
@@ -13,9 +13,11 @@ export async function requireOutreachOwner(req: Request): Promise<string> {
   return userId;
 }
 
-/** Emil, or the server itself (outreach_pipeline calls with the service role key): null for the server. */
+/** Emil, or the server itself (outreach_pipeline calls with the service role key, checks and crons with the
+ * outreach cron secret): null for the server. */
 export async function requireOutreachOwnerOrServer(req: Request): Promise<string | null> {
   const token = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   if (token && isServiceRoleAuthorization(token)) return null;
+  if (await hasCronSecret(req, "outreach_cron_secret")) return null;
   return await requireOutreachOwner(req);
 }
