@@ -5,8 +5,7 @@ import { sendEmail } from "../_shared/mailer.ts";
 import { advanceCursor, ImapSession, newUids, uidSet } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
-import { getSecret } from "../_shared/app-secrets.ts";
-import { HubSpot, OUTREACH_HUBSPOT_SCOPES, type HubLeadStatus } from "../_shared/outreach-hubspot.ts";
+import { crmConfigured, crmKnown, crmLog, crmSkipReason, type CrmKnown, type CrmLeadStatus } from "../_shared/outreach-crm.ts";
 import {
   classifyReply,
   pendingReplies,
@@ -50,8 +49,9 @@ import {
 // (_shared/outreach-replies.ts). Interested, a question, a referral or "later"
 // stops the sequence and emails Emil an alert; "no" or "remove me" also puts the
 // domain on the do-not-contact list (outreach_suppressions) for good; an
-// out-of-office lets the sequence carry on. Emailed prospects, every email both
-// ways and their lead status go into HubSpot (_shared/outreach-hubspot.ts).
+// out-of-office lets the sequence carry on. Emailed prospects, a line per email both
+// ways and their lead status go into the ECD CRM (_shared/outreach-crm.ts; HubSpot
+// until 2026-11-11, when Zak asked for Outreach to stop using HubSpot).
 // Actions: "status", "connect_mailbox", "disconnect_mailbox", "save_settings",
 // "send_now" and "test_send" (Emil, from the Outreach page); "tick" (the
 // outreach-autopilot cron, every 20 minutes).
@@ -89,7 +89,8 @@ type Settings = {
   signature_html: string | null;
   /** When the signature was last read from his Gmail (it follows Gmail, not a copy typed here). */
   signature_synced_at: string | null;
-  hubspot_log: boolean;
+  /** Log emailed prospects and each email in the ECD CRM. */
+  crm_log: boolean;
   reply_alerts: boolean;
   hot_lead_views: number;
   about_intro: string | null;
@@ -112,7 +113,7 @@ const DEFAULT_SETTINGS: Settings = {
   min_gap_minutes: 45,
   signature_html: null,
   signature_synced_at: null,
-  hubspot_log: true,
+  crm_log: true,
   reply_alerts: true,
   hot_lead_views: 3,
   about_intro: null,
@@ -139,8 +140,9 @@ type Prospect = {
   contact_title?: string | null;
   replies_seen?: number;
   report_views?: number;
-  hubspot_contact_id?: string | null;
-  hubspot_company_id?: string | null;
+  /** CRM records Outreach created (records that were already there are never stored here). */
+  crm_contact_id?: string | null;
+  crm_company_id?: string | null;
 };
 
 /** The connected mailbox, decrypted here only, or null. */
@@ -183,56 +185,42 @@ async function reportUrl(sb: Sb, p: Prospect): Promise<string | null> {
   return token ? `${REPORT_BASE}${token}` : null;
 }
 
-async function hubspot(): Promise<HubSpot | null> {
-  try {
-    return new HubSpot(await getSecret("hubspot_private_app_token"));
-  } catch {
-    return null;
-  }
-}
-
-/** The prospect and one email into HubSpot, best effort: a failure is noted on the prospect, never thrown. */
-async function logToHubspot(
+/**
+ * The prospect and one email into the ECD CRM, best effort: a failure is noted on the
+ * prospect (crm_error), never thrown. Ids are saved only for records Outreach created;
+ * a person or company that was already in the CRM only gets the history line, and its
+ * lead status is never touched (same rule as HubSpot had, audit 2026-11-10).
+ */
+async function logToCrm(
   sb: Sb,
   settings: Settings,
   p: Prospect,
-  email: { direction: "out" | "in"; subject: string; text: string; from: string; to: string },
-  status?: HubLeadStatus,
+  email: { event: "sent" | "followup" | "reply"; subject: string; note?: string },
+  status?: CrmLeadStatus,
 ) {
-  if (!settings.hubspot_log || !p.contact_email) return;
-  const hs = await hubspot();
-  if (!hs) return;
+  if (!settings.crm_log || !p.contact_email) return;
   try {
-    const owner = await hs.ownerId(OUTREACH_OWNER_EMAIL);
-    // Ids are saved on the prospect only for records Outreach created. A record that
-    // was already in HubSpot only gets the email logged: its lead status is never
-    // touched (audit 2026-11-10).
-    let companyId = p.hubspot_company_id ?? null;
-    let contactId = p.hubspot_contact_id ?? null;
-    let ownsContact = Boolean(contactId);
-    let ownsCompany = Boolean(companyId);
-    if (!companyId) {
-      const c = await hs.upsertCompany(p.domain, p.store_name || p.domain, owner);
-      companyId = c.id;
-      ownsCompany = c.created;
-    }
-    if (!contactId) {
-      const c = await hs.upsertContact(
-        { email: p.contact_email, name: p.contact_name, title: p.contact_title ?? null, domain: p.domain },
-        companyId,
-        owner,
-      );
-      contactId = c.id;
-      ownsContact = c.created;
-    }
-    await hs.logEmail({ contactId, companyId, ownerId: owner, ...email });
-    if (status && ownsContact) await hs.setLeadStatus(contactId, status);
-    const patch: Record<string, unknown> = { hubspot_error: null };
-    if (ownsCompany) patch.hubspot_company_id = p.hubspot_company_id = companyId;
-    if (ownsContact) patch.hubspot_contact_id = p.hubspot_contact_id = contactId;
+    const [first, ...rest] = (p.contact_name ?? "").trim().split(/\s+/);
+    const r = await crmLog({
+      domain: p.domain,
+      email: p.contact_email,
+      store_name: p.store_name,
+      first_name: first || null,
+      last_name: rest.join(" ") || null,
+      title: p.contact_title ?? null,
+      contact_id: p.crm_contact_id ?? null,
+      company_id: p.crm_company_id ?? null,
+      event: email.event,
+      subject: email.subject,
+      note: email.note ?? null,
+      lead_status: status ?? null,
+    });
+    const patch: Record<string, unknown> = { crm_error: null };
+    if (r.owns_company) patch.crm_company_id = p.crm_company_id = r.company_id;
+    if (r.owns_contact) patch.crm_contact_id = p.crm_contact_id = r.contact_id;
     await sb.from("outreach_prospects").update(patch).eq("id", p.id);
   } catch (e) {
-    await sb.from("outreach_prospects").update({ hubspot_error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }).eq("id", p.id);
+    await sb.from("outreach_prospects").update({ crm_error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }).eq("id", p.id);
   }
 }
 
@@ -352,9 +340,9 @@ type SendCheck = { ok: true } | { ok: false; outcome: "blocked" | "retry"; error
 
 /**
  * Checked again right before a first email goes out (audit 2026-11-10), not only
- * at screening: the do-not-contact list, past clients, and HubSpot (the exact
- * address as a contact, the domain as a company). A HubSpot record Outreach did
- * not create blocks it for good; HubSpot unreachable means not this run.
+ * at screening: the do-not-contact list, past clients, and the ECD CRM (the exact
+ * address as a contact, the domain as anything the CRM knows). A CRM record Outreach
+ * did not create blocks it for good; the CRM unreachable means not this run.
  */
 async function sendTimeCheck(sb: Sb, p: Prospect): Promise<SendCheck> {
   const email = String(p.contact_email ?? "").trim().toLowerCase();
@@ -364,21 +352,18 @@ async function sendTimeCheck(sb: Sb, p: Prospect): Promise<SendCheck> {
   } catch (e) {
     return { ok: false, outcome: "retry", error: `Not sent yet, the do-not-contact checks could not run: ${e instanceof Error ? e.message : String(e)}` };
   }
-  const hs = await hubspot();
-  if (!hs) return { ok: false, outcome: "retry", error: "Not sent yet: HubSpot is not connected, so it could not be checked." };
-  let contactId: string | null;
-  let companyId: string | null;
+  let known: CrmKnown;
   try {
-    [contactId, companyId] = await Promise.all([hs.findContactByEmail(email), hs.findCompanyByDomain(p.domain)]);
+    known = await crmKnown([p.domain], email ? [email] : []);
   } catch (e) {
-    return { ok: false, outcome: "retry", error: `Not sent yet: HubSpot could not be checked (${e instanceof Error ? e.message : String(e)}).` };
+    return { ok: false, outcome: "retry", error: `Not sent yet: the CRM could not be checked (${e instanceof Error ? e.message : String(e)}).` };
   }
-  if (contactId && contactId !== p.hubspot_contact_id) {
-    return { ok: false, outcome: "blocked", error: `${email} is already a contact in HubSpot (found at send time).` };
+  const own = { contactId: p.crm_contact_id, companyId: p.crm_company_id };
+  if (crmSkipReason(known.emails[email], own)) {
+    return { ok: false, outcome: "blocked", error: `${email} is already a contact in the CRM (found at send time).` };
   }
-  if (companyId && companyId !== p.hubspot_company_id) {
-    return { ok: false, outcome: "blocked", error: `${p.domain} is already a company in HubSpot (found at send time).` };
-  }
+  const byDomain = crmSkipReason(known.domains[p.domain], own);
+  if (byDomain) return { ok: false, outcome: "blocked", error: `${byDomain} (found at send time).` };
   return { ok: true };
 }
 
@@ -420,7 +405,7 @@ async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings
   }
   const now = new Date().toISOString();
   await sb.from("outreach_prospects").update({ status: "sent", sent_at: now, last_sent_at: now, message_id: r.messageId }).eq("id", p.id);
-  await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email }, "ATTEMPTED_TO_CONTACT");
+  await logToCrm(sb, settings, p, { event: "sent", subject }, "ATTEMPTED_TO_CONTACT");
   return { ok: true, messageId: r.messageId };
 }
 
@@ -462,13 +447,11 @@ async function handleReply(
       { onConflict: "domain" },
     );
   }
-  const status: HubLeadStatus = stop ? "UNQUALIFIED" : verdict.kind === "not_now" ? "BAD_TIMING" : "CONNECTED";
-  await logToHubspot(sb, settings, p, {
-    direction: "in",
+  const status: CrmLeadStatus = stop ? "UNQUALIFIED" : verdict.kind === "not_now" ? "BAD_TIMING" : "CONNECTED";
+  await logToCrm(sb, settings, p, {
+    event: "reply",
     subject: mail.subject || `Re: ${p.email_subject ?? ""}`,
-    text: mail.text,
-    from: p.contact_email ?? mail.from,
-    to: box.user,
+    note: `Replied (${KIND_LABEL[verdict.kind] ?? "Replied"}): ${verdict.summary}`,
   }, status);
   if (settings.reply_alerts && decision.alert) {
     await alertEmil(p, verdict, mail, await reportUrl(sb, p)).catch(() => {});
@@ -884,7 +867,7 @@ async function tick(sb: Sb) {
         break;
       }
       await sb.from("outreach_prospects").update({ last_sent_at: new Date().toISOString() }).eq("id", p.id);
-      await logToHubspot(sb, settings, p, { direction: "out", subject, text, from: box.user, to: p.contact_email ?? "" });
+      await logToCrm(sb, settings, p, { event: "followup", subject: `Follow-up ${n}: ${subject}` });
       sent.push(`${p.domain}: follow-up ${n}`);
       if ((await loadSettings(sb)).paused) return { ok: true, sent, paused: true };
     }
@@ -910,7 +893,7 @@ async function tick(sb: Sb) {
         // Needs Emil (no address, a shared inbox, empty email): back to Ready.
         await sb.from("outreach_prospects").update({ status: "ready", notes: `Not sent: ${r.error}` }).eq("id", next.id).eq("status", "approved");
       } else if (r.outcome === "retry") {
-        // A passing problem (Gmail, HubSpot): stays approved and is tried again,
+        // A passing problem (Gmail, the CRM): stays approved and is tried again,
         // unless Gmail refused it MAX_INITIAL_TRIES times.
         const { count } = await sb
           .from("outreach_sends")
@@ -1028,6 +1011,18 @@ serve(async (req) => {
     }
   }
 
+  if (body.action === "crm_check") {
+    // Read-only: can the CRM be asked? For the health check and after a deploy. Counts only, no records.
+    if (!(await hasCronSecret(req, "outreach_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
+    const domains = Array.isArray((body as { domains?: unknown }).domains) ? ((body as { domains: unknown[] }).domains).map(String).slice(0, 5) : [];
+    try {
+      const known = await crmKnown(domains.length ? domains : ["example.com"]);
+      return json({ ok: true, matches: Object.fromEntries(Object.entries(known.domains).map(([d, m]) => [d, { count: m.length, reason: crmSkipReason(m) }])) });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 502);
+    }
+  }
+
   try {
     await requireOutreachOwner(req);
   } catch {
@@ -1038,9 +1033,11 @@ serve(async (req) => {
     const settings = await loadSettings(sb);
     const today = await sentToday(sb, new Date());
     const box = await mailbox(sb);
-    const hs = await hubspot();
-    const scopes = hs ? await hs.scopes() : null;
     const { count: suppressedCount } = await sb.from("outreach_suppressions").select("domain", { count: "exact", head: true });
+    // A real question to the CRM, so "connected" means it answers, not only that it is set up.
+    const crmProblem = crmConfigured()
+      ? await crmKnown(["example.com"]).then(() => null, (e) => (e instanceof Error ? e.message : String(e)))
+      : "not set up";
     // The address only: the password never leaves the server.
     return json({
       ok: true,
@@ -1048,11 +1045,7 @@ serve(async (req) => {
       sent_today: today.initial,
       settings,
       in_window: inSendWindow(new Date(), settings.send_start_hour, settings.send_end_hour),
-      hubspot: {
-        connected: Boolean(hs),
-        // null when HubSpot would not say which scopes the token has.
-        missing_scopes: scopes ? OUTREACH_HUBSPOT_SCOPES.filter((sc) => !scopes.includes(sc)) : null,
-      },
+      crm: { connected: crmProblem === null, error: crmProblem },
       suppressed: suppressedCount ?? 0,
     });
   }
@@ -1125,7 +1118,7 @@ serve(async (req) => {
     if ("booking_url" in s) patch.booking_url = String(s.booking_url ?? "").trim() || null;
     if ("signature_html" in s) patch.signature_html = String(s.signature_html ?? "").trim().slice(0, 30_000) || null;
     if ("daily_new_cap" in s) patch.daily_new_cap = clampInt(s.daily_new_cap, 0, 10, current.daily_new_cap);
-    if ("hubspot_log" in s) patch.hubspot_log = Boolean(s.hubspot_log);
+    if ("crm_log" in s) patch.crm_log = Boolean(s.crm_log);
     if ("reply_alerts" in s) patch.reply_alerts = Boolean(s.reply_alerts);
     if ("hot_lead_views" in s) patch.hot_lead_views = clampInt(s.hot_lead_views, 0, 20, current.hot_lead_views);
     if ("about_intro" in s) patch.about_intro = String(s.about_intro ?? "").trim().slice(0, 1500) || null;

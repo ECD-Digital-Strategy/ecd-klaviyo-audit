@@ -51,7 +51,7 @@ const GROUPS: Array<{ key: string; title: string; note: string; match: (p: Outre
   { key: 'ready', title: 'Ready to send', note: 'Check the email and who it goes to, then send it now or queue it.', match: (p) => p.status === 'ready' },
   { key: 'approved', title: 'Queued', note: 'Goes out on its own, in this order, within the daily limit on US weekdays.', match: (p) => p.status === 'approved' },
   { key: 'auditing', title: 'Auditing', note: 'The audit runs on the server and takes a few minutes. Draft the email once it is done.', match: (p) => p.status === 'auditing' || p.status === 'failed' },
-  { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not in HubSpot, on Shopify. Best lead score first.', match: (p) => p.status === 'new' },
+  { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not known to the CRM, on Shopify. Best lead score first.', match: (p) => p.status === 'new' },
   { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. You get an email for each one worth answering.', match: (p) => p.status === 'replied' },
   { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced'].includes(p.status) },
   { key: 'unsubscribed', title: 'Said no', note: 'On the do-not-contact list for good: never screened, audited or emailed again.', match: (p) => p.status === 'unsubscribed' },
@@ -154,7 +154,7 @@ export default function Outreach() {
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-gray-900">Add stores</h2>
           <p className="mt-1 text-xs text-gray-500">
-            Paste store websites, one per line (up to {SCREEN_MAX}). Anyone already a client or in HubSpot is skipped, and so is
+            Paste store websites, one per line (up to {SCREEN_MAX}). Anyone already a client or known to the ECD CRM is skipped, and so is
             anything not on Shopify or scoring under the lead score set in Settings.
           </p>
           <textarea
@@ -176,7 +176,7 @@ export default function Outreach() {
             </button>
             {screening && (
               <span className="text-xs text-gray-500">
-                Checking HubSpot, each website and its traffic, a few seconds per store
+                Checking the CRM, each website and its traffic, a few seconds per store
                 {screenProgress && screenProgress.total > 15 ? ` (${screenProgress.done} of ${screenProgress.total})` : ''}.
               </span>
             )}
@@ -338,7 +338,7 @@ function ProspectCard({
               {p.reply_text && <p className="mt-1 line-clamp-3 whitespace-pre-line text-gray-500">{p.reply_text}</p>}
             </div>
           )}
-          {p.hubspot_error && <p className="mt-1 text-[11px] text-amber-700">Not in HubSpot: {p.hubspot_error}</p>}
+          {p.crm_error && <p className="mt-1 text-[11px] text-amber-700">Not logged in the CRM: {p.crm_error}</p>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -878,7 +878,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     auto_pipeline: false,
     auto_audits_per_day: 3,
     min_lead_score: 40,
-    hubspot_log: true,
+    crm_log: true,
     reply_alerts: true,
     hot_lead_views: 3,
     about_intro: '',
@@ -897,7 +897,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       auto_pipeline: settings.auto_pipeline,
       auto_audits_per_day: settings.auto_audits_per_day,
       min_lead_score: settings.min_lead_score,
-      hubspot_log: settings.hubspot_log,
+      crm_log: settings.crm_log,
       reply_alerts: settings.reply_alerts,
       hot_lead_views: settings.hot_lead_views,
       about_intro: settings.about_intro ?? '',
@@ -931,7 +931,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       form.auto_pipeline !== settings.auto_pipeline ||
       form.auto_audits_per_day !== settings.auto_audits_per_day ||
       form.min_lead_score !== settings.min_lead_score ||
-      form.hubspot_log !== settings.hubspot_log ||
+      form.crm_log !== settings.crm_log ||
       form.reply_alerts !== settings.reply_alerts ||
       form.hot_lead_views !== settings.hot_lead_views ||
       form.about_intro !== (settings.about_intro ?? ''));
@@ -1046,7 +1046,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Replies and HubSpot</h2>
+        <h2 className="text-sm font-semibold text-gray-900">Replies and the CRM</h2>
         <p className="mt-1 text-xs text-gray-500">
           Every reply is read and sorted. Anyone who answers stops getting follow-ups; anyone who says no goes on the
           do-not-contact list for good{status?.suppressed ? ` (${status.suppressed} so far)` : ''}. An out-of-office lets the follow-up go ahead.
@@ -1064,15 +1064,12 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
         </div>
         <div className="mt-4">
           <ToggleRow
-            title="Log them in HubSpot"
-            description="Once emailed: the company and contact (owned by you), every email both ways, and their lead status from the reply."
-            checked={form.hubspot_log}
-            onChange={(v) => setForm((f) => ({ ...f, hubspot_log: v }))}
+            title="Log them in the CRM"
+            description="Once emailed: the company and contact in Revenue Desk (owned by you, lead source Cold outreach), a line for every email both ways, and their lead status from the reply. People already in the CRM are never changed."
+            checked={form.crm_log}
+            onChange={(v) => setForm((f) => ({ ...f, crm_log: v }))}
           >
-            {status?.hubspot && !status.hubspot.connected && <p className="mt-1.5 text-xs text-amber-700">HubSpot is not connected.</p>}
-            {status?.hubspot?.missing_scopes && status.hubspot.missing_scopes.length > 0 && (
-              <p className="mt-1.5 text-xs text-amber-700">The HubSpot app is missing: {status.hubspot.missing_scopes.join(', ')}.</p>
-            )}
+            {status?.crm && !status.crm.connected && <p className="mt-1.5 text-xs text-amber-700">The CRM could not be reached{status.crm.error ? ` (${status.crm.error})` : ''}, so no first email goes out until it can.</p>}
           </ToggleRow>
         </div>
       </section>

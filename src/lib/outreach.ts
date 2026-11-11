@@ -4,7 +4,7 @@ import { WEB_AUDIT_SECTION_KEYS } from './audit-sections';
 import type { Audit, Client } from './types';
 
 // Outreach, step 1 (Emil, 2026-11-01): a test batch with Emil in the loop. Paste
-// store domains; outreach_screen skips anyone already a client or in HubSpot and
+// store domains; outreach_screen skips anyone already a client or known to the ECD CRM and
 // anything that is not Shopify; the rest get an outside-only web audit whose public
 // link is a teaser (audit_public); outreach_draft writes the email; Emil edits it,
 // sends it from his own mailbox and marks it sent.
@@ -48,8 +48,8 @@ export type OutreachProspect = {
   reply_kind?: ReplyKind | null;
   reply_summary?: string | null;
   reply_text?: string | null;
-  hubspot_contact_id?: string | null;
-  hubspot_error?: string | null;
+  crm_contact_id?: string | null;
+  crm_error?: string | null;
   status: OutreachStatus;
   skip_reason: string | null;
   client_id: string | null;
@@ -233,8 +233,8 @@ export type OutreachSettings = {
   /** Emil's Gmail signature, added under every email: read from his Gmail, not typed here. */
   signature_html: string | null;
   signature_synced_at?: string | null;
-  /** Log emailed prospects and every email in HubSpot. */
-  hubspot_log: boolean;
+  /** Log emailed prospects and each email in the ECD CRM (Revenue Desk). */
+  crm_log: boolean;
   /** Email Emil when someone replies with something worth answering. */
   reply_alerts: boolean;
   /** Email Emil when a prospect opens their report this many times without replying (0 = off). */
@@ -254,7 +254,7 @@ export type OutreachSendStatus = {
   sent_today: number;
   settings: OutreachSettings;
   in_window: boolean;
-  hubspot?: { connected: boolean; missing_scopes: string[] | null };
+  crm?: { connected: boolean; error?: string | null };
   /** Companies on the do-not-contact list. */
   suppressed?: number;
 };

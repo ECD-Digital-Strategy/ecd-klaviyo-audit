@@ -1,16 +1,18 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient } from "../_shared/auth.ts";
 import { requireOutreachOwner } from "../_shared/outreach-access.ts";
-import { getSecret } from "../_shared/app-secrets.ts";
+import { crmKnown, crmSkipReason, type CrmKnown } from "../_shared/outreach-crm.ts";
 import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-score.ts";
 
 // Outreach, step 1 (Emil, 2026-11-01): screen pasted store domains before anything
 // is audited or emailed. Each domain is kept once in outreach_prospects, either as
 // 'new' (worth auditing) or 'skipped' with the reason, so nobody is ever screened,
 // audited or emailed twice. Skipped:
-//  - already a client here (HubSpot companies are mirrored into clients),
-//  - in HubSpot as a company or as any contact at that email domain (past clients
-//    and contacts are left alone entirely: no audit, no email),
+//  - already a client here,
+//  - known to the ECD CRM (Revenue Desk, since 2026-11-11; HubSpot before): a client,
+//    a deal in any stage, a company, any contact at that domain, a prospect, an event
+//    guest, or the CRM's do-not-contact list (_shared/outreach-crm.ts). Past clients
+//    and contacts are left alone entirely: no audit, no email,
 //  - not a Shopify store.
 // The homepage is read once for the store's name and a few size signals (Attentive
 // and Postscript are sold to bigger brands; Klaviyo alone is weak).
@@ -47,17 +49,6 @@ export function normalizeDomain(input: string): string | null {
 const hostOf = (url: string | null | undefined) => (url ? normalizeDomain(url) : null);
 
 type Screened = { domain: string; status: "new" | "skipped" | "exists" | "invalid"; reason?: string; store_name?: string; lead_score?: number };
-
-async function hubspotHas(token: string, object: "companies" | "contacts", property: string, domain: string): Promise<boolean | null> {
-  const res = await fetch(`https://api.hubapi.com/crm/v3/objects/${object}/search`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: property, operator: "EQ", value: domain }] }], limit: 1 }),
-  }).catch(() => null);
-  if (!res || !res.ok) return null; // unknown, not "no"
-  const body = (await res.json().catch(() => null)) as { total?: number } | null;
-  return (body?.total ?? 0) > 0;
-}
 
 /** Name and size signals from the homepage. shopify=false means it is not a Shopify store. */
 async function readHomepage(domain: string): Promise<{ shopify: boolean; name: string | null; signals: string[]; currency: string | null; country: string | null } | null> {
@@ -137,11 +128,14 @@ serve(async (req) => {
   const sb = assertServiceRoleClient();
   const { data: settingsRow } = await sb.from("outreach_settings").select("min_lead_score").eq("id", "default").maybeSingle();
   const minScore = Number((settingsRow as { min_lead_score?: number } | null)?.min_lead_score ?? 40);
-  let hubspotToken = "";
+  // One question to the CRM for the whole batch (2026-11-11: the CRM, not HubSpot).
+  let crm: CrmKnown | null = null;
+  let crmError = "";
+  const asked = [...new Set(inputs.map(normalizeDomain).filter((d): d is string => Boolean(d)))];
   try {
-    hubspotToken = await getSecret("hubspot_private_app_token");
-  } catch {
-    // Without HubSpot the clients mirror is still checked; the result says so.
+    crm = await crmKnown(asked);
+  } catch (e) {
+    crmError = e instanceof Error ? e.message : String(e);
   }
 
   const seen = new Set<string>();
@@ -178,17 +172,10 @@ serve(async (req) => {
       reason = "Already a client";
     }
 
-    if (!reason && hubspotToken) {
-      const [company, contact] = await Promise.all([
-        hubspotHas(hubspotToken, "companies", "domain", domain),
-        hubspotHas(hubspotToken, "contacts", "hs_email_domain", domain),
-      ]);
-      if (company) reason = "In HubSpot (company)";
-      else if (contact) reason = "In HubSpot (contact)";
-      // Either lookup failing is unknown, not "no": fail closed (audit 2026-11-10).
-      else if (company === null || contact === null) reason = "HubSpot could not be checked, so skipped to be safe. Screen it again later";
-    } else if (!reason && !hubspotToken) {
-      reason = "HubSpot is not connected, so skipped to be safe. Screen it again later";
+    if (!reason) {
+      // The CRM could not be asked: unknown, not "no". Fail closed (audit 2026-11-10).
+      if (!crm) reason = `The CRM could not be checked (${crmError}), so skipped to be safe. Screen it again later`;
+      else reason = crmSkipReason(crm.domains[domain]);
     }
     if (reason?.endsWith("Screen it again later")) {
       // Not saved, so screening it again later checks it afresh.
