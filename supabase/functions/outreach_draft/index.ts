@@ -91,11 +91,12 @@ type ProspectRow = Record<string, unknown> & {
 function eventFacts(p: ProspectRow): string {
   if (p.source !== "event" || !p.event_name) return "";
   const when = p.event_date ? new Date(`${p.event_date}T12:00:00Z`) : null;
-  const months = when ? Math.floor((Date.now() - when.getTime()) / (30.4 * 86_400_000)) : null;
+  const days = when ? Math.max(0, Math.round((Date.now() - when.getTime()) / 86_400_000)) : null;
+  const ago = days === null ? "" : days < 14 ? `${days} days ago` : days < 60 ? `about ${Math.round(days / 7)} weeks ago` : `about ${Math.round(days / 30.4)} months ago`;
   return [
     `Event: ${p.event_name}`,
     `Kind: ${p.event_kind === "webinar" ? "a webinar" : "an in-person event"}`,
-    when ? `When: ${when.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })} (${months === 0 ? "this month" : `about ${months} month${months === 1 ? "" : "s"} ago`})` : "",
+    when ? `When: ${when.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })} (${ago}; today is ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })})` : "",
   ].filter(Boolean).join("\n");
 }
 
