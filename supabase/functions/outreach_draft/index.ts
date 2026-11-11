@@ -52,6 +52,78 @@ Rules:
 Emil
 ECD Digital Strategy`;
 
+// Event and webinar guests (2026-11-11): they came to one of ECD's events, so the email opens with that instead of
+// a cold hook. Never claim Emil met them: Zak or the team ran the events, Emil did not.
+const EVENT_RULES = `
+This person is not cold: they came to one of ECD's events (details below). Open with that, briefly and naturally, then the finding.
+- A webinar: say they signed up for our webinar (never claim they attended or asked anything).
+- An in-person event or party: say you saw they were at it. Never say you or Emil met them, talked to them or were there.
+- If the event was more than 3 months ago, say when (e.g. "back in March"), never pretend it was recent.`;
+
+const SYSTEM_DISCOVERY = `You write short follow-up emails for Emil Gorgijev at ECD Digital Strategy, an ecommerce agency that works with Shopify and other online brands on email and SMS (Klaviyo), their website, and paid ads. The recipient came to one of ECD's events or webinars (details below). There is no audit and no link: the point is to ask where they need the most help.
+
+Rules:
+- From Emil, first person ("I"), to a busy founder or marketing lead. Warm, direct, human, never salesy or flattering.
+- 50 to 90 words in the body. Plain text: no markdown, no bullet points, no emojis, no bold.
+- Open with the event, briefly and naturally:
+  - a webinar: they signed up for our webinar (never claim they attended or asked anything);
+  - an in-person event or party: you saw they were at it. Never say you or Emil met them, talked to them or were there;
+  - more than 3 months ago: say when (e.g. "back in March"), never pretend it was recent.
+- One sentence on what ECD does, in plain words, without claims, numbers, client names or results.
+- The heart of the email is one easy question: where do they need the most help right now, for example email and SMS, the website, or paid ads. Make it easy to answer in one line.
+- Offer a short call only as an option, no pressure. Do not write any URL.
+- No em dashes or en dashes anywhere. Use commas or full stops.
+- Subject: 3 to 6 words, lowercase except names, about the event or them (e.g. "after the postpilot webinar"). No clickbait, no "quick question".
+- End the body with exactly:
+Emil
+ECD Digital Strategy`;
+
+type ProspectRow = Record<string, unknown> & {
+  domain: string;
+  store_name: string | null;
+  contact_name: string | null;
+  source?: string | null;
+  event_name?: string | null;
+  event_kind?: string | null;
+  event_date?: string | null;
+};
+
+function eventFacts(p: ProspectRow): string {
+  if (p.source !== "event" || !p.event_name) return "";
+  const when = p.event_date ? new Date(`${p.event_date}T12:00:00Z`) : null;
+  const months = when ? Math.floor((Date.now() - when.getTime()) / (30.4 * 86_400_000)) : null;
+  return [
+    `Event: ${p.event_name}`,
+    `Kind: ${p.event_kind === "webinar" ? "a webinar" : "an in-person event"}`,
+    when ? `When: ${when.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })} (${months === 0 ? "this month" : `about ${months} month${months === 1 ? "" : "s"} ago`})` : "",
+  ].filter(Boolean).join("\n");
+}
+
+const tidyText = (s: string) => s.replace(/\s*[–—]\s*/g, ", ").trim();
+
+async function writeEmail(system: string, facts: string): Promise<{ subject: string; body: string } | null> {
+  const llm = createLlmClient("anthropic", { model: "claude-sonnet-5-5" });
+  const turn = await llm.runTurn({
+    system,
+    messages: [{ role: "user", text: `${facts}\n\nWrite the email.` }],
+    tools: [{
+      name: "email",
+      description: "The finished email.",
+      input_schema: {
+        type: "object",
+        properties: { subject: { type: "string" }, body: { type: "string" } },
+        required: ["subject", "body"],
+      },
+    }],
+    toolChoice: { type: "tool", name: "email" },
+  });
+  if (turn.kind !== "tool_call") return null;
+  const input = turn.input as { subject?: string; body?: string };
+  const subject = tidyText(String(input.subject ?? "")).slice(0, 120);
+  const body = tidyText(String(input.body ?? ""));
+  return subject && body ? { subject, body } : null;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
@@ -67,12 +139,36 @@ serve(async (req) => {
   const sb = assertServiceRoleClient();
   const { data: prospect } = await sb.from("outreach_prospects").select("*").eq("id", prospect_id).maybeSingle();
   if (!prospect) return json({ ok: false, error: "not_found" }, 404);
-  if (!prospect.audit_id) return json({ ok: false, error: "no_audit" }, 409);
   // Only before the first email: a sent (or replied, stopped) prospect keeps the
   // email it got, and never goes back to Ready (audit 2026-11-10).
   if (prospect.sent_at || !DRAFTABLE.includes(String(prospect.status))) {
     return json({ ok: false, error: "already_sent", message: "This prospect was already emailed or excluded, so the email can't be redrafted." }, 409);
   }
+
+  // An event guest on the discovery email: no audit, just "where do you need the most help?".
+  if (prospect.approach === "discovery") {
+    const p = prospect as ProspectRow;
+    const facts = [
+      `Brand: ${p.store_name || p.domain} (${p.domain})`,
+      p.contact_name ? `Recipient's first name: ${String(p.contact_name).split(" ")[0]}` : "Recipient's name is unknown: open with \"Hi there,\", never a guessed name.",
+      eventFacts(p),
+    ].filter(Boolean).join("\n");
+    const email = await writeEmail(SYSTEM_DISCOVERY, facts);
+    if (!email) return json({ ok: false, error: "draft_failed" }, 502);
+    const { data: saved } = await sb
+      .from("outreach_prospects")
+      .update({ email_subject: email.subject, email_body: email.body, status: "ready" })
+      .eq("id", prospect_id)
+      .is("sent_at", null)
+      .in("status", DRAFTABLE)
+      .select("id");
+    if (!saved?.length) {
+      return json({ ok: false, error: "already_sent", message: "This prospect was emailed while the draft was being written, so it was not changed." }, 409);
+    }
+    return json({ ok: true, ...email });
+  }
+
+  if (!prospect.audit_id) return json({ ok: false, error: "no_audit" }, 409);
 
   const { data: audit } = await sb.from("audits").select("id, status, public_share_token, client_id").eq("id", prospect.audit_id).maybeSingle();
   if (!audit || audit.status !== "published" || !audit.public_share_token) {
@@ -104,11 +200,12 @@ serve(async (req) => {
     `  What we'd change: ${hook.f.recommendation ?? ""}`,
     `Other pages in the preview: ${[...new Set(shown.map((s) => s.page))].join(", ")}.`,
     more > 0 ? `Further findings not shown in the preview: ${more}.` : "",
+    eventFacts(prospect as ProspectRow),
   ].filter(Boolean).join("\n");
 
   const llm = createLlmClient("anthropic", { model: "claude-sonnet-5-5" });
   const turn = await llm.runTurn({
-    system: SYSTEM,
+    system: prospect.source === "event" ? `${SYSTEM}\n${EVENT_RULES}` : SYSTEM,
     messages: [{ role: "user", text: `${facts}\n\nWrite the email.` }],
     tools: [{
       name: "email",

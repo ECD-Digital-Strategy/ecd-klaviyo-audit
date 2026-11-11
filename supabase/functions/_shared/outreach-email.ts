@@ -80,10 +80,17 @@ export function withSignature(html: string, signatureHtml: string | null | undef
 /** The short follow-ups, threaded under the first email as "Re: <subject>". */
 export function followUp(
   n: 1 | 2,
-  ctx: { firstName?: string | null; brand: string; reportUrl: string; bookingUrl?: string | null },
+  ctx: { firstName?: string | null; brand: string; reportUrl: string | null; bookingUrl?: string | null },
 ): string {
   const hi = ctx.firstName ? `Hi ${ctx.firstName},` : "Hi there,";
   const book = ctx.bookingUrl ? `\n\nIf it's easier, grab a time here: ${ctx.bookingUrl}` : "";
+  // The discovery email (event guests, 2026-11-11) has no report: the follow-ups just ask again.
+  if (!ctx.reportUrl) {
+    if (n === 1) {
+      return `${hi}\n\nJust bumping this in case it got buried. Even a one-line answer helps: where could ${ctx.brand} use the most help right now?${book}\n\nEmil`;
+    }
+    return `${hi}\n\nLast note from me on this. If now isn't the time, no problem at all. Whenever email, the site or ads become a priority, I'm happy to help.${book}\n\nEmil`;
+  }
   if (n === 1) {
     return `${hi}\n\nJust bumping this in case it got buried. The preview of ${ctx.brand}'s audit is here:\n${ctx.reportUrl}\n\nHappy to walk you through the rest in 20 minutes if it's useful.${book}\n\nEmil`;
   }

@@ -35,7 +35,7 @@ export type OutreachProspect = {
   contact_email: string | null;
   /** From the decision-maker lookup (outreach_contacts). */
   contact_title?: string | null;
-  contact_source?: 'hunter' | 'hunter_finder' | 'manual' | null;
+  contact_source?: 'hunter' | 'hunter_finder' | 'manual' | 'event' | null;
   /** Hunter's check of the address: valid, catch_all (the domain accepts anything), invalid, unknown. */
   contact_verified?: 'valid' | 'catch_all' | 'invalid' | 'unknown' | null;
   contact_lookup_at?: string | null;
@@ -67,9 +67,64 @@ export type OutreachProspect = {
   last_viewed_at?: string | null;
   created_at: string;
   updated_at: string;
+  /** cold = a store pasted in; event = a guest of an ECD event or webinar, imported from the CRM (2026-11-11). */
+  source?: 'cold' | 'event';
+  event_id?: string | null;
+  event_name?: string | null;
+  event_kind?: string | null;
+  event_date?: string | null;
+  /** Event guests: audit = free audit opened with the event; discovery = no audit, "where do you need help?". */
+  approach?: 'audit' | 'discovery' | null;
+  /** Other people from the same brand at the event (never emailed). */
+  other_guests?: Array<{ name: string | null; email: string | null; title: string | null }> | null;
   /** Joined: the audit's progress and public link. */
   audit?: Pick<Audit, 'id' | 'status' | 'public_share_token'> | null;
 };
+
+/** One CRM event and how far it is in Outreach. */
+export type OutreachEvent = {
+  id: string;
+  name: string;
+  kind: string | null;
+  held_on: string | null;
+  guests: number;
+  brands: number;
+  /** Brands Zak took off the event in the CRM. */
+  removed: number;
+  /** Guests with only a personal email and no company website. */
+  unplaced: number;
+  /** Brands from this event already in Outreach, and how many of them were kept (not skipped). */
+  imported: number;
+  kept: number;
+};
+
+export type EventImportResult = { domain: string; status: 'new' | 'skipped' | 'exists'; reason?: string; store_name?: string; approach?: string };
+
+export async function listEvents(): Promise<OutreachEvent[]> {
+  const { data, error } = await supabase.functions.invoke('outreach_screen', { body: { action: 'event_list' } });
+  if (error) throw new Error(error.message);
+  if (!data?.ok) throw new Error(data?.error ?? 'Could not load the events');
+  return data.events as OutreachEvent[];
+}
+
+/** Imports one event's brands a few at a time (the server reads each site and sorts brand from agency). */
+export async function importEvent(
+  eventId: string,
+  onProgress?: (done: number, total: number, results: EventImportResult[]) => void,
+): Promise<EventImportResult[]> {
+  const results: EventImportResult[] = [];
+  let offset = 0;
+  for (let guard = 0; guard < 100; guard++) {
+    const { data, error } = await supabase.functions.invoke('outreach_screen', { body: { action: 'event_import', event_id: eventId, offset } });
+    if (error) throw new Error(error.message);
+    if (!data?.ok) throw new Error(data?.error ?? 'Import failed');
+    results.push(...(data.results as EventImportResult[]));
+    onProgress?.(data.next_offset, data.total, [...results]);
+    if (data.done) break;
+    offset = data.next_offset;
+  }
+  return results;
+}
 
 export type ReplyKind = 'interested' | 'question' | 'referral' | 'not_now' | 'not_interested' | 'unsubscribe' | 'out_of_office' | 'other';
 

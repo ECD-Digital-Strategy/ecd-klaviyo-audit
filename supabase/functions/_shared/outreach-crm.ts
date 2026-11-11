@@ -7,6 +7,8 @@
 //          history line per email. Records that were already in the CRM are never changed, only noted.
 // Every failure throws: callers treat "could not check" as "do not send" (fail closed), never as "unknown = fine".
 
+import type { CrmEvent } from "./outreach-events.ts";
+
 export type CrmMatch = { kind: string; id: string; label: string | null };
 export type CrmKnown = { domains: Record<string, CrmMatch[]>; emails: Record<string, CrmMatch[]> };
 export type CrmLogResult = { contact_id: string; company_id: string; owns_contact: boolean; owns_company: boolean };
@@ -50,6 +52,12 @@ async function call<T>(body: Record<string, unknown>): Promise<T> {
 export async function crmKnown(domains: string[], emails: string[] = []): Promise<CrmKnown> {
   const data = await call<CrmKnown>({ action: "known", domains, emails });
   return { domains: data.domains ?? {}, emails: data.emails ?? {} };
+}
+
+/** Every CRM event with its guests (Hub migration 0340), newest first. Read only. */
+export async function crmEventLeads(): Promise<CrmEvent[]> {
+  const data = await call<{ events?: CrmEvent[] }>({ action: "event_leads" });
+  return data.events ?? [];
 }
 
 export async function crmLog(input: CrmLogInput): Promise<CrmLogResult> {

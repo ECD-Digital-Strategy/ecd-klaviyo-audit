@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, BadgeCheck, CheckCircle2, ChevronDown, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CalendarDays, CheckCircle2, ChevronDown, Clock, Copy, ExternalLink, Loader2, Mail, Pause, Play, PlugZap, RefreshCw, Send, Sparkles, UserSearch, X } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { ToggleRow } from '../components/ui/ToggleSwitch';
 import UnsavedChangesBar from '../components/ui/UnsavedChangesBar';
@@ -34,6 +34,10 @@ import {
   isRoleAddress,
   doNotContact,
   REPLY_LABELS,
+  listEvents,
+  importEvent,
+  type EventImportResult,
+  type OutreachEvent,
   type HunterStatus,
   type OutreachProspect,
   type OutreachSend,
@@ -51,7 +55,7 @@ const GROUPS: Array<{ key: string; title: string; note: string; match: (p: Outre
   { key: 'ready', title: 'Ready to send', note: 'Check the email and who it goes to, then send it now or queue it.', match: (p) => p.status === 'ready' },
   { key: 'approved', title: 'Queued', note: 'Goes out on its own, in this order, within the daily limit on US weekdays.', match: (p) => p.status === 'approved' },
   { key: 'auditing', title: 'Auditing', note: 'The audit runs on the server and takes a few minutes. Draft the email once it is done.', match: (p) => p.status === 'auditing' || p.status === 'failed' },
-  { key: 'new', title: 'To audit', note: 'Passed the checks: not a client, not known to the CRM, on Shopify. Best lead score first.', match: (p) => p.status === 'new' },
+  { key: 'new', title: 'To start', note: 'Passed the checks. Run the audit, or for an event guest on the discovery email, write it straight away. Best lead score first.', match: (p) => p.status === 'new' },
   { key: 'replied', title: 'Replied', note: 'They answered, so follow-ups stopped. You get an email for each one worth answering.', match: (p) => p.status === 'replied' },
   { key: 'sent', title: 'Sent', note: 'One short follow-up goes out 3 days later, unless they reply.', match: (p) => ['sent', 'bounced'].includes(p.status) },
   { key: 'unsubscribed', title: 'Said no', note: 'On the do-not-contact list for good: never screened, audited or emailed again.', match: (p) => p.status === 'unsubscribed' },
@@ -197,6 +201,8 @@ export default function Outreach() {
           )}
         </section>
 
+        <EventLeads onImported={load} />
+
         {prospects === null ? (
           <p className="text-sm text-gray-400">Loading…</p>
         ) : prospects.length === 0 ? (
@@ -304,6 +310,16 @@ function ProspectCard({
             {name}
             <LeadScoreBadge prospect={p} />
             {p.auto_started_at && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">Auto</span>}
+            {p.source === 'event' && p.event_name && (
+              <span title={p.event_date ? `${p.event_kind ?? 'event'}, ${new Date(`${p.event_date}T12:00:00Z`).toLocaleDateString(undefined, { timeZone: 'UTC' })}` : undefined} className="inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
+                <CalendarDays className="h-3 w-3" /> {p.event_name}
+              </span>
+            )}
+            {p.approach && (
+              <span title={p.approach === 'audit' ? 'Gets the free audit, opened with the event' : 'No audit: asks where they need the most help'} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                {p.approach === 'audit' ? 'Audit email' : 'Discovery email'}
+              </span>
+            )}
           </p>
           <a href={`https://${p.domain}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-brand-primary">
             {p.domain} <ExternalLink className="h-3 w-3" />
@@ -318,6 +334,11 @@ function ProspectCard({
           )}
           {(p.skip_reason || p.notes) && (
             <p className="mt-1 whitespace-pre-line text-xs text-gray-400">{p.skip_reason ?? p.notes}</p>
+          )}
+          {p.other_guests && p.other_guests.length > 0 && p.status !== 'skipped' && (
+            <p className="mt-1 text-xs text-gray-400" title={p.other_guests.map((g) => [g.name, g.email].filter(Boolean).join(', ')).join('\n')}>
+              Also at the event: {p.other_guests.map((g) => g.name || g.email).join(', ')} (not emailed)
+            </p>
           )}
           {p.sent_at && (
             <p className="mt-1 text-xs text-gray-500">
@@ -364,7 +385,18 @@ function ProspectCard({
               {p.contact_email ? 'Look up again' : 'Find decision-maker'}
             </button>
           )}
-          {p.status === 'new' && (
+          {p.status === 'new' && p.approach === 'discovery' && (
+            <button
+              type="button"
+              disabled={busy !== null}
+              title="No audit for this one: write the email that asks where they need the most help"
+              onClick={() => run('draft', () => draftEmail(p.id))}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-primary-dark disabled:opacity-50"
+            >
+              {busy === 'draft' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} Write email
+            </button>
+          )}
+          {p.status === 'new' && p.approach !== 'discovery' && (
             <button
               type="button"
               disabled={busy !== null}
@@ -521,6 +553,117 @@ function ProspectCard({
   );
 }
 
+/**
+ * Event and webinar guests from the ECD CRM (2026-11-11). Zak: they already know ECD and came to learn, and nobody
+ * follows up with them. Importing an event adds its brands to the list below; clients, anyone with a deal, agencies
+ * and vendors are skipped with the reason, and Zak's removals in the CRM are never imported.
+ */
+function EventLeads({ onImported }: { onImported: () => Promise<void> }) {
+  const showToast = useToast();
+  const [events, setEvents] = useState<OutreachEvent[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [last, setLast] = useState<{ name: string; results: EventImportResult[] } | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setEvents(await listEvents());
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'Could not load the events');
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const run = async (e: OutreachEvent) => {
+    setImporting(e.id);
+    setProgress({ done: 0, total: e.brands });
+    try {
+      const results = await importEvent(e.id, (done, total, partial) => {
+        setProgress({ done, total });
+        setLast({ name: e.name, results: partial });
+      });
+      setLast({ name: e.name, results });
+      const kept = results.filter((r) => r.status === 'new').length;
+      showToast(`${e.name}: ${kept} brand${kept === 1 ? '' : 's'} added`);
+      await Promise.all([load(), onImported()]);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Import failed');
+      await Promise.all([load(), onImported()]);
+    } finally {
+      setImporting(null);
+      setProgress(null);
+    }
+  };
+
+  const kept = last?.results.filter((r) => r.status === 'new') ?? [];
+  const skipped = last?.results.filter((r) => r.status !== 'new') ?? [];
+
+  return (
+    <section className="rounded-xl border border-gray-200 bg-white p-5">
+      <h2 className="text-sm font-semibold text-gray-900">Event guests</h2>
+      <p className="mt-1 text-xs text-gray-500">
+        People who came to an ECD event or webinar, from the CRM. Clients, anyone with a deal, agencies and software vendors are skipped,
+        and so is anyone taken off the event in the CRM. Shopify brands are split between the audit email and the discovery email
+        (no audit, asks where they need the most help); other brands get the discovery email.
+      </p>
+      {loadError && <p className="mt-3 text-xs text-amber-700">{loadError}</p>}
+      {events === null && !loadError && <p className="mt-3 text-xs text-gray-400">Loading events…</p>}
+      {events && (
+        <ul className="mt-3 divide-y divide-gray-100">
+          {events.map((e) => {
+            const open = e.brands - e.removed - e.imported;
+            return (
+              <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-900">{e.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {e.kind === 'webinar' ? 'Webinar' : 'Event'}
+                    {e.held_on ? `, ${new Date(`${e.held_on}T12:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}` : ''}
+                    {` · ${e.guests} guest${e.guests === 1 ? '' : 's'}, ${e.brands} brand${e.brands === 1 ? '' : 's'}`}
+                    {e.imported > 0 ? ` · ${e.imported} checked, ${e.kept} kept` : ''}
+                    {e.unplaced > 0 ? ` · ${e.unplaced} with a personal email only` : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={importing !== null || open <= 0}
+                  onClick={() => void run(e)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-primary/30 px-3 py-1.5 text-xs font-medium text-brand-primary hover:bg-brand-primary/5 disabled:opacity-50"
+                >
+                  {importing === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarDays className="h-3.5 w-3.5" />}
+                  {importing === e.id
+                    ? `Checking${progress ? ` ${progress.done} of ${progress.total}` : ''}…`
+                    : open <= 0 ? 'All checked' : e.imported > 0 ? 'Check the rest' : 'Check and add'}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {importing && <p className="mt-2 text-xs text-gray-500">Reading each brand's website and sorting brands from agencies, about 20 seconds per 6 brands.</p>}
+      {last && last.results.length > 0 && (
+        <div className="mt-3 border-t border-gray-100 pt-3 text-xs">
+          <p className="font-medium text-gray-700">{last.name}: {kept.length} added, {skipped.length} skipped or already listed</p>
+          <ul className="mt-1.5 space-y-1">
+            {last.results.map((r) => (
+              <li key={r.domain} className="flex gap-2">
+                <span className={r.status === 'new' ? 'font-medium text-emerald-700' : 'text-gray-500'}>
+                  {r.status === 'new' ? 'Added' : r.status === 'exists' ? 'Already listed' : 'Skipped'}
+                </span>
+                <span className="text-gray-900">{r.store_name ? `${r.store_name} (${r.domain})` : r.domain}</span>
+                {r.approach && <span className="text-gray-500">{r.approach === 'audit' ? 'audit email' : 'discovery email'}</span>}
+                {r.reason && <span className="text-gray-400">{r.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function LeadScoreBadge({ prospect: p }: { prospect: OutreachProspect }) {
   if (p.lead_score === null || p.lead_score === undefined) return null;
   const tone = p.lead_score >= 60 ? 'bg-emerald-50 text-emerald-700' : p.lead_score >= 40 ? 'bg-gray-100 text-gray-600' : 'bg-amber-50 text-amber-700';
@@ -542,6 +685,7 @@ function ContactBadge({ prospect: p }: { prospect: OutreachProspect }) {
     return <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">Shared inbox</span>;
   }
   if (p.contact_source === 'manual') return <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">Added by hand</span>;
+  if (p.contact_source === 'event') return <span title="The address they signed up for the event with" className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">From the event</span>;
   return null;
 }
 

@@ -48,6 +48,10 @@ Deno.test("signature goes under the email, and the company line is dropped", () 
 });
 
 Deno.test("follow-ups name the person when known and carry the report link", () => {
+  const ask = followUp(1, { firstName: "Jane", brand: "Brooklinen", reportUrl: null });
+  assertEquals(ask.includes("http"), false);
+  assertEquals(ask.includes("Brooklinen"), true);
+  assertEquals(/[–—]/.test(ask + followUp(2, { brand: "B", reportUrl: null })), false);
   const one = followUp(1, { firstName: "Jane", brand: "Brooklinen", reportUrl: "https://x/r" });
   assertStringIncludes(one, "Hi Jane,");
   assertStringIncludes(one, "https://x/r");

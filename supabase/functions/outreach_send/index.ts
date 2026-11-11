@@ -6,6 +6,7 @@ import { advanceCursor, ImapSession, newUids, uidSet } from "../_shared/imap-sea
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
 import { crmConfigured, crmKnown, crmLog, crmSkipReason, type CrmKnown, type CrmLeadStatus } from "../_shared/outreach-crm.ts";
+import { relevantMatches } from "../_shared/outreach-events.ts";
 import {
   classifyReply,
   pendingReplies,
@@ -143,6 +144,9 @@ type Prospect = {
   /** CRM records Outreach created (records that were already there are never stored here). */
   crm_contact_id?: string | null;
   crm_company_id?: string | null;
+  /** 'event' for a guest of an ECD event or webinar (2026-11-11), else 'cold'. */
+  source?: string | null;
+  approach?: "audit" | "discovery" | null;
 };
 
 /** The connected mailbox, decrypted here only, or null. */
@@ -359,10 +363,12 @@ async function sendTimeCheck(sb: Sb, p: Prospect): Promise<SendCheck> {
     return { ok: false, outcome: "retry", error: `Not sent yet: the CRM could not be checked (${e instanceof Error ? e.message : String(e)}).` };
   }
   const own = { contactId: p.crm_contact_id, companyId: p.crm_company_id };
-  if (crmSkipReason(known.emails[email], own)) {
+  // An event guest is in the CRM because of the event: only a client, a deal, a prospect or the
+  // do-not-contact list stop them (relevantMatches). A cold store is stopped by anything the CRM knows.
+  if (crmSkipReason(relevantMatches(p.source, known.emails[email]), own)) {
     return { ok: false, outcome: "blocked", error: `${email} is already a contact in the CRM (found at send time).` };
   }
-  const byDomain = crmSkipReason(known.domains[p.domain], own);
+  const byDomain = crmSkipReason(relevantMatches(p.source, known.domains[p.domain]), own);
   if (byDomain) return { ok: false, outcome: "blocked", error: `${byDomain} (found at send time).` };
   return { ok: true };
 }
@@ -841,7 +847,8 @@ async function tick(sb: Sb) {
       // Put on the do-not-contact list since the first email: no more follow-ups.
       if (await suppressed(sb, p.domain)) continue;
       const url = await reportUrl(sb, p);
-      if (!url || !p.email_subject) continue;
+      // The discovery email has no report; every other one needs its report to follow up on.
+      if ((!url && p.approach !== "discovery") || !p.email_subject) continue;
       const n = (p.followups_sent + 1) as 1 | 2;
       const text = followUp(n, {
         firstName: p.contact_name?.split(" ")[0] ?? null,
