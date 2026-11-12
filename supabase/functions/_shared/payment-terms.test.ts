@@ -43,9 +43,20 @@ Deno.test("marketing copy and plain terms are not a split", () => {
     "The total investment is $10,000.",
     // Lanna Lashes' Meta ads proposal (#83): an ad, not a fee.
     "One ad carrying the account: the lash lift bundle ad was copied 13 times and took 63% of the budget.",
+    // Lanna Lashes, Nov 12 (INV-1627 held by mistake): the whole fee at signing is one payment.
+    "The project fee is billed 100% upfront at signing, and work starts once payment is received.",
+    "100% of the project fee is due on signing.",
   ]) {
     assertEquals(splitPaymentTerms(blocks(text)), null, text);
   }
+});
+
+Deno.test("a real split still counts next to a 100%", () => {
+  assertEquals(
+    splitPaymentTerms(blocks("50% of the project fee is invoiced at signing, so 100% is paid by launch.")) !== null,
+    true,
+  );
+  assertEquals(splitPaymentTerms(blocks("The fee is paid in two installments.")) !== null, true);
 });
 
 Deno.test("nothing to read", () => {

@@ -30,6 +30,18 @@ function plain(line: string): string {
   return line.replace(/^[\s>*#-]+/, "").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * True when the line splits the payment. A percentage only counts when it is less than 100: "The project fee is
+ * billed 100% upfront at signing" is one payment, not a split (Lanna Lashes, Nov 12, 2026: held by mistake).
+ */
+function splitsPayment(line: string): boolean {
+  const [byPercent, ...rest] = PATTERNS;
+  if (rest.some((re) => re.test(line))) return true;
+  if (!byPercent.test(line)) return false;
+  const percents = [...line.matchAll(/\b(\d{1,3})\s?%/g)].map((m) => Number(m[1]));
+  return percents.some((p) => p > 0 && p < 100);
+}
+
 /** The first line of the proposal's own text that splits the payment, as written (max 300 chars), or null. */
 export function splitPaymentTerms(contentBlocks: unknown): string | null {
   if (!Array.isArray(contentBlocks)) return null;
@@ -37,7 +49,7 @@ export function splitPaymentTerms(contentBlocks: unknown): string | null {
     const content = typeof block?.content === "string" ? block.content : "";
     for (const raw of content.split(/\n+/)) {
       const line = plain(raw);
-      if (line && PATTERNS.some((re) => re.test(line))) return line.slice(0, 300);
+      if (line && splitsPayment(line)) return line.slice(0, 300);
     }
   }
   return null;
