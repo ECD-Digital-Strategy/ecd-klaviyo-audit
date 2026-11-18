@@ -453,6 +453,13 @@ export interface Proposal {
     drafted_from?: string | null;
     drafted_to?: string | null;
     draft_url?: string | null;
+    /**
+     * Marked "Sent" in Xero so Xero's own reminders run (2026-11-18, invoice-sent.ts): when the Gmail draft
+     * (or the welcome email carrying it) left Drafts, or by hand from the Xero card.
+     */
+    sent_marked_at?: string | null;
+    sent_marked_how?: 'gmail_draft' | 'welcome_email' | 'by_hand' | null;
+    sent_marked_by?: string | null;
     /** Held as a draft because the proposal's own text splits the payment: the line that does (payment-terms.ts). */
     held_reason?: string | null;
     /** From Xero, by the daily follow-up (invoice_followup). */

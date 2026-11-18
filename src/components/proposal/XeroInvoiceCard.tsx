@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { autoCodeXeroLines, createXeroDraftInvoice, listXeroServiceAccounts, xeroErrorMessage, xeroInvoiceUrl, type XeroServiceAccount } from '../../lib/xero';
 import { getProposalSettings, updateProposalLineItem } from '../../lib/proposals-db';
-import { emailInvoiceNow } from '../../lib/invoice-sending';
+import { emailInvoiceNow, markInvoiceSent } from '../../lib/invoice-sending';
 import { useFocusTarget } from '../../lib/use-focus-target';
 import SearchableSelect from '../ui/SearchableSelect';
 import XeroItemPicker, { useXeroItems } from './XeroItemPicker';
@@ -284,8 +284,48 @@ function InvoiceEmailStatus({
     }
   };
 
+  const [marking, setMarking] = useState(false);
+  const markSent = async () => {
+    setMarking(true);
+    try {
+      await markInvoiceSent(proposalId, inv.id);
+      toast('Marked as sent in Xero. Xero\'s payment reminders now apply to it.');
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not mark it as sent');
+    } finally {
+      setMarking(false);
+    }
+  };
+  const SENT_HOW: Record<string, string> = {
+    gmail_draft: 'when the Gmail draft was sent',
+    welcome_email: 'when the welcome email was sent',
+    by_hand: 'by hand',
+  };
+
   return (
     <div className="mt-1.5 space-y-1 text-[11px]">
+      {inv.sent_marked_at ? (
+        <p className="text-gray-500">
+          Marked as sent in Xero {day(inv.sent_marked_at.slice(0, 10))}, {SENT_HOW[inv.sent_marked_how ?? ''] ?? ''}
+          {inv.sent_marked_how === 'by_hand' && inv.sent_marked_by ? ` (${inv.sent_marked_by})` : ''}. Xero&apos;s reminders apply.
+        </p>
+      ) : !inv.paid_at && inv.status === 'AUTHORISED' ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-gray-500">
+            {inv.drafted_at ? 'Marked as sent in Xero once the Gmail draft is sent.' : 'Not marked as sent in Xero yet, so Xero sends no reminders.'}
+          </span>
+          <button
+            type="button"
+            disabled={marking}
+            onClick={() => void markSent()}
+            title="Use this when the client got the invoice some other way, e.g. the pay link pasted into an email"
+            className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {marking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Mark as sent in Xero
+          </button>
+        </div>
+      ) : null}
       {inv.paid_at ? (
         <p className="font-medium text-emerald-700">Paid {day(inv.paid_at.slice(0, 10))}</p>
       ) : overdue ? (

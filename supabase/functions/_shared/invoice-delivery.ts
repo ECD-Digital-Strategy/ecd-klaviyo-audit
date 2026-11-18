@@ -40,6 +40,14 @@ export type InvoiceRecord = {
   drafted_from?: string | null;
   drafted_to?: string | null;
   draft_url?: string | null;
+  draft_id?: string | null;
+  /**
+   * Marked "Sent" in Xero, so Xero's own payment reminders run (Maria, 2026-11-17): when the Gmail draft
+   * left Drafts, when the welcome email carrying it did, or by hand from the Xero card.
+   */
+  sent_marked_at?: string | null;
+  sent_marked_how?: "gmail_draft" | "welcome_email" | "by_hand" | null;
+  sent_marked_by?: string | null;
   /** Client reminders drafted (client_reminders on). */
   last_client_reminder_at?: string | null;
   /** From Xero, by the daily follow-up. */
@@ -214,7 +222,8 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
     { what: `Invoice ${inv.number || ""} for ${company || p.title}`.replace(/\s+/g, " "), to, proposalId, focus: "xero" },
   );
 
-  // A note in Xero of where it is. Not marked sent: the person sends it.
+  // A note in Xero of where it is. Not marked sent yet: the person sends it, and invoice-sent.ts marks it
+  // sent in Xero once the draft leaves their Drafts.
   await xeroApi(sb, `/Invoices/${inv.id}/History`, {
     method: "PUT",
     body: { HistoryRecords: [{ Details: `Drafted to ${to} in ${box.email}'s Gmail by the proposals app${cc.length ? `, copying ${cc.join(", ")}` : ""}, for them to send.` }] },
@@ -225,6 +234,7 @@ export async function emailInvoiceToClient(sb: Sb, proposalId: string, invoiceId
     drafted_from: box.email,
     drafted_to: to,
     draft_url: draft.url,
+    draft_id: draft.draftId || null,
     emailed_as_fallback: fallback,
     email_error: null,
   });

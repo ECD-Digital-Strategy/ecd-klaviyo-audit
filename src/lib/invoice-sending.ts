@@ -96,5 +96,9 @@ export const welcomeAction = (
   call<{ welcome: WelcomeEmailRecord }>('invoice_followup', { action, proposal_id: proposalId, subject: edit.subject, email_body: edit.body }).then(r => r.welcome);
 
 /** Drafts the invoice email in the sender's Gmail now and Slacks them the link (only while invoice emails are on). */
+/** Marks an approved invoice "Sent" in Xero, for one that reached the client another way (Maria, 2026-11-17). */
+export const markInvoiceSent = (proposalId: string, invoiceId: string) =>
+  call<Record<string, never>>('invoice_followup', { action: 'mark_invoice_sent', proposal_id: proposalId, invoice_id: invoiceId });
+
 export const emailInvoiceNow = (proposalId: string, invoiceId: string) =>
   call<{ to: string; from: string; draft_url?: string }>('invoice_followup', { action: 'email_invoice', proposal_id: proposalId, invoice_id: invoiceId });

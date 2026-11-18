@@ -16,6 +16,7 @@ import { inlineLink, proposalLink } from "../_shared/app-links.ts";
 import { daysOverdue, longDate, money, nudgeDue, renderInvoiceEmail, sentOn } from "../_shared/invoice-email.ts";
 import { rebuildWelcome, saveWelcomeDraft, sendWelcomeNow, skipWelcome, welcomeTick } from "../_shared/welcome-delivery.ts";
 import { holdsInvoice, type WelcomeStatus } from "../_shared/welcome-email.ts";
+import { invoiceSentTick, markSentInXero } from "../_shared/invoice-sent.ts";
 
 // Unpaid invoices (Emil + Isa, 2026-11-02): "if an invoice is not paid within 7
 // days of sending, an email is sent to Xiomara, Maria and Isa". Daily (cron
@@ -32,6 +33,8 @@ import { holdsInvoice, type WelcomeStatus } from "../_shared/welcome-email.ts";
 // The welcome email (2026-11-04, _shared/welcome-delivery.ts): "welcome_tick"
 // (cron welcome-email, every 15 minutes) and, from the proposal page,
 // "welcome_save", "welcome_send", "welcome_rebuild" and "welcome_skip".
+// Marked "Sent" in Xero (Maria, 2026-11-17, _shared/invoice-sent.ts): checked in the same 15-minute
+// welcome_tick, and "mark_invoice_sent" (staff, from the Xero card) does it by hand.
 
 const corsHeaders: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -222,7 +225,16 @@ serve(async (req) => {
   if (body.action === "tick" || body.action === "welcome_tick") {
     if (!(await hasCronSecret(req, "invoice_cron_secret"))) return json({ ok: false, error: "forbidden" }, 403);
     try {
-      return json(body.action === "tick" ? await tick(sb) : await welcomeTick(sb));
+      if (body.action === "tick") return json(await tick(sb));
+      const welcome = await welcomeTick(sb);
+      // Same 15-minute run: invoices whose Gmail draft has been sent get marked sent in Xero (2026-11-18).
+      let marked: string[] = [];
+      try {
+        marked = await invoiceSentTick(sb);
+      } catch (e) {
+        marked = [`sent check failed: ${e instanceof Error ? e.message : String(e)}`];
+      }
+      return json({ ...welcome, marked_sent: marked });
     } catch (e) {
       return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
     }
@@ -245,6 +257,18 @@ serve(async (req) => {
       if (body.action === "welcome_send") return json({ ok: true, welcome: await sendWelcomeNow(sb, id, userId, edit) });
       if (body.action === "welcome_rebuild") return json({ ok: true, welcome: await rebuildWelcome(sb, id) });
       if (body.action === "welcome_skip") return json({ ok: true, welcome: await skipWelcome(sb, id) });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 409);
+    }
+  }
+
+  if (body.action === "mark_invoice_sent") {
+    // From the Xero card: this invoice went to the client some other way (Maria, 2026-11-17).
+    try {
+      const { data: prof } = await sb.from("profiles").select("name, email").eq("id", userId).maybeSingle();
+      const who = String((prof as { name?: string; email?: string } | null)?.name || (prof as { email?: string } | null)?.email || "").trim() || null;
+      const r = await markSentInXero(sb, body.proposal_id ?? "", body.invoice_id ?? "", "by_hand", who);
+      return r.marked ? json({ ok: true }) : json({ ok: false, error: r.reason }, 409);
     } catch (e) {
       return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 409);
     }

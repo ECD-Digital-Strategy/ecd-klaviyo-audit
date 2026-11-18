@@ -343,6 +343,51 @@ export async function deleteDraft(sb: Sb, box: Mailbox, draftId: string): Promis
   }).catch(() => {});
 }
 
+/** The Gmail message id inside a draft link made by gmailDraftUrl ("...#drafts?compose=<id>"). */
+export function draftMessageIdFromUrl(url: string | null | undefined): string | null {
+  const m = String(url ?? "").match(/[?&]compose=([^&#]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+/**
+ * Whether a draft the app wrote is still in that person's Drafts (Maria, 2026-11-17: Xero should know when an
+ * invoice really went out). false once it left Drafts, which is how a send looks; the compose scope can't read
+ * the Sent folder, so a deleted draft looks the same. null when Gmail can't say (not connected, errors).
+ * With the draft id it is one call; older records only kept the link, so their message id is looked for in
+ * the Drafts list.
+ */
+export async function draftStillThere(
+  sb: Sb,
+  box: Mailbox,
+  ref: { draftId?: string | null; messageId?: string | null },
+): Promise<boolean | null> {
+  let token: string;
+  try {
+    token = await accessTokenFor(sb, box.userId);
+  } catch {
+    return null;
+  }
+  const headers = { authorization: `Bearer ${token}` };
+  if (ref.draftId) {
+    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(ref.draftId)}?format=minimal`, { headers }).catch(() => null);
+    if (!res) return null;
+    if (res.status === 404) return false;
+    return res.ok ? true : null;
+  }
+  if (!ref.messageId) return null;
+  let pageToken = "";
+  for (let page = 0; page < 10; page++) {
+    const q = new URLSearchParams({ maxResults: "500", ...(pageToken ? { pageToken } : {}) });
+    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts?${q}`, { headers }).catch(() => null);
+    if (!res || !res.ok) return null;
+    const body = (await res.json()) as { drafts?: Array<{ message?: { id?: string } }>; nextPageToken?: string };
+    if ((body.drafts ?? []).some((d) => d.message?.id === ref.messageId)) return true;
+    if (!body.nextPageToken) return false;
+    pageToken = body.nextPageToken;
+  }
+  return null;
+}
+
 /** Opens one draft in Gmail, signed in as that address. */
 export const gmailDraftUrl = (email: string, messageId: string) =>
   `https://mail.google.com/mail/u/${encodeURIComponent(email)}/#drafts?compose=${encodeURIComponent(messageId)}`;
