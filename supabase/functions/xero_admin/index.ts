@@ -72,6 +72,61 @@ serve(async (req) => {
     return json({ ok: result.ok, message: result.message });
   }
 
+  // Removes lines from one approved, unpaid invoice (Emil, 2026-11-18: Lija Style asked to drop the optional
+  // AfterShip setup that INV-1596 billed). Behind the same secret, dry run unless apply is true. Refuses an
+  // invoice that isn't AUTHORISED or has any payment or credit, and never removes every line. The remaining
+  // lines are sent back exactly as Xero has them, so only the matched ones go; the pay link stays the same.
+  if (action === "remove_invoice_lines") {
+    const provided = req.headers.get("x-xero-cron-secret") ?? "";
+    const { data: authRow } = await sb.from("xero_cron_auth").select("secret").eq("id", "default").maybeSingle();
+    const expected = ((authRow?.secret as string | undefined) ?? "").trim();
+    if (!expected || provided !== expected) return json({ ok: false, error: { code: "forbidden" } }, { status: 403 });
+    const match = String((body as { match?: string }).match ?? "").trim().toLowerCase();
+    if (!body.invoice_id || match.length < 4) return json({ ok: false, error: "invoice_id and a match of 4+ characters are needed" }, { status: 400 });
+    const id = encodeURIComponent(String(body.invoice_id));
+    // deno-lint-ignore no-explicit-any
+    type Line = Record<string, any>;
+    // deno-lint-ignore no-explicit-any
+    const read = async () => (await xeroApi<{ Invoices?: Array<Record<string, any>> }>(sb, `/Invoices/${id}`)).Invoices?.[0];
+    const inv = await read();
+    if (!inv) return json({ ok: false, error: "no such invoice" }, { status: 404 });
+    if (inv.Status !== "AUTHORISED") return json({ ok: false, error: `invoice is ${inv.Status}` }, { status: 409 });
+    if (Number(inv.AmountPaid ?? 0) !== 0 || Number(inv.AmountCredited ?? 0) !== 0) return json({ ok: false, error: "invoice has a payment or credit" }, { status: 409 });
+    const lines = (inv.LineItems ?? []) as Line[];
+    const drop = lines.filter((l) => String(l.Description ?? "").toLowerCase().includes(match));
+    const keep = lines.filter((l) => !drop.includes(l));
+    const plan = {
+      number: inv.InvoiceNumber,
+      total_before: inv.Total,
+      remove: drop.map((l) => ({ description: String(l.Description ?? "").split("\n")[0], amount: l.LineAmount })),
+      keep: keep.map((l) => ({ description: String(l.Description ?? "").split("\n")[0], amount: l.LineAmount })),
+    };
+    if (drop.length === 0 || keep.length === 0) return json({ ok: false, error: drop.length ? "that would remove every line" : "no line matches", plan }, { status: 409 });
+    if (body.apply !== true) return json({ ok: true, dry_run: true, plan });
+
+    const strip = (l: Line) => {
+      const out: Line = {};
+      for (const k of ["LineItemID", "Description", "Quantity", "UnitAmount", "ItemCode", "AccountCode", "TaxType", "DiscountRate", "Tracking"]) {
+        if (l[k] !== undefined && l[k] !== null && !(Array.isArray(l[k]) && l[k].length === 0)) out[k] = l[k];
+      }
+      return out;
+    };
+    await xeroApi(sb, "/Invoices", { method: "POST", body: { Invoices: [{ InvoiceID: inv.InvoiceID, LineItems: keep.map(strip) }] } });
+    const after = await read();
+    await xeroApi(sb, `/Invoices/${id}/History`, {
+      method: "PUT",
+      body: { HistoryRecords: [{ Details: `Removed by the proposals app at the client's request: ${plan.remove.map((r) => r.description).join("; ")}. Total ${inv.Total} -> ${after?.Total}.` }] },
+    }).catch(() => {});
+    // The proposal's record of the invoice follows the new total.
+    if (body.proposal_id && after) {
+      const { data: p } = await sb.from("proposals").select("xero_invoices").eq("id", body.proposal_id).maybeSingle();
+      const list = (Array.isArray(p?.xero_invoices) ? p!.xero_invoices : []) as Array<Record<string, unknown>>;
+      const next = list.map((r) => (r.id === inv.InvoiceID ? { ...r, total: after.Total, amount_due: after.AmountDue } : r));
+      await sb.from("proposals").update({ xero_invoices: next }).eq("id", body.proposal_id);
+    }
+    return json({ ok: true, dry_run: false, plan, total_after: after?.Total, amount_due_after: after?.AmountDue, status_after: after?.Status });
+  }
+
   // Read-only check behind the same secret: which scopes Xero actually granted
   // the token (every draft invoice so far came back 403), whether invoices can
   // be read, and the Items list with the account each one posts to. Nothing
