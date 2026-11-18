@@ -18,7 +18,13 @@ import { mailboxByEmail, patchInvoiceRecord, type InvoiceRecord } from "./invoic
 
 type Sb = SupabaseClient;
 export type SentHow = "gmail_draft" | "welcome_email" | "by_hand";
-type XeroInv = { InvoiceID: string; Status?: string; SentToContact?: boolean; AmountDue?: number };
+type XeroInv = { InvoiceID: string; Status?: string; SentToContact?: boolean; AmountDue?: number; FullyPaidOnDate?: string };
+
+/** Xero's "/Date(1700000000000+0000)/" as yyyy-mm-dd. */
+const xeroDay = (v: string | undefined) => {
+  const ms = Number(v?.match(/\/Date\((\d+)/)?.[1]);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString().slice(0, 10) : null;
+};
 
 const HOW_NOTE: Record<SentHow, string> = {
   gmail_draft: "the invoice email left the sender's Gmail Drafts (sent)",
@@ -43,7 +49,16 @@ export async function markSentInXero(
   const read = await xeroApi<{ Invoices?: XeroInv[] }>(sb, `/Invoices/${invoiceId}`);
   const x = read.Invoices?.[0];
   if (!x) throw new Error("Xero doesn't have that invoice.");
-  if (x.Status === "PAID") return { marked: false, reason: "It's already paid." };
+  // Paid or gone already (Moto Machines paid INV-1630 within 15 minutes of the email): record that straight
+  // away, so the card says so and the 15-minute check stops looking, instead of waiting for the daily check.
+  if (x.Status === "PAID") {
+    await patchInvoiceRecord(sb, proposalId, invoiceId, { status: "PAID", paid_at: xeroDay(x.FullyPaidOnDate) ?? new Date().toISOString().slice(0, 10), amount_due: 0 });
+    return { marked: false, reason: "It's already paid." };
+  }
+  if (x.Status === "VOIDED" || x.Status === "DELETED") {
+    await patchInvoiceRecord(sb, proposalId, invoiceId, { status: x.Status });
+    return { marked: false, reason: `It's ${x.Status.toLowerCase()} in Xero.` };
+  }
   if (x.Status !== "AUTHORISED") return { marked: false, reason: `It's ${String(x.Status ?? "not approved").toLowerCase()} in Xero, and only an approved invoice can be marked sent.` };
 
   if (!x.SentToContact) {

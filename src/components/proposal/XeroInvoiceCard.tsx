@@ -310,11 +310,12 @@ function InvoiceEmailStatus({
           Marked as sent in Xero {day(inv.sent_marked_at.slice(0, 10))}, {SENT_HOW[inv.sent_marked_how ?? ''] ?? ''}
           {inv.sent_marked_how === 'by_hand' && inv.sent_marked_by ? ` (${inv.sent_marked_by})` : ''}. Xero&apos;s reminders apply.
         </p>
+      ) : !inv.paid_at && inv.status === 'AUTHORISED' && inv.drafted_at ? (
+        // The 15-minute check marks it once the draft is sent: no button needed.
+        <p className="text-gray-500">Marked as sent in Xero automatically once the Gmail draft is sent (checked every 15 minutes).</p>
       ) : !inv.paid_at && inv.status === 'AUTHORISED' ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-gray-500">
-            {inv.drafted_at ? 'Marked as sent in Xero once the Gmail draft is sent.' : 'Not marked as sent in Xero yet, so Xero sends no reminders.'}
-          </span>
+          <span className="text-gray-500">Not marked as sent in Xero yet, so Xero sends no reminders.</span>
           <button
             type="button"
             disabled={marking}
