@@ -2,7 +2,9 @@
 // token server-side, records the signature via the service role, and flips the
 // document to "signed". Single signer, no countersign.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { assertServiceRoleClient } from "../_shared/auth.ts";
+import { assertServiceRoleClient, requireStaffUserId } from "../_shared/auth.ts";
+import { cleanFields, recipientNeeds } from "../_shared/pdf-sign.ts";
+import { finalizeSignedPdf } from "../_shared/pdf-finalize.ts";
 import { DOCUMENT_CORS_HEADERS, documentJson, fetchPublicDocument, hashContent, isDocumentExpired } from "../_shared/document-public.ts";
 import { notificationRecipients, proposalEmailHtml, resolveFromAddress, resolveOrigin, sendEmail } from "../_shared/mailer.ts";
 import { escapeHtml } from "../_shared/proposal-links.ts";
@@ -16,11 +18,25 @@ serve(async (req) => {
   const correlationId = crypto.randomUUID();
   try {
     const body = (await req.json().catch(() => ({}))) as {
+      action?: string;
+      document_id?: string;
       token?: string;
       typed_name?: string;
       signer_email?: string;
       signature_image?: string;
+      initials_image?: string;
     };
+
+    // Staff: make the signed PDF again (if the run after signing failed). Needs a signed-in staff session.
+    if (body.action === "finalize_pdf") {
+      try {
+        await requireStaffUserId(req, "documents");
+      } catch {
+        return documentJson({ ok: false, error: { code: "forbidden" }, correlationId }, { status: 403 });
+      }
+      const r = await finalizeSignedPdf(assertServiceRoleClient(), String(body.document_id ?? ""));
+      return documentJson({ ok: true, ...r, correlationId });
+    }
     const token = (body.token ?? "").trim().toLowerCase();
     const typedName = (body.typed_name ?? "").trim();
     const signerEmail = (body.signer_email ?? "").trim();
@@ -53,10 +69,27 @@ serve(async (req) => {
       return documentJson({ ok: false, error: { code: "already_signed", message: "This document has already been signed." }, correlationId }, { status: 200 });
     }
 
+    // An uploaded PDF: there must be something for the recipient to fill, and initials when it asks for them.
+    const isPdf = document.kind === "pdf";
+    let initialsImage: string | null = null;
+    if (isPdf) {
+      const needs = recipientNeeds(cleanFields(document.pdf_fields, document.pdf_pages ?? 9999));
+      if (!needs.any) {
+        return documentJson({ ok: false, error: { code: "not_signable", message: "This PDF has no fields for you to sign." }, correlationId }, { status: 200 });
+      }
+      if (needs.initials) {
+        initialsImage = body.initials_image ?? "";
+        if (!initialsImage.startsWith("data:image/") || initialsImage.length > 400000) {
+          return documentJson({ ok: false, error: { code: "bad_request", message: "Your initials are required" }, correlationId }, { status: 200 });
+        }
+      }
+    }
+
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim();
     const userAgent = (req.headers.get("user-agent") ?? "").slice(0, 400);
 
     const { error: sigErr } = await sb.from("document_signatures").insert({
+      initials_image: initialsImage,
       document_id: document.id,
       signer_role: "recipient",
       signer_name: typedName,
@@ -111,7 +144,25 @@ serve(async (req) => {
       });
     }
 
-    return documentJson({ ok: true, correlationId });
+    // An uploaded PDF: stamp the signatures into it now, and draft the signed copy to the client in the sender's
+    // Gmail. A failure here never undoes the signature: it is logged, and staff can make it again from the app.
+    let signedPdfUrl: string | null = null;
+    if (isPdf) {
+      try {
+        const r = await finalizeSignedPdf(sb, document.id);
+        const { data } = await sb.storage.from("signing-docs").createSignedUrl(r.path, 3600);
+        signedPdfUrl = data?.signedUrl ?? null;
+      } catch (e) {
+        await sb.from("document_events").insert({
+          document_id: document.id,
+          event_type: "signed_pdf_failed",
+          actor: "system",
+          metadata: { error: (e instanceof Error ? e.message : String(e)).slice(0, 400) },
+        });
+      }
+    }
+
+    return documentJson({ ok: true, signed_pdf_url: signedPdfUrl, correlationId });
   } catch (e) {
     return documentJson(
       { ok: false, error: { code: "request_failed", message: e instanceof Error ? e.message : "Unknown error" }, correlationId },

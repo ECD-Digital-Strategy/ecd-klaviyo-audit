@@ -779,6 +779,28 @@ export interface Document {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  /** 'text' = written in the app; 'pdf' = an uploaded PDF with fields placed on its pages (2026-11-18). */
+  kind?: 'text' | 'pdf';
+  pdf_path?: string | null;
+  pdf_sha256?: string | null;
+  pdf_pages?: number | null;
+  pdf_fields?: PdfField[];
+  /** The signed copy (signatures stamped in, certificate page added), once the recipient has signed. */
+  signed_pdf_path?: string | null;
+}
+
+export type PdfFieldType = 'signature' | 'initials' | 'date' | 'name';
+export type PdfFieldRole = 'recipient' | 'sender';
+/** A field on an uploaded PDF. x, y, w, h are fractions of the page as shown, from its top-left. */
+export interface PdfField {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  type: PdfFieldType;
+  role: PdfFieldRole;
 }
 
 export interface DocumentTemplate {

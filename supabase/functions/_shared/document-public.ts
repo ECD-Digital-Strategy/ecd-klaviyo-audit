@@ -35,6 +35,23 @@ export async function fetchPublicDocument(sb: SupabaseClient, token: string) {
   return { document, signature, senderSignature };
 }
 
+/**
+ * For an uploaded PDF: an hour-long link to the file to show (the original while it is being signed), and to the
+ * signed copy once there is one. Null for text documents.
+ */
+export async function pdfLinks(
+  sb: SupabaseClient,
+  document: { kind?: string | null; pdf_path?: string | null; signed_pdf_path?: string | null },
+): Promise<{ pdf_url: string | null; signed_pdf_url: string | null } | null> {
+  if (document.kind !== "pdf") return null;
+  const link = async (path: string | null | undefined) => {
+    if (!path) return null;
+    const { data } = await sb.storage.from("signing-docs").createSignedUrl(path, 3600);
+    return data?.signedUrl ?? null;
+  };
+  return { pdf_url: await link(document.pdf_path), signed_pdf_url: await link(document.signed_pdf_path) };
+}
+
 /** Public-safe payload: only the fields the recipient-facing page needs. */
 export function serializePublicDocument(
   bundle: NonNullable<Awaited<ReturnType<typeof fetchPublicDocument>>>,
@@ -65,6 +82,11 @@ export function serializePublicDocument(
       // Absent on rows created before the column existed, which all wanted a
       // recipient signature, so a missing value means true.
       recipient_signature_enabled: document.recipient_signature_enabled !== false,
+      // Uploaded PDFs (2026-11-18): the fields to fill. The file itself comes as a short-lived link
+      // (pdfLinks below), never as a bucket path.
+      kind: document.kind === "pdf" ? "pdf" : "text",
+      pdf_pages: document.kind === "pdf" ? document.pdf_pages ?? null : null,
+      pdf_fields: document.kind === "pdf" ? document.pdf_fields ?? [] : [],
     },
     signature: displayOnly(signature),
     sender_signature: publicSender,

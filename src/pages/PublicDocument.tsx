@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Check, Loader2 } from 'lucide-react';
+import { Check, Download, Loader2 } from 'lucide-react';
+import PdfPages from '../components/document/PdfPages';
+import PdfSigner from '../components/document/PdfSigner';
 import { RichAuditContent } from '../components/ui/RichAuditText';
 import SignaturePad, { type SignaturePadHandle } from '../components/proposal/SignaturePad';
 import DocumentSignatures from '../components/document/DocumentSignatures';
@@ -8,10 +10,10 @@ import { fetchPublicDocument, signDocumentPublic, type PublicDocumentPayload } f
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({ children, wide = false }: { children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="min-h-screen bg-[#f4f4f8] py-8 px-4">
-      <div className="mx-auto max-w-3xl">
+      <div className={wide ? 'mx-auto max-w-4xl' : 'mx-auto max-w-3xl'}>
         <div className="mb-5 flex items-center gap-2">
           <img src="/cropped-favicon-192x192.webp" alt="" className="h-7 w-7 rounded-md" width={28} height={28} />
           <span className="text-xs font-bold uppercase tracking-wider text-brand-primary">ECD Digital Strategy</span>
@@ -117,6 +119,49 @@ export default function PublicDocument() {
   // agreement: no pad, and no "awaiting signature" that will never arrive.
   const recipientSigns = document.recipient_signature_enabled !== false;
   const canSign = recipientSigns && !signed && !expired && !voided;
+
+  // An uploaded PDF (2026-11-18): signed in place on its own pages.
+  if (document.kind === 'pdf') {
+    return (
+      <Shell wide>
+        <div className="mb-4 rounded-2xl border border-gray-100 bg-white px-6 py-4 shadow-sm">
+          <h1 className="text-xl font-bold text-gray-900">{document.title || 'Document'}</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            {signed
+              ? 'Signed. Thank you.'
+              : expired
+                ? 'This document has expired and can no longer be signed.'
+                : voided
+                  ? 'This document is no longer available for signing.'
+                  : 'Please review the document. Your fields are highlighted in yellow: use Next field to go through them.'}
+          </p>
+          {signed && payload.signed_pdf_url && (
+            <a href={payload.signed_pdf_url} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:bg-brand-primary-dark">
+              <Download className="h-4 w-4" /> Download the signed PDF
+            </a>
+          )}
+        </div>
+        {signed && payload.signed_pdf_url ? (
+          <PdfPages url={payload.signed_pdf_url} />
+        ) : canSign && payload.pdf_url ? (
+          <PdfSigner
+            url={payload.pdf_url}
+            fields={document.pdf_fields ?? []}
+            recipientName={document.recipient_name}
+            recipientEmail={document.recipient_email}
+            sender={sender_signature ? { name: sender_signature.typed_name || sender_signature.signer_name, signature_image: sender_signature.signature_image, signed_at: sender_signature.signed_at } : null}
+            onSign={async a => {
+              const res = await signDocumentPublic({ token: token!, typed_name: a.name, signer_email: a.email, signature_image: a.signature, initials_image: a.initials ?? undefined });
+              if (!res.ok) throw new Error(res.message ?? 'Could not sign the document.');
+              await load();
+            }}
+          />
+        ) : payload.pdf_url ? (
+          <PdfPages url={payload.pdf_url} />
+        ) : null}
+      </Shell>
+    );
+  }
 
   const recipientPending = canSign ? (
     <SignForm

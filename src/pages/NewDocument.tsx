@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, FilePlus2, FileText } from 'lucide-react';
+import { ArrowLeft, FilePlus2, FileText, Upload } from 'lucide-react';
 import TopBar from '../components/layout/TopBar';
 import { createDocument, listDocumentTemplates } from '../lib/documents-db';
+import { createPdfDocument, PDF_MAX_BYTES } from '../lib/pdf-docs';
 import type { DocumentTemplate } from '../lib/types';
+
+// The "Upload a PDF to sign" choice, alongside blank and the templates.
+const PDF = '__pdf__';
 
 export default function NewDocument() {
   const navigate = useNavigate();
@@ -12,6 +16,8 @@ export default function NewDocument() {
   const [selected, setSelected] = useState<string | null>(null); // template id or null (blank)
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     listDocumentTemplates({ activeOnly: true }).then(setTemplates).catch(() => setTemplates([]));
@@ -22,6 +28,13 @@ export default function NewDocument() {
     setCreating(true);
     setError('');
     try {
+      // An uploaded PDF (2026-11-18): signed in place on its pages; fields are placed on the next screen.
+      if (selected === PDF) {
+        if (!pdfFile) throw new Error('Choose the PDF to upload first.');
+        const doc = await createPdfDocument({ file: pdfFile, title: title.trim() || pdfFile.name.replace(/\.pdf$/i, '') });
+        navigate(`/documents/${doc.id}`);
+        return;
+      }
       const template = selected ? templates.find(t => t.id === selected) ?? null : null;
       const doc = await createDocument({
         title: title.trim() || template?.name || 'Untitled document',
@@ -67,6 +80,29 @@ export default function NewDocument() {
               <p className="text-xs text-gray-500">Start from scratch or with the AI assistant.</p>
             </div>
           </button>
+          <button
+            onClick={() => { setSelected(PDF); fileRef.current?.click(); }}
+            className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-colors ${selected === PDF ? 'border-brand-primary bg-brand-primary/5' : 'border-gray-200 hover:bg-gray-50'}`}
+          >
+            <Upload className="mt-0.5 h-5 w-5 shrink-0 text-brand-primary" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-900">Upload a PDF to sign</p>
+              <p className="truncate text-xs text-gray-500">{pdfFile ? pdfFile.name : 'Place signatures on any page, like DocuSign.'}</p>
+            </div>
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            className="hidden"
+            onChange={e => {
+              const f = e.target.files?.[0] ?? null;
+              if (f && f.size > PDF_MAX_BYTES) { setError('That PDF is over 25 MB.'); return; }
+              setError('');
+              setPdfFile(f);
+              if (f) { setSelected(PDF); if (!title.trim()) setTitle(f.name.replace(/\.pdf$/i, '')); }
+            }}
+          />
           {templates.map(t => (
             <button
               key={t.id}
@@ -86,7 +122,7 @@ export default function NewDocument() {
 
         <div className="mt-6 flex justify-end">
           <button onClick={create} disabled={creating} className="rounded-lg bg-brand-primary px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-primary-dark disabled:opacity-50">
-            {creating ? 'Creating…' : 'Create document'}
+            {creating ? (selected === PDF ? 'Uploading…' : 'Creating…') : selected === PDF ? 'Upload and place fields' : 'Create document'}
           </button>
         </div>
       </div>

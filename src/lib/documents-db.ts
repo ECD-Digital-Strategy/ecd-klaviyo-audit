@@ -11,6 +11,7 @@ import type {
   DocumentSettings,
   DocumentSignature,
   DocumentTemplate,
+  PdfField,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -250,7 +251,13 @@ export type PublicDocumentPayload = {
     recipient_email: string;
     sender_signature_enabled: boolean;
     recipient_signature_enabled: boolean;
+    kind?: 'text' | 'pdf';
+    pdf_pages?: number | null;
+    pdf_fields?: PdfField[];
   };
+  /** Uploaded PDFs: hour-long links to the file, and to the signed copy once there is one. */
+  pdf_url?: string | null;
+  signed_pdf_url?: string | null;
   /** The recipient's signature, display fields only (the server leaves out IP, browser and email). */
   signature: PublicSenderSignature | null;
   sender_signature: PublicSenderSignature | null;
@@ -274,7 +281,9 @@ export async function signDocumentPublic(input: {
   typed_name: string;
   signer_email: string;
   signature_image: string;
-}): Promise<{ ok: boolean; code?: string; message?: string }> {
+  /** Uploaded PDFs with initials fields. */
+  initials_image?: string;
+}): Promise<{ ok: boolean; code?: string; message?: string; signed_pdf_url?: string | null }> {
   const { data, error } = await supabase.functions.invoke('document_sign', { body: input });
   if (error) {
     const context = (error as { context?: Response }).context;
@@ -289,7 +298,7 @@ export async function signDocumentPublic(input: {
     return { ok: false, message: error.message };
   }
   if (data?.ok !== true) return { ok: false, code: data?.error?.code, message: data?.error?.message };
-  return { ok: true };
+  return { ok: true, signed_pdf_url: data?.signed_pdf_url ?? null };
 }
 
 export async function sendDocumentEmail(input: {

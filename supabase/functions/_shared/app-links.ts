@@ -8,6 +8,9 @@ export const APP_ORIGIN = "https://proposal.ecdigitalstrategy.com";
 export const proposalLink = (proposalId: string, focus?: "welcome" | "xero") =>
   `${APP_ORIGIN}/proposals/${proposalId}${focus ? `?focus=${focus}` : ""}`;
 
+/** A document's page in the app. */
+export const documentLink = (documentId: string) => `${APP_ORIGIN}/documents/${documentId}`;
+
 /** Proposal settings, scrolled to the Connected Gmail accounts. */
 export const gmailSettingsLink = () => `${APP_ORIGIN}/proposals?tab=settings&focus=gmail`;
 

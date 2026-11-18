@@ -18,6 +18,7 @@ import { DocumentAgentLayout, DocAgentToggleButton } from '../components/documen
 import DocumentActivityTimeline from '../components/document/DocumentActivityTimeline';
 import DocumentSignatures from '../components/document/DocumentSignatures';
 import SendDocumentModal from '../components/document/SendDocumentModal';
+import PdfDocumentBody from '../components/document/PdfDocumentBody';
 import HoverTooltip from '../components/ui/HoverTooltip';
 import SignaturePad, { type SignaturePadHandle, type SignatureMeta } from '../components/proposal/SignaturePad';
 import BrandedCheckbox from '../components/ui/BrandedCheckbox';
@@ -283,6 +284,15 @@ function WorkspaceInner({ doc, events, signature, senderSignature, reload, onDoc
     }
   };
 
+  /** An uploaded PDF must ask the recipient for something before it can go out. */
+  const openSend = () => {
+    if (doc.kind === 'pdf' && !(doc.pdf_fields ?? []).some(f => f.role === 'recipient')) {
+      toast('Place at least one field for the recipient on the PDF first.');
+      return;
+    }
+    setSendOpen(true);
+  };
+
   const downloadPdf = () => {
     setViewMode('preview');
     window.setTimeout(() => window.print(), 120);
@@ -353,7 +363,7 @@ function WorkspaceInner({ doc, events, signature, senderSignature, reload, onDoc
               <div className="flex items-center gap-2">
                 <button onClick={() => navigate('/documents')} className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"><ArrowLeft className="h-4 w-4" /> Back</button>
                 {!locked && (
-                  <HoverTooltip label="Opens a preview first" description="You will see the exact email and signer before anything sends. Nothing goes out until you confirm."><button onClick={() => setSendOpen(true)} className="flex items-center gap-1.5 rounded-lg gradient-bg px-3.5 py-2 text-sm font-semibold text-white hover:opacity-90"><Send className="h-4 w-4" /> {doc.status === 'draft' ? 'Send to sign' : 'Resend'}</button></HoverTooltip>
+                  <HoverTooltip label="Opens a preview first" description="You will see the exact email and signer before anything sends. Nothing goes out until you confirm."><button onClick={openSend} className="flex items-center gap-1.5 rounded-lg gradient-bg px-3.5 py-2 text-sm font-semibold text-white hover:opacity-90"><Send className="h-4 w-4" /> {doc.status === 'draft' ? 'Send to sign' : 'Resend'}</button></HoverTooltip>
                 )}
                 <DocAgentToggleButton />
               </div>
@@ -363,6 +373,18 @@ function WorkspaceInner({ doc, events, signature, senderSignature, reload, onDoc
           <div className="mx-auto flex max-w-[1200px] flex-col gap-6 p-6 lg:flex-row print:block">
             {/* Document body: edit or preview */}
             <div className="min-w-0 flex-1 print:w-full">
+              {doc.kind === 'pdf' ? (
+                <>
+                  <input
+                    value={title}
+                    disabled={!editable}
+                    onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value }); }}
+                    placeholder="Untitled document"
+                    className="mb-3 w-full border-0 bg-transparent text-2xl font-bold text-gray-900 outline-none placeholder:text-gray-300 disabled:text-gray-900"
+                  />
+                  <PdfDocumentBody doc={doc} onSaved={() => void reload()} />
+                </>
+              ) : (<>
               {/* Edit / Preview toolbar */}
               <div className="mb-3 flex items-center justify-between print:hidden">
                 {editable ? (
@@ -410,6 +432,7 @@ function WorkspaceInner({ doc, events, signature, senderSignature, reload, onDoc
                   </div>
                 </div>
               )}
+              </>)}
 
               {(doc.sender_signature_enabled || signature) && (
                 <div className="mt-6 rounded-2xl border border-gray-100 bg-white p-6 shadow-sm print:border-0 print:shadow-none">
@@ -442,13 +465,15 @@ function WorkspaceInner({ doc, events, signature, senderSignature, reload, onDoc
               <div className="rounded-xl bg-white p-5 card-shadow space-y-2">
                 <h3 className="mb-1 text-sm font-semibold text-gray-900">Actions</h3>
                 {!locked && (
-                  <HoverTooltip label="Opens a preview first" description="You will see the exact email and signer before anything sends. Nothing goes out until you confirm." className="w-full"><button onClick={() => setSendOpen(true)} className="flex w-full items-center gap-2 rounded-lg gradient-bg px-3 py-2 text-sm font-semibold text-white hover:opacity-90"><Send className="h-4 w-4" /> {doc.status === 'draft' ? 'Send to sign' : 'Resend'}</button></HoverTooltip>
+                  <HoverTooltip label="Opens a preview first" description="You will see the exact email and signer before anything sends. Nothing goes out until you confirm." className="w-full"><button onClick={openSend} className="flex w-full items-center gap-2 rounded-lg gradient-bg px-3 py-2 text-sm font-semibold text-white hover:opacity-90"><Send className="h-4 w-4" /> {doc.status === 'draft' ? 'Send to sign' : 'Resend'}</button></HoverTooltip>
                 )}
                 {!locked && (
                   <button onClick={copyLink} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"><Copy className="h-4 w-4" /> Copy signing link</button>
                 )}
                 <button onClick={openRecipientView} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"><ExternalLink className="h-4 w-4" /> Open recipient view</button>
-                <button onClick={downloadPdf} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"><Printer className="h-4 w-4" /> Download PDF</button>
+                {doc.kind !== 'pdf' && (
+                  <button onClick={downloadPdf} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"><Printer className="h-4 w-4" /> Download PDF</button>
+                )}
                 {doc.status !== 'signed' && doc.status !== 'void' && (
                   <button onClick={() => setVoidOpen(true)} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Ban className="h-4 w-4" /> Void</button>
                 )}

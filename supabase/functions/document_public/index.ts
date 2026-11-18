@@ -3,7 +3,7 @@
 // after validating the token server-side (document tables have no anon RLS).
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient, getUserIdFromAuthorization } from "../_shared/auth.ts";
-import { DOCUMENT_CORS_HEADERS, documentJson, fetchPublicDocument, isDocumentExpired, serializePublicDocument } from "../_shared/document-public.ts";
+import { DOCUMENT_CORS_HEADERS, documentJson, fetchPublicDocument, isDocumentExpired, pdfLinks, serializePublicDocument } from "../_shared/document-public.ts";
 import { notificationRecipients, proposalEmailHtml, resolveFromAddress, resolveOrigin, sendEmail } from "../_shared/mailer.ts";
 import { escapeHtml } from "../_shared/proposal-links.ts";
 
@@ -109,7 +109,8 @@ serve(async (req) => {
     }
 
     const payload = serializePublicDocument(bundle);
-    return documentJson({ ok: true, ...payload, expired: isDocumentExpired(document), correlationId });
+    const pdf = await pdfLinks(sb, document);
+    return documentJson({ ok: true, ...payload, ...(pdf ?? {}), expired: isDocumentExpired(document), correlationId });
   } catch (e) {
     return documentJson(
       { ok: false, error: { code: "request_failed", message: e instanceof Error ? e.message : "Unknown error" }, correlationId },
