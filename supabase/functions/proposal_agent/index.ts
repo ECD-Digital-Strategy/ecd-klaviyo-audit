@@ -17,6 +17,7 @@ import {
   validateQuestion,
 } from "./validate.ts";
 import { buildClientDossier, fetchClientHistory } from "./dossier.ts";
+import { readKnowledge } from "../_shared/proposal-knowledge.ts";
 import { applyContractEdits, type ContractEdit } from "../_shared/contract-edits.ts";
 import { readMemory, readVoiceProfile, scheduleMemoryUpdate } from "../_shared/agent-memory.ts";
 
@@ -194,10 +195,11 @@ serve(async (req) => {
     // Memory: live client dossier (structured data), the durable learned memory
     // for this client, and the house voice profile. All best-effort.
     const memoryScopeKey = clientId ? `proposal:client:${clientId}` : null;
-    const [voiceProfile, dossier, clientMemory] = await Promise.all([
+    const [voiceProfile, dossier, clientMemory, knowledge] = await Promise.all([
       readVoiceProfile(sb, "proposal_settings").catch(() => ""),
       clientId ? buildClientDossier(sb, clientId).catch(() => null) : Promise.resolve(null),
       readMemory(sb, memoryScopeKey).catch(() => ""),
+      readKnowledge(sb).catch(() => ""),
     ]);
 
     const system = buildSystemPrompt({
@@ -208,6 +210,7 @@ serve(async (req) => {
       voiceProfile,
       dossier,
       memory: clientMemory,
+      knowledge,
     });
     const tools = AGENT_TOOLS.filter((t) => {
       if (t.name === "get_clients") return mode === "draft" && !clientId;

@@ -9,6 +9,7 @@
 // invention: a proposal that guesses at scope is worse than one that asks.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { createLlmClient, type LlmMessage, type LlmTool } from "../_shared/llm-adapter.ts";
+import { readKnowledge } from "../_shared/proposal-knowledge.ts";
 import { isServiceRoleAuthorization, requireStaffUserId } from "../_shared/auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -197,9 +198,13 @@ Deno.serve(async (req) => {
       ].filter(Boolean).join("\n\n") + context,
     }];
 
+    // Agency Knowledge (Proposal settings): e.g. the current email warmup rules (2026-11-19).
+    const knowledge = await readKnowledge(sb).catch(() => "");
     const llm = createLlmClient((body.provider as never) ?? "anthropic", { model: MODEL });
     const turn = await llm.runTurn({
-      system: SYSTEM,
+      system: knowledge ? `${SYSTEM}
+
+${knowledge}` : SYSTEM,
       messages,
       tools: [DRAFT_TOOL],
       toolChoice: { type: "tool", name: "record_proposal_draft" },

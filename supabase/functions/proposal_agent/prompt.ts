@@ -85,6 +85,8 @@ export function buildSystemPrompt(args: {
   voiceProfile?: string | null;
   dossier?: string | null;
   memory?: string | null;
+  /** Agency Knowledge from Proposal settings (_shared/proposal-knowledge.ts), already formatted. */
+  knowledge?: string | null;
 }): string {
   const parts: string[] = [];
   parts.push(
@@ -99,6 +101,7 @@ export function buildSystemPrompt(args: {
   parts.push(BEHAVIOR_RULES);
   parts.push(DRAFT_RULES);
   if (args.mode === "edit") parts.push(EDIT_RULES);
+  if (args.knowledge && args.knowledge.trim()) parts.push(args.knowledge.trim());
 
   parts.push(
     `AVAILABLE CONTRACT DOCUMENTS (slugs for include_contracts / toggle_contract):\n` +

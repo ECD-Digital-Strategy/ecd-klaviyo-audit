@@ -151,6 +151,7 @@ export const DEFAULT_PROPOSAL_SETTINGS: ProposalSettings = {
   },
   invoicing: DEFAULT_INVOICING,
   voice_profile: '',
+  knowledge: [],
 };
 
 export function mergeProposalSettings(raw: unknown): ProposalSettings {
@@ -160,6 +161,7 @@ export function mergeProposalSettings(raw: unknown): ProposalSettings {
     email: { ...DEFAULT_PROPOSAL_SETTINGS.email, ...(value.email ?? {}) },
     defaults: { ...DEFAULT_PROPOSAL_SETTINGS.defaults, ...(value.defaults ?? {}) },
     voice_profile: typeof value.voice_profile === 'string' ? value.voice_profile : '',
+    knowledge: Array.isArray(value.knowledge) ? value.knowledge : [],
     invoicing: {
       ...DEFAULT_INVOICING,
       ...(value.invoicing ?? {}),

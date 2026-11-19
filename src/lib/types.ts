@@ -657,8 +657,24 @@ export interface ProposalSettings {
   };
   /** House voice/style guide the proposal AI applies to every draft. */
   voice_profile?: string;
+  /** Agency Knowledge: current rules per service the proposal AI follows (2026-11-19, e.g. email warmup). */
+  knowledge?: ProposalKnowledgeEntry[];
   /** Invoices emailed to the client from a person's Gmail. Off until turned on. */
   invoicing: InvoicingSettings;
+}
+
+/** Keep in sync with supabase/functions/_shared/proposal-knowledge.ts. */
+export interface ProposalKnowledgeEntry {
+  id: string;
+  title: string;
+  /** When it applies, in words. */
+  applies_when: string;
+  /** The rules the AI must follow. */
+  rules: string;
+  /** Client-facing wording it may borrow from. */
+  reference?: string;
+  enabled: boolean;
+  updated_at?: string;
 }
 
 /** Keep in sync with supabase/functions/_shared/invoice-email.ts. */

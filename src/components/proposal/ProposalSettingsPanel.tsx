@@ -8,6 +8,7 @@ import type { ProposalSettings } from '../../lib/types';
 import VoiceProfileSection from '../ui/VoiceProfileSection';
 import InvoiceEmailSettings from './InvoiceEmailSettings';
 import WelcomeEmailSettings from './WelcomeEmailSettings';
+import KnowledgeSettings from './KnowledgeSettings';
 import SettingsCard from '../ui/SettingsCard';
 import UnsavedChangesBar from '../ui/UnsavedChangesBar';
 
@@ -99,7 +100,7 @@ export default function ProposalSettingsPanel() {
         <div>
           <h2 className="text-base font-semibold text-gray-900">Proposal Settings</h2>
           <p className="mt-0.5 text-sm text-gray-500">
-            Invoice emails, the AI's voice, sending defaults and the cover page. Click a section to open it.
+            Invoice emails, the AI's voice and knowledge, sending defaults and the cover page. Click a section to open it.
           </p>
         </div>
         <button
@@ -129,6 +130,8 @@ export default function ProposalSettingsPanel() {
         value={settings.voice_profile ?? ''}
         onChange={v => patch({ voice_profile: v })}
       />
+
+      <KnowledgeSettings value={settings.knowledge ?? []} onChange={v => patch({ knowledge: v })} inputClass={inputClass} />
 
       <SettingsCard
         icon={<Mail className="h-4 w-4" />}
