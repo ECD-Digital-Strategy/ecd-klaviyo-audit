@@ -221,6 +221,7 @@ async function isLocalClient(sb: Sb, domain: string): Promise<boolean> {
     .from("clients")
     .select("website_url")
     .eq("is_outreach", false)
+    .eq("crm_imported", false) // CRM companies the client sync imported are not clients (2026-11-22)
     .ilike("website_url", `%${domain.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
     .limit(20);
   return (data ?? []).some((c) => hostOf((c as { website_url: string | null }).website_url) === domain);
@@ -435,6 +436,7 @@ serve(async (req) => {
       .from("clients")
       .select("website_url")
       .eq("is_outreach", false)
+    .eq("crm_imported", false) // CRM companies the client sync imported are not clients (2026-11-22)
       .ilike("website_url", `%${domain.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
       .limit(20);
     if ((clientRows ?? []).some((c) => hostOf((c as { website_url: string | null }).website_url) === domain)) {

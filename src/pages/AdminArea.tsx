@@ -1633,7 +1633,7 @@ type HubSpotSyncState = {
   } | null;
 };
 
-function HubSpotSyncCard() {
+function CrmSyncCard() {
   const [state, setState] = useState<HubSpotSyncState | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
@@ -1655,7 +1655,7 @@ function HubSpotSyncCard() {
     setSyncing(true);
     setError('');
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('hubspot_sync', { body: {} });
+      const { data, error: fnError } = await supabase.functions.invoke('crm_client_sync', { body: {} });
       if (fnError) throw fnError;
       if (data?.ok !== true) throw new Error(data?.error?.message ?? 'Sync failed');
       await loadState();
@@ -1673,7 +1673,7 @@ function HubSpotSyncCard() {
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-2">
           <RefreshCw className="w-4 h-4 text-gray-400" />
-          <h3 className="text-base font-semibold text-gray-900">HubSpot Sync</h3>
+          <h3 className="text-base font-semibold text-gray-900">Revenue Desk Sync</h3>
         </div>
         <button
           type="button"
@@ -1686,14 +1686,14 @@ function HubSpotSyncCard() {
         </button>
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        New HubSpot companies are pulled in automatically every 15 minutes and created as clients
+        New companies in the ECD CRM (Revenue Desk) are pulled in automatically every 15 minutes and created as clients
         (with their primary contact's name and email). Companies matching an existing client by
         name or website are linked instead of duplicated.
       </p>
       <div className="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600 space-y-1">
         <p>
           <span className="text-gray-400">Last synced:</span>{' '}
-          {state?.last_synced_at ? new Date(state.last_synced_at).toLocaleString() : 'Never (first sync runs a backfill)'}
+          {state?.last_synced_at ? new Date(state.last_synced_at).toLocaleString() : 'Never'}
         </p>
         {result?.ok === true && (
           <p>
@@ -1755,14 +1755,6 @@ function SettingsTab() {
         />
 
         <ApiKeyCard
-          provider="hubspot"
-          title="HubSpot Integration"
-          description="Connect HubSpot with a Private App access token to auto-create clients from new HubSpot companies. In HubSpot: Settings, Integrations, Private Apps, create an app with the crm.objects.companies.read and crm.objects.contacts.read scopes, then paste the token here."
-          placeholder="pat-..."
-          savedMessage="Saved. Run Sync now below to import your HubSpot companies."
-        />
-
-        <ApiKeyCard
           provider="fireflies"
           title="Fireflies Integration"
           description="Add a Fireflies API key so the proposal assistant can read meeting transcripts from a Fireflies link. In Fireflies: Settings, Developer, copy your API key, then paste it here. Stored securely and used server-side only."
@@ -1770,7 +1762,7 @@ function SettingsTab() {
           savedMessage="Saved. Paste a Fireflies link into the proposal assistant and it will read the transcript."
         />
 
-        <HubSpotSyncCard />
+        <CrmSyncCard />
 
       {SHOW_ADMIN_SETTINGS_PLACEHOLDERS && (
         <>

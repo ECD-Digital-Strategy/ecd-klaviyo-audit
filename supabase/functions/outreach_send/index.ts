@@ -340,6 +340,7 @@ async function isClient(sb: Sb, domain: string): Promise<boolean> {
     .from("clients")
     .select("website_url")
     .eq("is_outreach", false)
+    .eq("crm_imported", false) // CRM companies the client sync imported are not clients (2026-11-22)
     .ilike("website_url", `%${domain.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
     .limit(20);
   if (error) throw new Error(`clients could not be checked: ${error.message}`);

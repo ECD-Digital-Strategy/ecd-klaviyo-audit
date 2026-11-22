@@ -37,8 +37,8 @@ function syncRelativeTime(iso: string | null): string {
   return `${day}d ago`;
 }
 
-/** Compact HubSpot "Sync now" control; cadence + last-sync detail live in a tooltip. */
-function HubSpotSyncButton() {
+/** Compact "Sync now" control for the Revenue Desk client sync (HubSpot until 2026-11-22); detail in a tooltip. */
+function CrmSyncButton() {
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
@@ -60,7 +60,7 @@ function HubSpotSyncButton() {
     setSyncing(true);
     setError('');
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('hubspot_sync', { body: {} });
+      const { data, error: fnError } = await supabase.functions.invoke('crm_client_sync', { body: {} });
       if (fnError) throw fnError;
       if (data?.ok !== true) throw new Error(data?.error?.message ?? 'Sync failed');
       await load();
@@ -72,8 +72,8 @@ function HubSpotSyncButton() {
   };
 
   const tooltip = error
-    ? `HubSpot sync failed: ${error}`
-    : `Auto-syncs from HubSpot every 15 minutes · last synced ${syncRelativeTime(lastSynced)}`;
+    ? `Revenue Desk sync failed: ${error}`
+    : `Auto-syncs from Revenue Desk (the ECD CRM) every 15 minutes · last synced ${syncRelativeTime(lastSynced)}`;
 
   return (
     <HoverTooltip label={tooltip} align="end">
@@ -86,12 +86,7 @@ function HubSpotSyncButton() {
         {syncing ? (
           <RefreshCw className="h-3.5 w-3.5 animate-spin text-gray-400" />
         ) : (
-          <img
-            src="https://www.hubspot.com/favicon.ico"
-            alt=""
-            className="h-3.5 w-3.5 shrink-0"
-            onError={e => { e.currentTarget.style.display = 'none'; }}
-          />
+          <RefreshCw className="h-3.5 w-3.5 shrink-0 text-gray-400" />
         )}
         {syncing ? 'Syncing…' : 'Sync now'}
       </button>
@@ -270,7 +265,7 @@ export default function Clients() {
             </SelectContent>
           </Select>
           <div className="ml-auto">
-            <HubSpotSyncButton />
+            <CrmSyncButton />
           </div>
         </div>
 
@@ -363,17 +358,12 @@ export default function Clients() {
                         </span>
                       )}
                       {client.hubspot_company_id && (
-                        <HoverTooltip label="Auto-synced from HubSpot" align="end">
+                        <HoverTooltip label="Auto-synced from the ECD CRM" align="end">
                           <span
-                            className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-600 cursor-default"
+                            className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600 cursor-default"
                             onClick={e => e.stopPropagation()}
                           >
-                            <img
-                              src="https://www.hubspot.com/favicon.ico"
-                              alt=""
-                              className="h-3.5 w-3.5 shrink-0"
-                              onError={e => { e.currentTarget.style.display = 'none'; }}
-                            />
+                            <RefreshCw className="h-3.5 w-3.5 shrink-0 text-gray-400" />
                             Auto-synced
                           </span>
                         </HoverTooltip>

@@ -68,6 +68,22 @@ export async function crmClients(): Promise<HubClient[]> {
   return data.clients;
 }
 
+export type CrmCompany = {
+  id: string;
+  name: string | null;
+  domain: string | null;
+  company_type: string | null;
+  origin: string | null;
+  contact: { name: string | null; email: string | null } | null;
+};
+
+/** Every CRM company with its main contact (Hub migration 0374): the app's client list syncs from it. Throws. */
+export async function crmCompanies(): Promise<CrmCompany[]> {
+  const data = await call<{ companies?: CrmCompany[] }>({ action: "companies" });
+  if (!Array.isArray(data.companies) || data.companies.length === 0) throw new Error("The CRM returned no companies.");
+  return data.companies;
+}
+
 export async function crmLog(input: CrmLogInput): Promise<CrmLogResult> {
   return await call<CrmLogResult>({ action: "log", ...input });
 }
