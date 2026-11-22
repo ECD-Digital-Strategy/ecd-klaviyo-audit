@@ -123,7 +123,7 @@ export function clientMatch(c: ClientCandidate, clients: HubClient[]): ClientMat
     const keys = new Set([...nameKeys(client.name), ...client.domains.map((d) => cleanDomain(d)).filter(Boolean).map((d) => domainWord(d!)).filter((w): w is string => Boolean(w))]);
     if (IGNORED_CLIENT_DOMAINS.has(cleanDomain(client.domains[0]) ?? "")) continue;
     const hit = [...nameSet].find((k) => keys.has(k));
-    if (hit) return { client, why: `same name as ${client.name}` };
+    if (hit) return { client, why: `name match: ${hit}` };
   }
   return null;
 }
