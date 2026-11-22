@@ -1,7 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { assertServiceRoleClient, hasCronSecret } from "../_shared/auth.ts";
 import { OUTREACH_OWNER_EMAIL, requireOutreachOwner } from "../_shared/outreach-access.ts";
-import { crmEventLeads, crmKnown, crmSkipReason, type CrmKnown } from "../_shared/outreach-crm.ts";
+import { crmClients, crmEventLeads, crmKnown, crmSkipReason, type CrmKnown } from "../_shared/outreach-crm.ts";
+import { clientMatch, clientReason, myshopifyOf, type ClientCandidate, type HubClient } from "../_shared/outreach-clients.ts";
 import { approachFor, groupGuests, guestName, OWN_DOMAINS, pickGuest, relevantMatches, type EventBrand } from "../_shared/outreach-events.ts";
 import { createLlmClient } from "../_shared/llm-adapter.ts";
 import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-score.ts";
@@ -10,7 +11,8 @@ import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-
 // is audited or emailed. Each domain is kept once in outreach_prospects, either as
 // 'new' (worth auditing) or 'skipped' with the reason, so nobody is ever screened,
 // audited or emailed twice. Skipped:
-//  - already a client here,
+//  - already a client here, or an ECD client by any domain, redirect, subdomain, guest email or name
+//    (_shared/outreach-clients.ts, 2026-11-22): those are kept flagged is_client and never shown,
 //  - known to the ECD CRM (Revenue Desk, since 2026-11-11; HubSpot before): a client,
 //    a deal in any stage, a company, any contact at that domain, a prospect, an event
 //    guest, or the CRM's do-not-contact list (_shared/outreach-crm.ts). Past clients
@@ -50,6 +52,12 @@ export function normalizeDomain(input: string): string | null {
 
 const hostOf = (url: string | null | undefined) => (url ? normalizeDomain(url) : null);
 
+/** The skip reason when this brand is an ECD client (kept flagged, never shown as a lead), or null. */
+function asClient(clients: HubClient[], c: ClientCandidate): string | null {
+  const m = clientMatch(c, clients);
+  return m ? clientReason(m) : null;
+}
+
 type Screened = { domain: string; status: "new" | "skipped" | "exists" | "invalid"; reason?: string; store_name?: string; lead_score?: number };
 
 /** Name and size signals from the homepage. shopify=false means it is not a Shopify store. */
@@ -72,6 +80,9 @@ type Homepage = {
   title: string | null;
   description: string | null;
   text: string;
+  /** Where the site ends up after redirects, and the myshopify store it names (client check, 2026-11-22). */
+  final: string | null;
+  myshopify: string | null;
 };
 
 async function readHomepage(domain: string): Promise<Homepage | null> {
@@ -105,7 +116,7 @@ async function readHomepage(domain: string): Promise<Homepage | null> {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 1200);
-    return { shopify, name, signals, ...shopifyLocale(html), title: title?.trim() ?? null, description, text };
+    return { shopify, name, signals, ...shopifyLocale(html), title: title?.trim() ?? null, description, text, final: normalizeDomain(res.url), myshopify: myshopifyOf(html) };
   } catch {
     return null;
   } finally {
@@ -249,6 +260,8 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
 
   // One CRM question for the batch: only clients, deals, prospects and the do-not-contact list count for a guest.
   const known = await crmKnown(slice.map((b) => b.domain));
+  // Every ECD client, to match by domain, redirect, guest email and name.
+  const clients = await crmClients();
 
   const todo: Array<{ b: EventBrand; existingId: string | null; reason: string | null; home: Homepage | null }> = [];
   for (const b of slice) {
@@ -271,6 +284,9 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
     const { data: blocked } = await sb.from("outreach_suppressions").select("domain").eq("domain", b.domain).maybeSingle();
     if (blocked) reason = "Asked not to be contacted";
     if (!reason && (await isLocalClient(sb, b.domain))) reason = "Already a client";
+    // A client outranks every other reason, so the row is flagged and hidden.
+    const clientEarly = asClient(clients, { domains: [b.domain], emails: b.guests.map((g) => g.email), names: [b.brand] });
+    if (clientEarly) reason = clientEarly;
     if (!reason) reason = crmSkipReason(relevantMatches("event", known.domains[b.domain]));
     todo.push({ b, existingId: ex?.id ?? null, reason, home: null });
   }
@@ -282,6 +298,10 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
   for (const t of todo) {
     const { b, home } = t;
     let reason = t.reason;
+    // The site may redirect to a client's domain (sbblooms.com goes to somethingborrowedblooms.com).
+    const clientLate = !reason && home ? asClient(clients, { domains: [b.domain, home.final, home.myshopify], names: [home.name] }) : null;
+    if (clientLate) reason = clientLate;
+    const isClient = Boolean(reason?.startsWith("Already a"));
     const v = verdicts.get(b.domain);
     if (!reason && v && v.kind !== "brand" && v.kind !== "unknown") {
       reason = `Not a brand (${v.kind === "agency" ? "an agency" : v.kind === "software" ? "a software vendor" : "not an online store"}): ${v.why}`;
@@ -303,6 +323,9 @@ async function eventImport(sb: Sb, userId: string, eventId: string, offset: numb
       store_name: home?.name ?? b.brand ?? null,
       status: reason ? "skipped" : "new",
       skip_reason: reason,
+      is_client: isClient,
+      site_domain: home?.final ?? null,
+      client_checked_at: new Date().toISOString(),
       notes: noteLines.join("\n") || null,
       source: "event",
       event_id: event.id,
@@ -376,9 +399,11 @@ serve(async (req) => {
   let crm: CrmKnown | null = null;
   let crmError = "";
   const asked = [...new Set(inputs.map(normalizeDomain).filter((d): d is string => Boolean(d)))];
+  let clients: HubClient[] | null = null;
   try {
-    crm = await crmKnown(asked);
+    [crm, clients] = await Promise.all([crmKnown(asked), crmClients()]);
   } catch (e) {
+    crm = null;
     crmError = e instanceof Error ? e.message : String(e);
   }
 
@@ -415,6 +440,7 @@ serve(async (req) => {
     if ((clientRows ?? []).some((c) => hostOf((c as { website_url: string | null }).website_url) === domain)) {
       reason = "Already a client";
     }
+    if (!reason && clients) reason = asClient(clients, { domains: [domain] });
 
     if (!reason) {
       // The CRM could not be asked: unknown, not "no". Fail closed (audit 2026-11-10).
@@ -430,6 +456,7 @@ serve(async (req) => {
     const [home, rank, products] = reason
       ? [null, null, null]
       : await Promise.all([readHomepage(domain), trancoRank(domain), productCount(domain)]);
+    if (!reason && home && clients) reason = asClient(clients, { domains: [domain, home.final, home.myshopify], names: [home.name] });
     if (!reason && !home) reason = "Website did not load";
     if (!reason && home && !home.shopify) reason = "Not a Shopify store";
 
@@ -448,6 +475,9 @@ serve(async (req) => {
       store_name: home?.name ?? null,
       status: reason ? "skipped" : "new",
       skip_reason: reason,
+      is_client: Boolean(reason?.startsWith("Already a")),
+      site_domain: home?.final ?? null,
+      client_checked_at: new Date().toISOString(),
       notes: home?.signals.length ? `Signals: ${home.signals.join(", ")}` : null,
       lead_score: leadScore,
       lead_signals: lead,

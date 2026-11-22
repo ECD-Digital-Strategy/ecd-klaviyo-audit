@@ -122,9 +122,11 @@ export default function Outreach() {
     }
   };
 
+  // ECD clients never show up here (Emil, 2026-11-22); the server keeps them flagged so they are never re-imported.
+  const hiddenClients = (prospects ?? []).filter((p) => p.is_client).length;
   const grouped = useMemo(
     () => GROUPS.map((g) => {
-      const items = (prospects ?? []).filter(g.match);
+      const items = (prospects ?? []).filter((p) => !p.is_client).filter(g.match);
       if (g.key === 'new') items.sort((a, b) => (b.lead_score ?? -1) - (a.lead_score ?? -1));
       return { ...g, items };
     }),
@@ -205,7 +207,7 @@ export default function Outreach() {
 
         {prospects === null ? (
           <p className="text-sm text-gray-400">Loading…</p>
-        ) : prospects.length === 0 ? (
+        ) : prospects.length === hiddenClients ? (
           <p className="text-sm text-gray-500">No stores yet. Paste a few above to start a test batch.</p>
         ) : (
           grouped.filter((g) => g.items.length > 0).map((g) => (
@@ -228,6 +230,11 @@ export default function Outreach() {
               </div>
             </section>
           ))
+        )}
+        {hiddenClients > 0 && (
+          <p className="text-xs text-gray-400">
+            {hiddenClients} {hiddenClients === 1 ? 'brand is' : 'brands are'} hidden because {hiddenClients === 1 ? 'it is' : 'they are'} ECD clients. They are never audited or emailed.
+          </p>
         )}
         </>)}
       </div>

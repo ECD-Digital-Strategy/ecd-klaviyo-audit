@@ -8,6 +8,7 @@
 // Every failure throws: callers treat "could not check" as "do not send" (fail closed), never as "unknown = fine".
 
 import type { CrmEvent } from "./outreach-events.ts";
+import type { HubClient } from "./outreach-clients.ts";
 
 export type CrmMatch = { kind: string; id: string; label: string | null };
 export type CrmKnown = { domains: Record<string, CrmMatch[]>; emails: Record<string, CrmMatch[]> };
@@ -58,6 +59,13 @@ export async function crmKnown(domains: string[], emails: string[] = []): Promis
 export async function crmEventLeads(): Promise<CrmEvent[]> {
   const data = await call<{ events?: CrmEvent[] }>({ action: "event_leads" });
   return data.events ?? [];
+}
+
+/** Every ECD client, past ones too, with every domain ECD knows for it (Hub migration 0369). Read only, throws. */
+export async function crmClients(): Promise<HubClient[]> {
+  const data = await call<{ clients?: HubClient[] }>({ action: "clients" });
+  if (!Array.isArray(data.clients) || data.clients.length === 0) throw new Error("The CRM returned no clients.");
+  return data.clients;
 }
 
 export async function crmLog(input: CrmLogInput): Promise<CrmLogResult> {

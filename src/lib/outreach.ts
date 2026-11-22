@@ -30,6 +30,8 @@ export type OutreachStatus =
 export type OutreachProspect = {
   id: string;
   domain: string;
+  /** An ECD client, past or current (2026-11-22): never shown in the lists, never emailed. */
+  is_client?: boolean;
   store_name: string | null;
   contact_name: string | null;
   contact_email: string | null;

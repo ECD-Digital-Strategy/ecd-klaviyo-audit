@@ -5,7 +5,8 @@ import { sendEmail } from "../_shared/mailer.ts";
 import { advanceCursor, ImapSession, newUids, uidSet } from "../_shared/imap-search.ts";
 import { decryptString, encryptString } from "../_shared/crypto.ts";
 import { isRoleAddress } from "../_shared/outreach-contacts.ts";
-import { crmConfigured, crmKnown, crmLog, crmSkipReason, type CrmKnown, type CrmLeadStatus } from "../_shared/outreach-crm.ts";
+import { crmClients, crmConfigured, crmKnown, crmLog, crmSkipReason, type CrmKnown, type CrmLeadStatus } from "../_shared/outreach-crm.ts";
+import { clientReason, clientSweep, markClient, prospectClient, type HubClient } from "../_shared/outreach-clients.ts";
 import { relevantMatches } from "../_shared/outreach-events.ts";
 import {
   classifyReply,
@@ -147,6 +148,11 @@ type Prospect = {
   /** 'event' for a guest of an ECD event or webinar (2026-11-11), else 'cold'. */
   source?: string | null;
   approach?: "audit" | "discovery" | null;
+  /** An ECD client (2026-11-22): never shown, never emailed again. */
+  is_client?: boolean;
+  /** Where the website ends up after redirects; "" when read and it goes nowhere else. */
+  site_domain?: string | null;
+  other_guests?: Array<{ email?: string | null }> | null;
 };
 
 /** The connected mailbox, decrypted here only, or null. */
@@ -340,7 +346,7 @@ async function isClient(sb: Sb, domain: string): Promise<boolean> {
   return (data ?? []).some((c) => hostOf((c as { website_url: string | null }).website_url) === domain);
 }
 
-type SendCheck = { ok: true } | { ok: false; outcome: "blocked" | "retry"; error: string };
+type SendCheck = { ok: true } | { ok: false; outcome: "blocked" | "retry"; error: string; client?: boolean };
 
 /**
  * Checked again right before a first email goes out (audit 2026-11-10), not only
@@ -357,10 +363,17 @@ async function sendTimeCheck(sb: Sb, p: Prospect): Promise<SendCheck> {
     return { ok: false, outcome: "retry", error: `Not sent yet, the do-not-contact checks could not run: ${e instanceof Error ? e.message : String(e)}` };
   }
   let known: CrmKnown;
+  let clients: HubClient[];
   try {
-    known = await crmKnown([p.domain], email ? [email] : []);
+    [known, clients] = await Promise.all([crmKnown([p.domain], email ? [email] : []), crmClients()]);
   } catch (e) {
     return { ok: false, outcome: "retry", error: `Not sent yet: the CRM could not be checked (${e instanceof Error ? e.message : String(e)}).` };
+  }
+  // An ECD client by any domain, redirect, guest email or name (2026-11-22).
+  const asClient = await prospectClient(sb, p, clients);
+  if (asClient) {
+    await markClient(sb, p, asClient);
+    return { ok: false, outcome: "blocked", error: `${clientReason(asClient)} (found at send time).`, client: true };
   }
   const own = { contactId: p.crm_contact_id, companyId: p.crm_company_id };
   // An event guest is in the CRM because of the event: only a client, a deal, a prospect or the
@@ -385,7 +398,7 @@ async function sendInitial(sb: Sb, box: Mailbox, p: Prospect, settings: Settings
   if (p.sent_at) return { ok: false, outcome: "busy", error: "Already sent." };
   const check = await sendTimeCheck(sb, p);
   if (!check.ok) {
-    if (check.outcome === "blocked") {
+    if (check.outcome === "blocked" && !check.client) {
       // Excluded for good, like a store screened out: never sent.
       await sb.from("outreach_prospects").update({ status: "skipped", skip_reason: check.error }).eq("id", p.id).is("sent_at", null);
     }
@@ -821,6 +834,11 @@ async function scanPerProspect(
 }
 
 async function tick(sb: Sb) {
+  // Clients off the list first, whatever else this run does (2026-11-22). The client list is read once per run.
+  let clientList: HubClient[] | null = null;
+  const loadClients = async () => (clientList ??= await crmClients());
+  const sweep = await clientSweep(sb, loadClients).catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+  if ("error" in sweep || sweep.clients.length) console.log("outreach client sweep", JSON.stringify(sweep));
   const box = await mailbox(sb);
   if (!box) return { ok: true, skipped: "mailbox_not_connected" };
   const now = new Date();
@@ -841,11 +859,19 @@ async function tick(sb: Sb) {
 
   // Follow-ups, only when the inbox could be read: never chase someone who may have replied.
   if (inboxOk && settings.max_followups > 0) {
-    const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").lt("followups_sent", settings.max_followups);
+    const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").eq("is_client", false).lt("followups_sent", settings.max_followups);
     for (const p of (data ?? []) as Prospect[]) {
       if (!p.last_sent_at || now.getTime() - Date.parse(p.last_sent_at) < settings.followup_gap_days * 86_400_000) continue;
       // Put on the do-not-contact list since the first email: no more follow-ups.
       if (await suppressed(sb, p.domain)) continue;
+      // Became an ECD client since the first email: no more follow-ups. Client list unreadable: not this run.
+      const clients = await loadClients().catch(() => null);
+      if (!clients) break;
+      const asClient = await prospectClient(sb, p, clients);
+      if (asClient) {
+        await markClient(sb, p, asClient);
+        continue;
+      }
       const url = await reportUrl(sb, p);
       // The discovery email has no report; every other one needs its report to follow up on.
       if ((!url && p.approach !== "discovery") || !p.email_subject) continue;
