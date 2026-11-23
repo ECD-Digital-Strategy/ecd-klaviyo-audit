@@ -3,12 +3,22 @@ import { assertServiceRoleClient } from "../_shared/auth.ts";
 import { requireOutreachOwnerOrServer } from "../_shared/outreach-access.ts";
 import { createLlmClient } from "../_shared/llm-adapter.ts";
 import { TEASER_PAGE_KEYS, teaserFindings, teaserLockedTotal, type TeaserFinding } from "../_shared/outreach-teaser.ts";
+import { sloppyPhrases, VOICE_RULES, wordCount } from "../_shared/outreach-voice.ts";
 
 // Outreach, step 1 (Emil, 2026-11-01): draft the cold email for a prospect whose
 // outside-only web audit has finished. Emil reads, edits and sends it himself for
 // now. The email opens on one concrete finding from THEIR site, picked from the
-// findings the public teaser actually shows, and links that teaser. Short, plain
-// text, from Emil, no agency boilerplate.
+// findings the public teaser actually shows. Short, plain text, from Emil, no
+// agency boilerplate.
+//
+// The whole sequence since 2026-11-23 (research on what gets replies, Emil's picks):
+//   1. First email, under 90 words, NO link: one finding they can check in five seconds, the fix, and an interest
+//      question ("want me to send the rest?"). A yes is a warm lead; Emil answers with the report link (the reply
+//      alert carries it). Fewer links in a first email land in the inbox more often and get more replies.
+//   2. Follow-up 1 (a few days later): a second finding from a different page, and the report link.
+//   3. Follow-up 2 (a week after that): one fix they can make themselves, no ask, no link. Then nothing more.
+// All three are drafted together so Emil approves the sequence once. Every draft is checked against the slop list
+// (_shared/outreach-voice.ts) and rewritten once if something slipped through.
 
 const REPORT_BASE = "https://audit.ecdigitalstrategy.com/report/";
 const LINK = "{{REPORT_LINK}}";
@@ -51,6 +61,33 @@ Rules:
 - End the body with exactly:
 Emil
 ECD Digital Strategy`;
+
+// Cold stores (2026-11-23): the three-email sequence above.
+const SYSTEM_COLD = `You write a short cold email sequence for Emil Gorgijev at ECD Digital Strategy, an ecommerce agency that designs and builds Shopify websites. We reviewed the prospect's storefront (homepage, collection page, product page, cart, on desktop and mobile) and wrote up what we found. The goal is a reply, and later a call about a website project. Write three emails.
+
+${VOICE_RULES}
+
+Email 1 (the first email):
+- 50 to 90 words in the body. From Emil, first person, to a busy founder or marketing lead.
+- Open straight on finding A: what is on their page (quote it, name the spot, desktop or mobile) and why it loses shoppers, in plain words. Then the fix in one sentence.
+- One short, honest line on context is allowed, for example that you were going through Shopify stores in their category. Never claim you are a customer or that you met them.
+- End with ONE easy interest question offering the rest of the write-up, mentioning roughly how many more things you found and where (from the facts), e.g. "I noted three more on your mobile cart and product page. Want me to send them over?". Do not ask for a call. Do not include any link or URL.
+- Subject: 2 to 4 words, lowercase except names, about their site (e.g. "your mobile add to cart"). Not clickbait, not "quick question".
+
+Email 2 (follow-up 1, sent a few days later in the same thread):
+- 40 to 80 words. Do not say "following up", "bumping" or "checking in", and do not repeat email 1.
+- Lead with finding B, a different page from finding A, the same concrete way, with its fix.
+- Then the write-up link on its own line, exactly as the token {{REPORT_LINK}}, introduced plainly (e.g. "Everything we found is here:"). The only URL allowed.
+- End with a light question about whether the site is a priority this quarter, or whether someone else handles it.
+
+Email 3 (follow-up 2, a week later, the last one):
+- 30 to 60 words. One fix they can make themselves this week, from finding C, explained so they could do it without us.
+- No ask, no link, no call offer. A plain, friendly last line, no guilt and no "last chance".
+
+All three:
+- Recipient's first name if given ("Hi Sam,"); otherwise "Hi there,". Never guess a name.
+- End each body with exactly:
+Emil`;
 
 // Event and webinar guests (2026-11-11): they came to one of ECD's events, so the email opens with that instead of
 // a cold hook. Never claim Emil met them: Zak or the team ran the events, Emil did not.
@@ -125,6 +162,82 @@ async function writeEmail(system: string, facts: string): Promise<{ subject: str
   return subject && body ? { subject, body } : null;
 }
 
+/**
+ * Three findings for the three emails: the strongest first, then the strongest on another page, then the strongest
+ * left on a third page (or anything left). Strongest = priority, then the order the analyst wrote them in.
+ */
+function pickFindings<T extends { page: string; f: TeaserFinding }>(shown: T[]): T[] {
+  const sorted = [...shown].sort((a, b) => (RANK[String(a.f.priority)] ?? 1) - (RANK[String(b.f.priority)] ?? 1));
+  const picks: T[] = [];
+  for (let i = 0; i < 3; i++) {
+    const usedPages = new Set(picks.map((p) => p.page));
+    const next = sorted.find((s) => !picks.includes(s) && !usedPages.has(s.page)) ?? sorted.find((s) => !picks.includes(s));
+    if (!next) break;
+    picks.push(next);
+  }
+  return picks;
+}
+
+type Sequence = { subject: string; body: string; followup_1: string; followup_2: string; warnings: string[] };
+
+/** Problems that need a rewrite: slop, a link in email 1, lengths well outside the brief. */
+function sequenceProblems(s: Omit<Sequence, "warnings">): string[] {
+  const out: string[] = [];
+  const check = (label: string, text: string, min: number, max: number) => {
+    for (const p of sloppyPhrases(text)) out.push(`${label}: ${p}`);
+    const n = wordCount(text);
+    if (n > max + 15) out.push(`${label}: ${n} words, keep it under ${max}`);
+    if (n < min - 15) out.push(`${label}: only ${n} words`);
+  };
+  check("email 1", s.body, 50, 90);
+  check("email 2", s.followup_1.replace(LINK, ""), 40, 80);
+  check("email 3", s.followup_2, 30, 60);
+  for (const p of sloppyPhrases(s.subject)) out.push(`subject: ${p}`);
+  if (/https?:\/\/|www\.|\{\{REPORT_LINK\}\}/i.test(s.body)) out.push("email 1: has a link; email 1 must have none");
+  if (/https?:\/\/|www\.|\{\{REPORT_LINK\}\}/i.test(s.followup_2)) out.push("email 3: has a link; email 3 must have none");
+  return out;
+}
+
+/** Writes the sequence; rewrites once with the problems named when the first try slipped. */
+async function writeSequence(facts: string): Promise<Sequence | null> {
+  const llm = createLlmClient("anthropic", { model: "claude-sonnet-5-5" });
+  const tool = {
+    name: "sequence",
+    description: "The three finished emails.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: { type: "string" },
+        body: { type: "string", description: "Email 1, plain text, no link." },
+        followup_1: { type: "string", description: `Email 2, plain text, with ${LINK} on its own line.` },
+        followup_2: { type: "string", description: "Email 3, plain text, no link." },
+      },
+      required: ["subject", "body", "followup_1", "followup_2"],
+    },
+  };
+  let ask = `${facts}\n\nWrite the three emails.`;
+  let last: Omit<Sequence, "warnings"> | null = null;
+  let problems: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const turn = await llm.runTurn({ system: SYSTEM_COLD, messages: [{ role: "user", text: ask }], tools: [tool], toolChoice: { type: "tool", name: "sequence" } });
+    if (turn.kind !== "tool_call") continue;
+    const i = turn.input as Record<string, unknown>;
+    const draft = {
+      subject: tidyText(String(i.subject ?? "")).slice(0, 120),
+      body: tidyText(String(i.body ?? "")),
+      followup_1: tidyText(String(i.followup_1 ?? "")),
+      followup_2: tidyText(String(i.followup_2 ?? "")),
+    };
+    if (!draft.subject || !draft.body || !draft.followup_1 || !draft.followup_2) continue;
+    last = draft;
+    problems = sequenceProblems(draft);
+    if (!problems.length) break;
+    ask = `${facts}\n\nYour previous draft had these problems:\n- ${problems.join("\n- ")}\n\nPrevious draft:\nSubject: ${draft.subject}\n\nEmail 1:\n${draft.body}\n\nEmail 2:\n${draft.followup_1}\n\nEmail 3:\n${draft.followup_2}\n\nRewrite all three, fixing every problem.`;
+  }
+  // Whatever still slipped is shown to Emil, who approves every email anyway.
+  return last ? { ...last, warnings: problems } : null;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
@@ -192,6 +305,49 @@ serve(async (req) => {
   const more = teaserLockedTotal(sections ?? []);
 
   const brand = (prospect.store_name || client?.company_name || prospect.domain) as string;
+  const link = `${REPORT_BASE}${audit.public_share_token}`;
+
+  // A cold store gets the three-email sequence (2026-11-23). Event guests keep their one email (closed since then).
+  if (prospect.source !== "event") {
+    const picks = pickFindings(shown);
+    const fmt = (label: string, x: { page: string; f: TeaserFinding }) => [
+      `Finding ${label}, on their ${x.page}${x.f.viewport && x.f.viewport !== "both" ? ` (${x.f.viewport})` : ""}:`,
+      `  Title: ${x.f.title ?? ""}`,
+      `  What we saw: ${x.f.text ?? ""}`,
+      `  What we'd change: ${x.f.recommendation ?? ""}`,
+    ].join("\n");
+    const others = shown.filter((s) => s !== picks[0]);
+    const facts = [
+      `Brand: ${brand} (${prospect.domain})`,
+      prospect.contact_name ? `Recipient's first name: ${String(prospect.contact_name).split(" ")[0]}` : "Recipient's name is unknown: use \"Hi there,\".",
+      fmt("A (email 1)", picks[0]),
+      picks[1] ? fmt("B (email 2)", picks[1]) : "Finding B: none on another page; use another angle on the same page from the write-up, without inventing details.",
+      picks[2] ? fmt("C (email 3, the do-it-yourself fix)", picks[2]) : "Finding C: none left; make email 3 a simple fix drawn from finding A's or B's recommendation.",
+      `More in the write-up besides finding A: ${others.length + more} (on: ${[...new Set(others.map((s) => s.page))].join(", ") || "the same pages"}).`,
+    ].join("\n");
+    const seq = await writeSequence(facts);
+    if (!seq) return json({ ok: false, error: "draft_failed" }, 502);
+    const followup1 = seq.followup_1.includes(LINK) ? seq.followup_1.replace(LINK, link).replaceAll(LINK, "") : `${seq.followup_1}\n\n${link}`;
+    const { data: saved } = await sb
+      .from("outreach_prospects")
+      .update({
+        email_subject: seq.subject,
+        email_body: seq.body,
+        followup_1_body: followup1,
+        followup_2_body: seq.followup_2,
+        draft_hooks: picks.map((x) => ({ page: x.page, viewport: x.f.viewport ?? null, priority: x.f.priority ?? null, title: x.f.title ?? null })),
+        status: "ready",
+      })
+      .eq("id", prospect_id)
+      .is("sent_at", null)
+      .in("status", DRAFTABLE)
+      .select("id");
+    if (!saved?.length) {
+      return json({ ok: false, error: "already_sent", message: "This prospect was emailed while the draft was being written, so it was not changed." }, 409);
+    }
+    return json({ ok: true, subject: seq.subject, body: seq.body, followup_1: followup1, followup_2: seq.followup_2, warnings: seq.warnings });
+  }
+
   const facts = [
     `Brand: ${brand} (${prospect.domain})`,
     prospect.contact_name ? `Recipient's first name: ${String(prospect.contact_name).split(" ")[0]}` : "Recipient's name is unknown: open with \"Hi there,\" or the brand name, never a guessed name.",
@@ -224,7 +380,6 @@ serve(async (req) => {
   });
   if (turn.kind !== "tool_call") return json({ ok: false, error: "draft_failed" }, 502);
   const input = turn.input as { subject?: string; body?: string };
-  const link = `${REPORT_BASE}${audit.public_share_token}`;
   // Dashes out, in case the model slipped; the real link in, exactly once.
   const tidy = (s: string) => s.replace(/\s*[–—]\s*/g, ", ").trim();
   let body = tidy(String(input.body ?? ""));

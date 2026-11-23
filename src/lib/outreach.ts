@@ -58,6 +58,9 @@ export type OutreachProspect = {
   audit_id: string | null;
   email_subject: string | null;
   email_body: string | null;
+  /** Follow-ups drafted with the first email (2026-11-23): a second finding + the report link, then a do-it-yourself fix. */
+  followup_1_body?: string | null;
+  followup_2_body?: string | null;
   notes: string | null;
   sent_at: string | null;
   approved_at?: string | null;
@@ -284,6 +287,8 @@ export type OutreachSettings = {
   booking_url: string | null;
   max_followups: number;
   followup_gap_days: number;
+  /** Days between follow-up 1 and follow-up 2. */
+  followup_2_gap_days: number;
   send_start_hour: number;
   send_end_hour: number;
   min_gap_minutes: number;

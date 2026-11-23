@@ -5,7 +5,7 @@ import { crmClients, crmEventLeads, crmKnown, crmSkipReason, type CrmKnown } fro
 import { clientMatch, clientReason, myshopifyOf, type ClientCandidate, type HubClient } from "../_shared/outreach-clients.ts";
 import { approachFor, groupGuests, guestName, OWN_DOMAINS, pickGuest, relevantMatches, type EventBrand } from "../_shared/outreach-events.ts";
 import { createLlmClient } from "../_shared/llm-adapter.ts";
-import { scoreLead, shopifyLocale, type LeadSignals } from "../_shared/outreach-score.ts";
+import { scoreLead, shopifyLocale, shopifyTheme, type LeadSignals, type ShopifyTheme } from "../_shared/outreach-score.ts";
 
 // Outreach, step 1 (Emil, 2026-11-01): screen pasted store domains before anything
 // is audited or emailed. Each domain is kept once in outreach_prospects, either as
@@ -83,6 +83,8 @@ type Homepage = {
   /** Where the site ends up after redirects, and the myshopify store it names (client check, 2026-11-22). */
   final: string | null;
   myshopify: string | null;
+  /** The storefront theme (lead score, 2026-11-23). */
+  theme: ShopifyTheme | null;
 };
 
 async function readHomepage(domain: string): Promise<Homepage | null> {
@@ -116,7 +118,7 @@ async function readHomepage(domain: string): Promise<Homepage | null> {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 1200);
-    return { shopify, name, signals, ...shopifyLocale(html), title: title?.trim() ?? null, description, text, final: normalizeDomain(res.url), myshopify: myshopifyOf(html) };
+    return { shopify, name, signals, ...shopifyLocale(html), title: title?.trim() ?? null, description, text, final: normalizeDomain(res.url), myshopify: myshopifyOf(html), theme: shopifyTheme(html) };
   } catch {
     return null;
   } finally {
@@ -465,7 +467,7 @@ serve(async (req) => {
     let lead: (LeadSignals & { reasons: string[] }) | null = null;
     let leadScore: number | null = null;
     if (!reason && home) {
-      const signals: LeadSignals = { tranco_rank: rank, products, currency: home.currency, country: home.country, apps: home.signals };
+      const signals: LeadSignals = { tranco_rank: rank, products, currency: home.currency, country: home.country, apps: home.signals, theme: home.theme };
       const scored = scoreLead(signals);
       lead = { ...signals, reasons: scored.reasons };
       leadScore = scored.score;

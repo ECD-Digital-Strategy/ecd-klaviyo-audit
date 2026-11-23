@@ -34,10 +34,6 @@ import {
   isRoleAddress,
   doNotContact,
   REPLY_LABELS,
-  listEvents,
-  importEvent,
-  type EventImportResult,
-  type OutreachEvent,
   type HunterStatus,
   type OutreachProspect,
   type OutreachSend,
@@ -203,7 +199,7 @@ export default function Outreach() {
           )}
         </section>
 
-        <EventLeads onImported={load} />
+        {/* Event and webinar guests are Zak's since 2026-11-23 (he follows them up in Klaviyo): not imported here. */}
 
         {prospects === null ? (
           <p className="text-sm text-gray-400">Loading…</p>
@@ -257,13 +253,17 @@ function ProspectCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [subject, setSubject] = useState(p.email_subject ?? '');
   const [body, setBody] = useState(p.email_body ?? '');
+  const [fu1, setFu1] = useState(p.followup_1_body ?? '');
+  const [fu2, setFu2] = useState(p.followup_2_body ?? '');
   const [toEmail, setToEmail] = useState(p.contact_email ?? '');
   const [toName, setToName] = useState(p.contact_name ?? '');
 
   useEffect(() => {
     setSubject(p.email_subject ?? '');
     setBody(p.email_body ?? '');
-  }, [p.email_subject, p.email_body]);
+    setFu1(p.followup_1_body ?? '');
+    setFu2(p.followup_2_body ?? '');
+  }, [p.email_subject, p.email_body, p.followup_1_body, p.followup_2_body]);
 
   // A lookup fills these on the server.
   useEffect(() => {
@@ -290,6 +290,8 @@ function ProspectCard({
     return updateProspect(p.id, {
       email_subject: subject,
       email_body: body,
+      ...(p.followup_1_body != null ? { followup_1_body: fu1 } : {}),
+      ...(p.followup_2_body != null ? { followup_2_body: fu2 } : {}),
       contact_email: email,
       contact_name: toName.trim() || null,
       ...(changed ? { contact_source: email ? 'manual' : null, contact_verified: null, contact_title: null } : {}),
@@ -485,6 +487,15 @@ function ProspectCard({
           )}
           <input value={subject} onChange={(e) => setSubject(e.target.value)} onBlur={() => void saveEdits()} placeholder="Subject" className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium" />
           <textarea value={body} onChange={(e) => setBody(e.target.value)} onBlur={() => void saveEdits()} rows={10} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm leading-relaxed text-gray-800" />
+          {p.followup_1_body != null && (
+            <details className="rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium text-gray-600">Follow-ups (sent in the same thread only if they don't reply)</summary>
+              <label className="mt-2 block text-xs text-gray-500">Follow-up 1, a few days later: a second finding and the report link</label>
+              <textarea value={fu1} onChange={(e) => setFu1(e.target.value)} onBlur={() => void saveEdits()} rows={7} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-relaxed text-gray-800" />
+              <label className="mt-2 block text-xs text-gray-500">Follow-up 2, a week after that: a fix they can make themselves, no ask</label>
+              <textarea value={fu2} onChange={(e) => setFu2(e.target.value)} onBlur={() => void saveEdits()} rows={5} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-relaxed text-gray-800" />
+            </details>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             {canSend && (
               <>
@@ -557,117 +568,6 @@ function ProspectCard({
         </div>
       )}
     </div>
-  );
-}
-
-/**
- * Event and webinar guests from the ECD CRM (2026-11-11). Zak: they already know ECD and came to learn, and nobody
- * follows up with them. Importing an event adds its brands to the list below; clients, anyone with a deal, agencies
- * and vendors are skipped with the reason, and Zak's removals in the CRM are never imported.
- */
-function EventLeads({ onImported }: { onImported: () => Promise<void> }) {
-  const showToast = useToast();
-  const [events, setEvents] = useState<OutreachEvent[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [importing, setImporting] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [last, setLast] = useState<{ name: string; results: EventImportResult[] } | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setEvents(await listEvents());
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Could not load the events');
-    }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-
-  const run = async (e: OutreachEvent) => {
-    setImporting(e.id);
-    setProgress({ done: 0, total: e.brands });
-    try {
-      const results = await importEvent(e.id, (done, total, partial) => {
-        setProgress({ done, total });
-        setLast({ name: e.name, results: partial });
-      });
-      setLast({ name: e.name, results });
-      const kept = results.filter((r) => r.status === 'new').length;
-      showToast(`${e.name}: ${kept} brand${kept === 1 ? '' : 's'} added`);
-      await Promise.all([load(), onImported()]);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Import failed');
-      await Promise.all([load(), onImported()]);
-    } finally {
-      setImporting(null);
-      setProgress(null);
-    }
-  };
-
-  const kept = last?.results.filter((r) => r.status === 'new') ?? [];
-  const skipped = last?.results.filter((r) => r.status !== 'new') ?? [];
-
-  return (
-    <section className="rounded-xl border border-gray-200 bg-white p-5">
-      <h2 className="text-sm font-semibold text-gray-900">Event guests</h2>
-      <p className="mt-1 text-xs text-gray-500">
-        People who came to an ECD event or webinar, from the CRM. Clients, anyone with a deal, agencies and software vendors are skipped,
-        and so is anyone taken off the event in the CRM. Shopify brands are split between the audit email and the discovery email
-        (no audit, asks where they need the most help); other brands get the discovery email.
-      </p>
-      {loadError && <p className="mt-3 text-xs text-amber-700">{loadError}</p>}
-      {events === null && !loadError && <p className="mt-3 text-xs text-gray-400">Loading events…</p>}
-      {events && (
-        <ul className="mt-3 divide-y divide-gray-100">
-          {events.map((e) => {
-            const open = e.brands - e.removed - e.imported;
-            return (
-              <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-gray-900">{e.name}</p>
-                  <p className="text-xs text-gray-500">
-                    {e.kind === 'webinar' ? 'Webinar' : 'Event'}
-                    {e.held_on ? `, ${new Date(`${e.held_on}T12:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}` : ''}
-                    {` · ${e.guests} guest${e.guests === 1 ? '' : 's'}, ${e.brands} brand${e.brands === 1 ? '' : 's'}`}
-                    {e.imported > 0 ? ` · ${e.imported} checked, ${e.kept} kept` : ''}
-                    {e.unplaced > 0 ? ` · ${e.unplaced} with a personal email only` : ''}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={importing !== null || open <= 0}
-                  onClick={() => void run(e)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-primary/30 px-3 py-1.5 text-xs font-medium text-brand-primary hover:bg-brand-primary/5 disabled:opacity-50"
-                >
-                  {importing === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarDays className="h-3.5 w-3.5" />}
-                  {importing === e.id
-                    ? `Checking${progress ? ` ${progress.done} of ${progress.total}` : ''}…`
-                    : open <= 0 ? 'All checked' : e.imported > 0 ? 'Check the rest' : 'Check and add'}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {importing && <p className="mt-2 text-xs text-gray-500">Reading each brand's website and sorting brands from agencies, about 20 seconds per 6 brands.</p>}
-      {last && last.results.length > 0 && (
-        <div className="mt-3 border-t border-gray-100 pt-3 text-xs">
-          <p className="font-medium text-gray-700">{last.name}: {kept.length} added, {skipped.length} skipped or already listed</p>
-          <ul className="mt-1.5 space-y-1">
-            {last.results.map((r) => (
-              <li key={r.domain} className="flex gap-2">
-                <span className={r.status === 'new' ? 'font-medium text-emerald-700' : 'text-gray-500'}>
-                  {r.status === 'new' ? 'Added' : r.status === 'exists' ? 'Already listed' : 'Skipped'}
-                </span>
-                <span className="text-gray-900">{r.store_name ? `${r.store_name} (${r.domain})` : r.domain}</span>
-                {r.approach && <span className="text-gray-500">{r.approach === 'audit' ? 'audit email' : 'discovery email'}</span>}
-                {r.reason && <span className="text-gray-400">{r.reason}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -1020,8 +920,9 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
   const settings = status?.settings;
   const [form, setForm] = useState({
     daily_new_cap: 3,
-    max_followups: 1,
+    max_followups: 2,
     followup_gap_days: 3,
+    followup_2_gap_days: 7,
     send_start_hour: 9,
     send_end_hour: 16,
     min_gap_minutes: 45,
@@ -1041,6 +942,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
       daily_new_cap: settings.daily_new_cap,
       max_followups: settings.max_followups,
       followup_gap_days: settings.followup_gap_days,
+      followup_2_gap_days: settings.followup_2_gap_days ?? 7,
       send_start_hour: settings.send_start_hour,
       send_end_hour: settings.send_end_hour,
       min_gap_minutes: settings.min_gap_minutes,
@@ -1075,6 +977,7 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
     (form.daily_new_cap !== settings.daily_new_cap ||
       form.max_followups !== settings.max_followups ||
       form.followup_gap_days !== settings.followup_gap_days ||
+      form.followup_2_gap_days !== (settings.followup_2_gap_days ?? 7) ||
       form.send_start_hour !== settings.send_start_hour ||
       form.send_end_hour !== settings.send_end_hour ||
       form.min_gap_minutes !== settings.min_gap_minutes ||
@@ -1231,7 +1134,8 @@ function SettingsTab({ status, onChanged }: { status: OutreachSendStatus | null;
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
           {num('daily_new_cap', 'New emails per day', 0, 10, 'First emails only. 0 stops new sends.')}
           {num('max_followups', 'Follow-ups per person', 0, 2)}
-          {num('followup_gap_days', 'Days before a follow-up', 1, 14)}
+          {num('followup_gap_days', 'Days before follow-up 1', 1, 14)}
+          {num('followup_2_gap_days', 'Days from follow-up 1 to 2', 1, 30)}
           {num('send_start_hour', 'Send from (hour, 0-23)', 0, 23)}
           {num('send_end_hour', 'Send until (hour, 1-24)', 1, 24)}
           {num('min_gap_minutes', 'Minutes between first emails', 5, 240)}

@@ -85,6 +85,8 @@ type Settings = {
   booking_url: string | null;
   max_followups: number;
   followup_gap_days: number;
+  /** Days between follow-up 1 and follow-up 2 (2026-11-23). */
+  followup_2_gap_days: number;
   send_start_hour: number;
   send_end_hour: number;
   min_gap_minutes: number;
@@ -108,8 +110,9 @@ const DEFAULT_SETTINGS: Settings = {
   pause_reason: null,
   daily_new_cap: 3,
   booking_url: null,
-  max_followups: 1,
+  max_followups: 2,
   followup_gap_days: 3,
+  followup_2_gap_days: 7,
   send_start_hour: 9,
   send_end_hour: 16,
   min_gap_minutes: 45,
@@ -139,6 +142,9 @@ type Prospect = {
   last_sent_at: string | null;
   message_id: string | null;
   followups_sent: number;
+  /** Follow-ups drafted with the first email and approved by Emil (2026-11-23); the old fixed texts otherwise. */
+  followup_1_body?: string | null;
+  followup_2_body?: string | null;
   contact_title?: string | null;
   replies_seen?: number;
   report_views?: number;
@@ -264,6 +270,7 @@ async function alertEmil(p: Prospect, verdict: ReplyVerdict, mail: { from: strin
     `<p style="color:#666;font-size:13px">From ${esc(mail.from)}${p.contact_title ? `, ${esc(p.contact_title)}` : ""}.`,
     (p.report_views ?? 0) > 0 ? ` They opened their report ${p.report_views} time${p.report_views === 1 ? "" : "s"}.` : "",
     `</p>`,
+    report ? `<p style="font-size:13px">Their report, to paste in your answer: <a href="${report}">${esc(report)}</a></p>` : "",
     `<p><a href="${gmail}">Answer in Gmail</a>${report ? ` &middot; <a href="${report}?preview=1">Their report</a>` : ""} &middot; <a href="https://audit.ecdigitalstrategy.com/outreach?tab=prospects">Outreach page</a></p>`,
   ].join("");
   await sendEmail({ to: [OUTREACH_OWNER_EMAIL], subject: `Outreach reply: ${p.store_name || p.domain} (${label})`, html });
@@ -862,7 +869,9 @@ async function tick(sb: Sb) {
   if (inboxOk && settings.max_followups > 0) {
     const { data } = await sb.from("outreach_prospects").select("*").eq("status", "sent").eq("is_client", false).lt("followups_sent", settings.max_followups);
     for (const p of (data ?? []) as Prospect[]) {
-      if (!p.last_sent_at || now.getTime() - Date.parse(p.last_sent_at) < settings.followup_gap_days * 86_400_000) continue;
+      const n = (p.followups_sent + 1) as 1 | 2;
+      const gapDays = n === 1 ? settings.followup_gap_days : settings.followup_2_gap_days;
+      if (!p.last_sent_at || now.getTime() - Date.parse(p.last_sent_at) < gapDays * 86_400_000) continue;
       // Put on the do-not-contact list since the first email: no more follow-ups.
       if (await suppressed(sb, p.domain)) continue;
       // Became an ECD client since the first email: no more follow-ups. Client list unreadable: not this run.
@@ -874,15 +883,18 @@ async function tick(sb: Sb) {
         continue;
       }
       const url = await reportUrl(sb, p);
-      // The discovery email has no report; every other one needs its report to follow up on.
-      if ((!url && p.approach !== "discovery") || !p.email_subject) continue;
-      const n = (p.followups_sent + 1) as 1 | 2;
-      const text = followUp(n, {
-        firstName: p.contact_name?.split(" ")[0] ?? null,
-        brand: p.store_name || p.domain,
-        reportUrl: url,
-        bookingUrl: settings.booking_url,
-      });
+      // The follow-up Emil approved with the first email (2026-11-23), else the old fixed text.
+      const drafted = String((n === 1 ? p.followup_1_body : p.followup_2_body) ?? "").trim();
+      // The discovery email has no report; the fixed follow-ups need the report to point at.
+      if ((!drafted && !url && p.approach !== "discovery") || !p.email_subject) continue;
+      const text = drafted
+        ? withoutCompanyLine(drafted)
+        : followUp(n, {
+          firstName: p.contact_name?.split(" ")[0] ?? null,
+          brand: p.store_name || p.domain,
+          reportUrl: url,
+          bookingUrl: settings.booking_url,
+        });
       const subject = /^re:/i.test(p.email_subject) ? p.email_subject : `Re: ${p.email_subject}`;
       // Take this follow-up first, so two overlapping runs can't both send it.
       const { data: mine } = await sb
@@ -1161,6 +1173,7 @@ serve(async (req) => {
     if ("min_lead_score" in s) patch.min_lead_score = clampInt(s.min_lead_score, 0, 100, current.min_lead_score);
     if ("max_followups" in s) patch.max_followups = clampInt(s.max_followups, 0, 2, current.max_followups);
     if ("followup_gap_days" in s) patch.followup_gap_days = clampInt(s.followup_gap_days, 1, 14, current.followup_gap_days);
+    if ("followup_2_gap_days" in s) patch.followup_2_gap_days = clampInt(s.followup_2_gap_days, 1, 30, current.followup_2_gap_days);
     if ("min_gap_minutes" in s) patch.min_gap_minutes = clampInt(s.min_gap_minutes, 5, 240, current.min_gap_minutes);
     const start = "send_start_hour" in s ? clampInt(s.send_start_hour, 0, 23, current.send_start_hour) : current.send_start_hour;
     const end = "send_end_hour" in s ? clampInt(s.send_end_hour, 1, 24, current.send_end_hour) : current.send_end_hour;
